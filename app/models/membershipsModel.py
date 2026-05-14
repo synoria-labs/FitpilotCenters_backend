@@ -97,6 +97,17 @@ class Payment(Base):
     person: Mapped["People"] = relationship(back_populates="payments")
 
     __table_args__ = (
+        CheckConstraint(
+            "status IN ('COMPLETED','PENDING','FAILED','REFUNDED')",
+            name="ck_payments_status",
+        ),
         Index("idx_payments_person_paidat", "person_id", "paid_at"),
         Index("idx_payments_subscription", "subscription_id", "paid_at"),
+        Index("idx_payments_status_paidat", "status", "paid_at"),
+        Index(
+            "uq_payments_provider_payment_id",
+            "provider_payment_id",
+            unique=True,
+            postgresql_where="provider_payment_id IS NOT NULL",
+        ),
     )
