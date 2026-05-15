@@ -2,7 +2,7 @@
 Modern CRUD operations for reservations.
 """
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 from decimal import Decimal
 
@@ -297,25 +297,24 @@ async def get_person_reservations(
     limit: int = 100
 ) -> List[ReservationData]:
     """Get reservations for a person"""
-    query = select(Reservation).options(
-        joinedload(Reservation.person),
-        joinedload(Reservation.seat),
-        joinedload(Reservation.session).joinedload(ClassSession.class_type)
-    ).where(Reservation.person_id == person_id)
+    query = (
+        select(Reservation)
+        .options(
+            joinedload(Reservation.person),
+            joinedload(Reservation.seat),
+            joinedload(Reservation.session).joinedload(ClassSession.class_type),
+        )
+        .join(Reservation.session)
+        .where(Reservation.person_id == person_id)
+    )
 
     if not include_past:
-        query = query.where(
-            Reservation.session.has(
-                ClassSession.start_at >= datetime.now(timezone.utc)
-            )
-        )
+        query = query.where(ClassSession.start_at >= datetime.now(timezone.utc))
 
     if not include_canceled:
         query = query.where(Reservation.status != 'canceled')
 
-    query = query.order_by(
-        Reservation.session.has(ClassSession.start_at.desc())
-    ).limit(limit)
+    query = query.order_by(ClassSession.start_at.desc()).limit(limit)
 
     result = await db.execute(query)
     reservations = result.scalars().all()
@@ -467,7 +466,7 @@ async def get_available_seats(
                 Seat.venue_id == session.venue_id,
                 Seat.is_active == True
             )
-        ).order_by(Seat.label)
+        ).order_by(func.length(Seat.label), Seat.label)
     )
     seats = seats_result.scalars().all()
 
@@ -499,62 +498,87 @@ async def get_available_seats(
 # ------------------------------
 # Aggregation: sessions with seats and expiry flag
 # ------------------------------
-async def get_sessions_with_seats_by_date(
+async def _get_sessions_with_seats_range(
     db: AsyncSession,
-    target_date,
-    venue_id: Optional[int] = None
+    start_date,
+    end_date,
+    class_type_id: Optional[int] = None,
+    venue_id: Optional[int] = None,
+    include_class_type_id: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Return sessions for a given date including per-seat occupancy and will_expire_soon flag.
-
-    Output shape per session:
-      {
-        'id': int,
-        'name': str|None,
-        'start_at': datetime,
-        'end_at': datetime,
-        'capacity': int,
-        'venue_id': int,
-        'class_type_name': str|None,
-        'seats': [
-           {
-             'seat_id': int,
-             'label': str,
-             'status': 'free'|'occupied',
-             'occupant': {'person_id': int, 'full_name': str} | None,
-             'will_expire_soon': bool
-           }, ...
-        ]
-      }
-    """
-    # 1) Fetch sessions for the target date
+    """Shared loader for sessions with per-seat occupancy and expiry flags."""
     session_query = (
         select(ClassSession)
         .options(
             joinedload(ClassSession.class_type),
-            joinedload(ClassSession.venue)
+            joinedload(ClassSession.venue),
         )
-        .where(func.date(ClassSession.start_at) == target_date)
+        .where(
+            and_(
+                func.date(ClassSession.start_at) >= start_date,
+                func.date(ClassSession.start_at) <= end_date,
+            )
+        )
     )
+
+    if class_type_id:
+        session_query = session_query.where(ClassSession.class_type_id == class_type_id)
+
     if venue_id:
         session_query = session_query.where(ClassSession.venue_id == venue_id)
+
     session_query = session_query.order_by(ClassSession.start_at)
 
     sessions_result = await db.execute(session_query)
     sessions = sessions_result.scalars().all()
 
     results: List[Dict[str, Any]] = []
+    seats_cache: Dict[int, List] = {}
+    expiry_cache: Dict[tuple[int, date], bool] = {}
+
+    async def _will_expire_soon(person_id: int, session_start_at: datetime) -> bool:
+        cache_key = (person_id, session_start_at.date())
+        if cache_key in expiry_cache:
+            return expiry_cache[cache_key]
+
+        ms_q = (
+            select(MembershipSubscription)
+            .where(
+                and_(
+                    MembershipSubscription.person_id == person_id,
+                    MembershipSubscription.status.in_(['active', 'grace']),
+                    MembershipSubscription.start_at <= session_start_at,
+                    MembershipSubscription.end_at >= session_start_at,
+                )
+            )
+            .order_by(MembershipSubscription.end_at.desc())
+            .limit(1)
+        )
+        ms_res = await db.execute(ms_q)
+        ms = ms_res.scalar_one_or_none()
+        if not ms or not ms.end_at:
+            expiry_cache[cache_key] = False
+            return False
+
+        days_left = (ms.end_at.date() - session_start_at.date()).days
+        will_expire = 0 <= days_left <= 2
+        expiry_cache[cache_key] = will_expire
+        return will_expire
 
     for session in sessions:
-        # 2) Seats for this venue
-        seats_result = await db.execute(
-            select(Seat)
-            .options(joinedload(Seat.seat_type))
-            .where(and_(Seat.venue_id == session.venue_id, Seat.is_active == True))
-            .order_by(Seat.label)
-        )
-        venue_seats = seats_result.scalars().all()
+        # Seats for this venue (cached)
+        if session.venue_id not in seats_cache:
+            seats_result = await db.execute(
+                select(Seat)
+                .options(joinedload(Seat.seat_type))
+                .where(and_(Seat.venue_id == session.venue_id, Seat.is_active == True))
+                .order_by(func.length(Seat.label), Seat.label)
+            )
+            seats_cache[session.venue_id] = seats_result.scalars().all()
 
-        # 3) Reservations for this session mapped by seat_id
+        venue_seats = seats_cache[session.venue_id]
+
+        # Reservations for this session mapped by seat_id
         reservations_result = await db.execute(
             select(Reservation)
             .options(joinedload(Reservation.person))
@@ -562,7 +586,7 @@ async def get_sessions_with_seats_by_date(
                 and_(
                     Reservation.session_id == session.id,
                     Reservation.seat_id.isnot(None),
-                    Reservation.status.in_(['reserved', 'checked_in'])
+                    Reservation.status.in_(['reserved', 'checked_in']),
                 )
             )
         )
@@ -572,42 +596,19 @@ async def get_sessions_with_seats_by_date(
             if r.seat_id is not None and r.person is not None:
                 reserved_by_seat[r.seat_id] = r.person
 
-        # Helper to compute will_expire_soon for an occupant in this session
-        async def _will_expire_soon(person_id: int) -> bool:
-            ms_q = (
-                select(MembershipSubscription)
-                .where(
-                    and_(
-                        MembershipSubscription.person_id == person_id,
-                        MembershipSubscription.status.in_(['active', 'grace']),
-                        MembershipSubscription.start_at <= session.start_at,
-                        MembershipSubscription.end_at >= session.start_at,
-                    )
-                )
-                .order_by(MembershipSubscription.end_at.desc())
-                .limit(1)
-            )
-            ms_res = await db.execute(ms_q)
-            ms = ms_res.scalar_one_or_none()
-            if not ms or not ms.end_at:
-                return False
-            # Compare dates (day resolution)
-            days_left = (ms.end_at.date() - session.start_at.date()).days
-            return 0 <= days_left <= 2
-
-        # 4) Build seats payload
+        # Build seats payload
         seats_payload: List[Dict[str, Any]] = []
         for seat in venue_seats:
             occupant = reserved_by_seat.get(seat.id)
             if occupant:
-                will_exp = await _will_expire_soon(occupant.id)
+                will_exp = await _will_expire_soon(occupant.id, session.start_at)
                 seats_payload.append({
                     'seat_id': seat.id,
                     'label': seat.label,
                     'status': 'occupied',
                     'occupant': {
                         'person_id': occupant.id,
-                        'full_name': occupant.full_name or ''
+                        'full_name': occupant.full_name or '',
                     },
                     'will_expire_soon': will_exp,
                 })
@@ -620,7 +621,7 @@ async def get_sessions_with_seats_by_date(
                     'will_expire_soon': False,
                 })
 
-        results.append({
+        item: Dict[str, Any] = {
             'id': session.id,
             'name': session.name,
             'start_at': session.start_at,
@@ -630,9 +631,28 @@ async def get_sessions_with_seats_by_date(
             'template_id': session.template_id,
             'class_type_name': session.class_type.name if session.class_type else None,
             'seats': seats_payload,
-        })
+        }
+
+        if include_class_type_id:
+            item['class_type_id'] = session.class_type_id
+
+        results.append(item)
 
     return results
+
+
+async def get_sessions_with_seats_by_date(
+    db: AsyncSession,
+    target_date,
+    venue_id: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    """Return sessions for a given date including per-seat occupancy and will_expire_soon flag."""
+    return await _get_sessions_with_seats_range(
+        db,
+        start_date=target_date,
+        end_date=target_date,
+        venue_id=venue_id,
+    )
 
 
 async def get_week_sessions_with_seats(
@@ -657,126 +677,11 @@ async def get_week_sessions_with_seats(
     Returns:
         List of session dictionaries with same structure as get_sessions_with_seats_by_date
     """
-    # 1) Fetch all sessions in the date range
-    session_query = (
-        select(ClassSession)
-        .options(
-            joinedload(ClassSession.class_type),
-            joinedload(ClassSession.venue)
-        )
-        .where(
-            and_(
-                func.date(ClassSession.start_at) >= start_date,
-                func.date(ClassSession.start_at) <= end_date
-            )
-        )
+    return await _get_sessions_with_seats_range(
+        db,
+        start_date=start_date,
+        end_date=end_date,
+        class_type_id=class_type_id,
+        venue_id=venue_id,
+        include_class_type_id=True,
     )
-
-    if class_type_id:
-        session_query = session_query.where(ClassSession.class_type_id == class_type_id)
-
-    if venue_id:
-        session_query = session_query.where(ClassSession.venue_id == venue_id)
-
-    session_query = session_query.order_by(ClassSession.start_at)
-
-    sessions_result = await db.execute(session_query)
-    sessions = sessions_result.scalars().all()
-
-    results: List[Dict[str, Any]] = []
-
-    # Cache seats by venue_id to avoid repeated queries
-    seats_cache: Dict[int, List] = {}
-
-    for session in sessions:
-        # 2) Get seats for this venue (use cache if available)
-        if session.venue_id not in seats_cache:
-            seats_result = await db.execute(
-                select(Seat)
-                .options(joinedload(Seat.seat_type))
-                .where(and_(Seat.venue_id == session.venue_id, Seat.is_active == True))
-                .order_by(Seat.label)
-            )
-            seats_cache[session.venue_id] = seats_result.scalars().all()
-
-        venue_seats = seats_cache[session.venue_id]
-
-        # 3) Get reservations for this session
-        reservations_result = await db.execute(
-            select(Reservation)
-            .options(joinedload(Reservation.person))
-            .where(
-                and_(
-                    Reservation.session_id == session.id,
-                    Reservation.seat_id.isnot(None),
-                    Reservation.status.in_(['reserved', 'checked_in'])
-                )
-            )
-        )
-        reservations = reservations_result.scalars().all()
-        reserved_by_seat: Dict[int, People] = {}
-        for r in reservations:
-            if r.seat_id is not None and r.person is not None:
-                reserved_by_seat[r.seat_id] = r.person
-
-        # Helper to compute will_expire_soon
-        async def _will_expire_soon(person_id: int) -> bool:
-            ms_q = (
-                select(MembershipSubscription)
-                .where(
-                    and_(
-                        MembershipSubscription.person_id == person_id,
-                        MembershipSubscription.status.in_(['active', 'grace']),
-                        MembershipSubscription.start_at <= session.start_at,
-                        MembershipSubscription.end_at >= session.start_at,
-                    )
-                )
-                .order_by(MembershipSubscription.end_at.desc())
-                .limit(1)
-            )
-            ms_res = await db.execute(ms_q)
-            ms = ms_res.scalar_one_or_none()
-            if not ms or not ms.end_at:
-                return False
-            days_left = (ms.end_at.date() - session.start_at.date()).days
-            return 0 <= days_left <= 2
-
-        # 4) Build seats payload
-        seats_payload: List[Dict[str, Any]] = []
-        for seat in venue_seats:
-            occupant = reserved_by_seat.get(seat.id)
-            if occupant:
-                will_exp = await _will_expire_soon(occupant.id)
-                seats_payload.append({
-                    'seat_id': seat.id,
-                    'label': seat.label,
-                    'status': 'occupied',
-                    'occupant': {
-                        'person_id': occupant.id,
-                        'full_name': occupant.full_name or ''
-                    },
-                    'will_expire_soon': will_exp,
-                })
-            else:
-                seats_payload.append({
-                    'seat_id': seat.id,
-                    'label': seat.label,
-                    'status': 'free',
-                    'occupant': None,
-                    'will_expire_soon': False,
-                })
-
-        results.append({
-            'id': session.id,
-            'name': session.name,
-            'start_at': session.start_at,
-            'end_at': session.end_at,
-            'capacity': session.capacity,
-            'venue_id': session.venue_id,
-            'template_id': session.template_id,
-            'class_type_id': session.class_type_id,
-            'class_type_name': session.class_type.name if session.class_type else None,
-            'seats': seats_payload,
-        })
-
-    return results

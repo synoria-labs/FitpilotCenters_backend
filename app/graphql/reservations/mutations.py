@@ -4,6 +4,7 @@ Modern GraphQL mutations for reservations.
 import strawberry
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
+from strawberry.types import Info
 
 from app.crud.reservationsCrud import (
     create_reservation,
@@ -19,6 +20,7 @@ from app.graphql.reservations.types import (
     Reservation
 )
 from app.graphql.auth.permissions import IsAuthenticated
+from app.graphql.context import Context
 
 
 @strawberry.type
@@ -28,7 +30,7 @@ class ReservationMutation:
     @strawberry.mutation(permission_classes=[IsAuthenticated])
     async def create_reservation(
         self,
-        info,
+        info: Info[Context],
         input: CreateReservationInput
     ) -> ReservationResponse:
         """Create a new reservation"""
@@ -82,7 +84,7 @@ class ReservationMutation:
     @strawberry.mutation(permission_classes=[IsAuthenticated])
     async def cancel_reservation(
         self,
-        info,
+        info: Info[Context],
         reservation_id: int
     ) -> ReservationResponse:
         """Cancel a reservation"""
@@ -131,7 +133,7 @@ class ReservationMutation:
     @strawberry.mutation(permission_classes=[IsAuthenticated])
     async def check_in_reservation(
         self,
-        info,
+        info: Info[Context],
         reservation_id: int
     ) -> CheckInResponse:
         """Check in a member for their reservation"""
@@ -168,7 +170,7 @@ class ReservationMutation:
     @strawberry.mutation(permission_classes=[IsAuthenticated])
     async def checkout_reservation(
         self,
-        info,
+        info: Info[Context],
         reservation_id: int
     ) -> CheckInResponse:
         """Check out a member from their reservation"""
