@@ -1,3 +1,4 @@
+import logging
 # from dataclasses import dataclass
 # from fastapi import Request, Response
 # from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +23,8 @@ from app.graphql.standing_bookings.mutations import StandingBookingMutation
 from app.graphql.sessions.queries import SessionQuery
 from app.graphql.sessions.mutations import SessionMutation
 
+logger = logging.getLogger(__name__)
+
 # Optional new GraphQL APIs - only if dependencies are available
 try:
     from app.graphql.class_sessions.queries import ClassSessionQueries
@@ -29,7 +32,7 @@ try:
     NEW_APIS_AVAILABLE = True
 except ImportError as e:
     NEW_APIS_AVAILABLE = False
-    print(f"Warning: New GraphQL APIs not available due to missing dependencies: {e}")
+    logger.warning("New GraphQL APIs not available due to missing dependencies: %s", e)
 
     # Create empty classes as placeholders
     @strawberry.type
