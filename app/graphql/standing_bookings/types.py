@@ -2,7 +2,7 @@
 GraphQL types for Standing Bookings (Reservativos)
 """
 from datetime import datetime, date
-from typing import Optional, List
+from typing import Optional, List, Any
 import strawberry
 
 from app.crud.standingBookingsCrud import (
@@ -185,6 +185,7 @@ class CreateStandingBookingExceptionInput:
     session_date: date
     action: str  # 'skip' or 'reschedule'
     new_session_id: Optional[int] = None
+    new_seat_id: Optional[int] = None
     notes: Optional[str] = None
 
 
@@ -279,6 +280,48 @@ class MaterializationPreviewResponse:
     total_sessions: int
 
 
+@strawberry.input
+class RescheduleStandingBookingInput:
+    """Input for rescheduling standing booking dates to a new template."""
+    standing_booking_id: int
+    start_date: date
+    end_date: date
+    target_template_id: int
+    target_seat_id: Optional[int] = None
+    strict: bool = False
+
+
+@strawberry.type
+class RescheduleCount:
+    status: str
+    count: int
+
+
+@strawberry.type
+class RescheduleStandingBookingItem:
+    session_date: date
+    standing_booking_id: int
+    source_session_id: Optional[int]
+    target_session_id: Optional[int]
+    seat_id: Optional[int]
+    status: str
+    reason: str
+
+
+@strawberry.type
+class RescheduleStandingBookingPreviewResponse:
+    items: List[RescheduleStandingBookingItem]
+    counts: List[RescheduleCount]
+
+
+@strawberry.type
+class RescheduleStandingBookingResponse:
+    success: bool
+    items: List[RescheduleStandingBookingItem]
+    counts: List[RescheduleCount]
+    message: str
+
+
 # Helper functions for converting data
 def convert_materialization_stats(stats_dict: dict) -> MaterializationStats:
     """Convert stats dictionary to GraphQL type"""
@@ -305,4 +348,26 @@ def convert_materialization_preview(preview_list: List[dict]) -> List[Materializ
             reason=item['reason']
         )
         for item in preview_list
+    ]
+
+
+def convert_reschedule_items(items: List[Any]) -> List[RescheduleStandingBookingItem]:
+    return [
+        RescheduleStandingBookingItem(
+            session_date=item.session_date,
+            standing_booking_id=item.standing_booking_id,
+            source_session_id=item.source_session_id,
+            target_session_id=item.target_session_id,
+            seat_id=item.seat_id,
+            status=item.status,
+            reason=item.reason
+        )
+        for item in items
+    ]
+
+
+def convert_reschedule_counts(counts: dict) -> List[RescheduleCount]:
+    return [
+        RescheduleCount(status=status, count=count)
+        for status, count in counts.items()
     ]

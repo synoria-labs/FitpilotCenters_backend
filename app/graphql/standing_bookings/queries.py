@@ -4,6 +4,7 @@ GraphQL queries for Standing Bookings
 import strawberry
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
+from strawberry.types import Info
 
 from app.crud.standingBookingsCrud import (
     get_class_types,
@@ -27,6 +28,7 @@ from app.graphql.standing_bookings.types import (
     StandingBooking
 )
 from app.graphql.auth.permissions import IsAuthenticated
+from app.graphql.context import Context
 
 
 @strawberry.type
@@ -34,7 +36,7 @@ class StandingBookingQuery:
     """Standing Booking queries"""
 
     @strawberry.field(permission_classes=[IsAuthenticated])
-    async def class_types(self, info) -> ClassTypesResponse:
+    async def class_types(self, info: Info[Context]) -> ClassTypesResponse:
         """Get all class types"""
         db: AsyncSession = info.context.db
 
@@ -55,7 +57,7 @@ class StandingBookingQuery:
     @strawberry.field(permission_classes=[IsAuthenticated])
     async def class_templates(
         self,
-        info,
+        info: Info[Context],
         input: GetClassTemplatesInput
     ) -> ClassTemplatesResponse:
         """Get class templates with optional filtering"""
@@ -81,7 +83,7 @@ class StandingBookingQuery:
             )
 
     @strawberry.field(permission_classes=[IsAuthenticated])
-    async def all_class_templates(self, info) -> ClassTemplatesResponse:
+    async def all_class_templates(self, info: Info[Context]) -> ClassTemplatesResponse:
         """Get all active class templates without filtering"""
         db: AsyncSession = info.context.db
 
@@ -105,7 +107,7 @@ class StandingBookingQuery:
     @strawberry.field(permission_classes=[IsAuthenticated])
     async def template_available_seats(
         self,
-        info,
+        info: Info[Context],
         input: GetAvailableSeatsInput
     ) -> AvailableSeatsResponse:
         """Get available seats for a template on a specific date"""
@@ -136,7 +138,7 @@ class StandingBookingQuery:
     @strawberry.field(permission_classes=[IsAuthenticated])
     async def standing_bookings(
         self,
-        info,
+        info: Info[Context],
         input: GetStandingBookingsInput
     ) -> StandingBookingsResponse:
         """Get standing bookings with optional filtering"""
@@ -165,7 +167,7 @@ class StandingBookingQuery:
     @strawberry.field(permission_classes=[IsAuthenticated])
     async def standing_booking(
         self,
-        info,
+        info: Info[Context],
         id: int
     ) -> StandingBookingResponse:
         """Get a specific standing booking by ID"""
@@ -197,7 +199,7 @@ class StandingBookingQuery:
     @strawberry.field(permission_classes=[IsAuthenticated])
     async def standing_bookings_for_person(
         self,
-        info,
+        info: Info[Context],
         person_id: int,
         active_only: bool = True
     ) -> StandingBookingsResponse:
@@ -225,7 +227,7 @@ class StandingBookingQuery:
     @strawberry.field(permission_classes=[IsAuthenticated])
     async def standing_bookings_for_template(
         self,
-        info,
+        info: Info[Context],
         template_id: int,
         active_only: bool = True
     ) -> StandingBookingsResponse:
@@ -253,7 +255,7 @@ class StandingBookingQuery:
     @strawberry.field(permission_classes=[IsAuthenticated])
     async def class_templates_by_weekday(
         self,
-        info,
+        info: Info[Context],
         weekday: int,
         class_type_id: int = None
     ) -> ClassTemplatesResponse:
@@ -283,7 +285,7 @@ class StandingBookingQuery:
             )
 
     @strawberry.field(permission_classes=[IsAuthenticated])
-    async def templates_requiring_seats(self, info) -> ClassTemplatesResponse:
+    async def templates_requiring_seats(self, info: Info[Context]) -> ClassTemplatesResponse:
         """Get templates that require seat selection (e.g., spinning classes)"""
         db: AsyncSession = info.context.db
 
