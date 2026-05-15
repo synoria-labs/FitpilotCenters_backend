@@ -176,6 +176,7 @@ class StandingBookingException(Base):
     session_date: Mapped[date] = mapped_column(Date, nullable=False)
     action: Mapped[str] = mapped_column(String(20), nullable=False)
     new_session_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("class_sessions.id"))
+    new_seat_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("seats.id"))
     notes: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow)
 

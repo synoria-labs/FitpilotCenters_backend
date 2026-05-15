@@ -277,3 +277,22 @@ CREATE INDEX IF NOT EXISTS idx_sessions_instructor ON app.class_sessions(instruc
 ---
 
 **Fin del documento.**
+
+---
+
+## 16) Reschedule batch (nuevo)
+**Objetivo:** permitir reprogramar un rango de fechas (dia/semana/mes/anio) dentro de la vigencia, manteniendo el mismo tipo de clase.
+
+**Reglas clave:**
+- Solo dentro de `standing_bookings.start_date..end_date`.
+- Misma `class_type_id` entre origen y destino.
+- Si hay `seat_id` en el standing booking, se intenta conservar; si no esta disponible, se elige otro asiento libre.
+- Si existe excepcion para la fecha, se omite.
+
+**Mutaciones (GraphQL):**
+- `previewRescheduleStandingBooking(input)` -> lista de fechas con `status` y `reason`.
+- `rescheduleStandingBooking(input)` -> aplica el cambio y devuelve el resumen.
+
+**Notas de integridad:**
+- Si no se puede crear la reserva de override, no se debe cancelar la original.
+- Para overrides con cambio de asiento, guardar `new_seat_id` en `standing_booking_exceptions` (requiere migracion DB).

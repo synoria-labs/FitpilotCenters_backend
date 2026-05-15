@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone, date
 from typing import Optional, List, Tuple
+import time
 
 import logging
 
@@ -113,7 +114,7 @@ def _build_member_data(person: People) -> MemberData:
                         )
 
     if person.subscriptions:
-        current_time = datetime.utcnow().replace(tzinfo=timezone.utc)
+        current_time = datetime.now(timezone.utc)
         ordered_subs = sorted(
             person.subscriptions,
             key=lambda s: s.end_at or datetime.min.replace(tzinfo=timezone.utc),
@@ -130,18 +131,21 @@ def _build_member_data(person: People) -> MemberData:
     reference_subscription = active_subscription or latest_subscription
 
     if reference_subscription or true_end_date:
-        current_time = datetime.utcnow().replace(tzinfo=timezone.utc)
+        today_local = date.today()
 
-        if true_end_date:
-            end_datetime = datetime.combine(true_end_date, datetime.min.time()).replace(tzinfo=timezone.utc)
-            start_datetime = datetime.combine(true_start_date, datetime.min.time()).replace(tzinfo=timezone.utc) if true_start_date else None
-            status = 'active' if end_datetime > current_time else 'expired'
-            remaining_days = (end_datetime - current_time).days
-        elif reference_subscription:
+        # Priority: subscription end_at over standing booking end_date
+        if reference_subscription and reference_subscription.end_at:
             end_datetime = reference_subscription.end_at
             start_datetime = reference_subscription.start_at
-            status = reference_subscription.status
-            remaining_days = (end_datetime - current_time).days if end_datetime else None
+            # Calculate remaining days using local calendar dates
+            end_date_local = end_datetime.astimezone().date() if end_datetime.tzinfo else end_datetime.date()
+            remaining_days = (end_date_local - today_local).days
+            status = 'active' if remaining_days >= 0 else 'expired'
+        elif true_end_date:
+            end_datetime = datetime.combine(true_end_date, datetime.max.time()).replace(tzinfo=timezone.utc)
+            start_datetime = datetime.combine(true_start_date, datetime.min.time()).replace(tzinfo=timezone.utc) if true_start_date else None
+            remaining_days = (true_end_date - today_local).days
+            status = 'active' if remaining_days >= 0 else 'expired'
         else:
             end_datetime = None
             start_datetime = None
@@ -350,8 +354,11 @@ async def create_member(
 
 async def update_member(db: AsyncSession, member_id: int, **kwargs) -> Optional[People]:
     """Update member information"""
+    started_at = time.perf_counter()
+    requested_fields = sorted([key for key, value in kwargs.items() if value is not None])
     member_id = coerce_int(member_id)
     if member_id is None:
+        logger.warning("crud.update_member invalid member_id=%s fields=%s", member_id, requested_fields)
         return None
 
     result = await db.execute(
@@ -362,16 +369,27 @@ async def update_member(db: AsyncSession, member_id: int, **kwargs) -> Optional[
 
     person = result.scalar_one_or_none()
     if not person:
+        logger.warning("crud.update_member member_id=%s not found", member_id)
         return None
 
     # Update fields
+    changed_fields: List[str] = []
     for key, value in kwargs.items():
         if hasattr(person, key) and value is not None:
             setattr(person, key, value)
+            changed_fields.append(key)
 
     person.updated_at = datetime.utcnow()
     await db.commit()
     await db.refresh(person)
+    duration_ms = (time.perf_counter() - started_at) * 1000
+    logger.info(
+        "crud.update_member member_id=%s fields=%s requested_fields=%s duration_ms=%.2f",
+        member_id,
+        sorted(changed_fields),
+        requested_fields,
+        duration_ms,
+    )
     return person
 
 async def delete_member_and_related(db: AsyncSession, member_id: int) -> tuple[bool, str]:

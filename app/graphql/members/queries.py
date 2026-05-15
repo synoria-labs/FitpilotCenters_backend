@@ -2,6 +2,7 @@
 
 import strawberry
 from sqlalchemy.ext.asyncio import AsyncSession
+from strawberry.types import Info
 
 from app.crud.membersCrud import get_members_list, get_member_by_id
 from app.graphql.members.types import Member
@@ -14,7 +15,7 @@ class MembersQuery:
     @strawberry.field(permission_classes=[IsAuthenticated])
     async def members(
         self,
-        info,
+        info: Info,
         limit: Optional[int] = None,
         offset: int = 0,
         search: Optional[str] = None
@@ -31,7 +32,7 @@ class MembersQuery:
         return [Member.from_data(member_data) for member_data in members_data]
 
     @strawberry.field(permission_classes=[IsAuthenticated])
-    async def member(self, info, member_id: int) -> Optional[Member]:
+    async def member(self, info: Info, member_id: int) -> Optional[Member]:
         """Get detailed member information by ID"""
         db: AsyncSession = info.context.db
 

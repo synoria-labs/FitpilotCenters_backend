@@ -1,16 +1,9 @@
-from typing import Union
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Request, Response
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from strawberry.fastapi import GraphQLRouter
-# from app.graphql.schema import build_context, schema, Context
-
-from app.crud.usersCrud import list_people
-from app.db.postgresql import get_db
-
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.graphql.schema import schema
 from app.graphql.context import build_context
@@ -52,7 +45,7 @@ app.add_middleware(
 graphql_app = GraphQLRouter(
     schema=schema,
     context_getter=build_context,
-    graphiql=True
+    graphql_ide="graphiql",
 )
 app.include_router(graphql_app, prefix="/graphql")
 

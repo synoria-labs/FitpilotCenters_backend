@@ -1,6 +1,7 @@
 """
 Image service for handling profile picture uploads
 """
+import logging
 import os
 import shutil
 from pathlib import Path
@@ -8,6 +9,8 @@ from datetime import datetime
 from typing import Optional, Tuple
 from PIL import Image
 import io
+
+logger = logging.getLogger(__name__)
 
 class ImageService:
     """Service for handling profile picture uploads and management"""
@@ -116,7 +119,7 @@ class ImageService:
             return f"profile_pictures/{filename}"
 
         except Exception as e:
-            print(f"Error processing image: {str(e)}")
+            logger.exception("Error processing image: %s", e)
             return None
 
     def delete_old_picture(self, picture_path: Optional[str]) -> bool:
@@ -139,7 +142,7 @@ class ImageService:
                 full_path.unlink()
             return True
         except Exception as e:
-            print(f"Error deleting old picture: {str(e)}")
+            logger.exception("Error deleting old picture: %s", e)
             return False
 
     def get_full_url(self, picture_path: Optional[str], base_url: str) -> Optional[str]:
@@ -181,6 +184,6 @@ class ImageService:
                     file_path.unlink()
                     deleted_count += 1
         except Exception as e:
-            print(f"Error during cleanup: {str(e)}")
+            logger.exception("Error during cleanup: %s", e)
 
         return deleted_count

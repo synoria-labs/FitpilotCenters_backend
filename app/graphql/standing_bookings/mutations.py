@@ -4,6 +4,7 @@ GraphQL mutations for Standing Bookings
 import strawberry
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
+from strawberry.types import Info
 
 from app.crud.standingBookingsCrud import (
     create_standing_booking,
@@ -11,7 +12,9 @@ from app.crud.standingBookingsCrud import (
     create_standing_booking_exception,
     get_standing_booking_by_id,
     materialize_standing_bookings,
-    get_materialization_preview
+    get_materialization_preview,
+    preview_reschedule_standing_booking,
+    reschedule_standing_booking
 )
 from app.graphql.standing_bookings.types import (
     CreateStandingBookingInput,
@@ -19,14 +22,20 @@ from app.graphql.standing_bookings.types import (
     CreateStandingBookingExceptionInput,
     MaterializeBookingsInput,
     GetMaterializationPreviewInput,
+    RescheduleStandingBookingInput,
     StandingBookingResponse,
     MaterializationResponse,
     MaterializationPreviewResponse,
+    RescheduleStandingBookingPreviewResponse,
+    RescheduleStandingBookingResponse,
     StandingBooking,
     convert_materialization_stats,
-    convert_materialization_preview
+    convert_materialization_preview,
+    convert_reschedule_items,
+    convert_reschedule_counts
 )
 from app.graphql.auth.permissions import IsAuthenticated
+from app.graphql.context import Context
 
 
 @strawberry.type
@@ -36,7 +45,7 @@ class StandingBookingMutation:
     @strawberry.mutation(permission_classes=[IsAuthenticated])
     async def create_standing_booking(
         self,
-        info,
+        info: Info[Context],
         input: CreateStandingBookingInput
     ) -> StandingBookingResponse:
         """Create a new standing booking (reservativo)"""
@@ -92,7 +101,7 @@ class StandingBookingMutation:
     @strawberry.mutation(permission_classes=[IsAuthenticated])
     async def update_standing_booking(
         self,
-        info,
+        info: Info[Context],
         input: UpdateStandingBookingInput
     ) -> StandingBookingResponse:
         """Update a standing booking (change status, template, etc.)"""
@@ -146,7 +155,7 @@ class StandingBookingMutation:
     @strawberry.mutation(permission_classes=[IsAuthenticated])
     async def cancel_standing_booking(
         self,
-        info,
+        info: Info[Context],
         standing_booking_id: int
     ) -> StandingBookingResponse:
         """Cancel a standing booking"""
@@ -198,7 +207,7 @@ class StandingBookingMutation:
     @strawberry.mutation(permission_classes=[IsAuthenticated])
     async def pause_standing_booking(
         self,
-        info,
+        info: Info[Context],
         standing_booking_id: int
     ) -> StandingBookingResponse:
         """Pause a standing booking"""
@@ -250,7 +259,7 @@ class StandingBookingMutation:
     @strawberry.mutation(permission_classes=[IsAuthenticated])
     async def resume_standing_booking(
         self,
-        info,
+        info: Info[Context],
         standing_booking_id: int
     ) -> StandingBookingResponse:
         """Resume a paused standing booking"""
@@ -302,7 +311,7 @@ class StandingBookingMutation:
     @strawberry.mutation(permission_classes=[IsAuthenticated])
     async def create_standing_booking_exception(
         self,
-        info,
+        info: Info[Context],
         input: CreateStandingBookingExceptionInput
     ) -> StandingBookingResponse:
         """Create an exception for a standing booking (skip or reschedule a specific date)"""
@@ -316,6 +325,7 @@ class StandingBookingMutation:
                 session_date=input.session_date,
                 action=input.action,
                 new_session_id=input.new_session_id,
+                new_seat_id=input.new_seat_id,
                 notes=input.notes
             )
 
@@ -357,7 +367,7 @@ class StandingBookingMutation:
     @strawberry.mutation(permission_classes=[IsAuthenticated])
     async def materialize_standing_bookings(
         self,
-        info,
+        info: Info[Context],
         input: MaterializeBookingsInput
     ) -> MaterializationResponse:
         """
@@ -394,7 +404,7 @@ class StandingBookingMutation:
     @strawberry.mutation(permission_classes=[IsAuthenticated])
     async def get_materialization_preview(
         self,
-        info,
+        info: Info[Context],
         input: GetMaterializationPreviewInput
     ) -> MaterializationPreviewResponse:
         """
@@ -420,4 +430,62 @@ class StandingBookingMutation:
             return MaterializationPreviewResponse(
                 preview=[],
                 total_sessions=0
+            )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated])
+    async def preview_reschedule_standing_booking(
+        self,
+        info: Info[Context],
+        input: RescheduleStandingBookingInput
+    ) -> RescheduleStandingBookingPreviewResponse:
+        """Preview a batch reschedule for a standing booking."""
+        db: AsyncSession = info.context.db
+
+        try:
+            result = await preview_reschedule_standing_booking(
+                db=db,
+                standing_booking_id=input.standing_booking_id,
+                start_date=input.start_date,
+                end_date=input.end_date,
+                target_template_id=input.target_template_id,
+                target_seat_id=input.target_seat_id
+            )
+            return RescheduleStandingBookingPreviewResponse(
+                items=convert_reschedule_items(result.get("items") or []),
+                counts=convert_reschedule_counts(result.get("counts") or {})
+            )
+        except Exception:
+            return RescheduleStandingBookingPreviewResponse(items=[], counts=[])
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated])
+    async def reschedule_standing_booking(
+        self,
+        info: Info[Context],
+        input: RescheduleStandingBookingInput
+    ) -> RescheduleStandingBookingResponse:
+        """Reschedule one or more dates for a standing booking."""
+        db: AsyncSession = info.context.db
+
+        try:
+            result = await reschedule_standing_booking(
+                db=db,
+                standing_booking_id=input.standing_booking_id,
+                start_date=input.start_date,
+                end_date=input.end_date,
+                target_template_id=input.target_template_id,
+                target_seat_id=input.target_seat_id,
+                strict=input.strict
+            )
+            return RescheduleStandingBookingResponse(
+                success=bool(result.get("success")),
+                items=convert_reschedule_items(result.get("items") or []),
+                counts=convert_reschedule_counts(result.get("counts") or {}),
+                message=result.get("message") or ""
+            )
+        except Exception as e:
+            return RescheduleStandingBookingResponse(
+                success=False,
+                items=[],
+                counts=[],
+                message=str(e)
             )

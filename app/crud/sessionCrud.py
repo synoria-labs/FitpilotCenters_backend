@@ -1,4 +1,5 @@
 
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -7,6 +8,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.sessionModel import Session
+
+logger = logging.getLogger(__name__)
 
 
 async def create_session(db: AsyncSession, sessionEntry: Session) -> Session:
@@ -46,7 +49,7 @@ async def update_last_active_at(db: AsyncSession, session_id: str) -> None:
     Note: Does NOT commit or flush - changes will be committed when the session closes.
     This function is typically called from build_context() which shares the request session.
     """
-    print("session_id in update_last_active_at", session_id)
+    logger.debug("Updating last_active_at for session %s", session_id)
     stmt = update(Session).where(Session.session == session_id).values(last_active_at=func.now())
     await db.execute(stmt)
     # No flush, no commit - just queue the update
@@ -57,11 +60,11 @@ async def touch_session(db: AsyncSession, session_id: str) -> None:
 
     Note: Does NOT commit or flush - changes will be committed when the session closes.
     """
-    timestamp = datetime.now(timezone.utc).isoformat()
+    timestamp = datetime.now(timezone.utc)
     await db.execute(
         update(Session)
         .where(Session.session == session_id)
-        .values(last_active_at=timestamp, updated_at=datetime.utcnow())
+        .values(last_active_at=timestamp, updated_at=timestamp)
     )
     # No flush, no commit - just queue the update
 
@@ -71,11 +74,11 @@ async def revoke_session(db: AsyncSession, session_id: str) -> None:
 
     Note: Does NOT commit or flush - changes will be committed when the session closes.
     """
-    timestamp = datetime.now(timezone.utc).isoformat()
+    timestamp = datetime.now(timezone.utc)
     await db.execute(
         update(Session)
         .where(Session.session == session_id)
-        .values(revoked_at=timestamp, updated_at=datetime.utcnow())
+        .values(revoked_at=timestamp, updated_at=timestamp)
     )
     # No flush, no commit - just queue the update
 

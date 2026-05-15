@@ -2,6 +2,7 @@ from typing import List, Optional
 import strawberry
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from strawberry.types import Info
 
 from app.graphql.auth.permissions import IsAuthenticated
 from app.graphql.sessions.types import SessionInfo
@@ -15,7 +16,7 @@ logger = get_logger("graphql.sessions.queries")
 @strawberry.type
 class SessionQuery:
     @strawberry.field(permission_classes=[IsAuthenticated])
-    async def my_sessions(self, info) -> List[SessionInfo]:
+    async def my_sessions(self, info: Info) -> List[SessionInfo]:
         """Obtiene todas las sesiones activas del usuario autenticado."""
         db: AsyncSession = info.context.db
         user = info.context.user
@@ -53,7 +54,7 @@ class SessionQuery:
         ]
 
     @strawberry.field(permission_classes=[IsAuthenticated])
-    async def all_sessions(self, info) -> List[SessionInfo]:
+    async def all_sessions(self, info: Info) -> List[SessionInfo]:
         """Obtiene todas las sesiones (solo para administradores)."""
         db: AsyncSession = info.context.db
 

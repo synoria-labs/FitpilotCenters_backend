@@ -5,6 +5,7 @@ import strawberry
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, List
 from datetime import datetime, timedelta, timezone
+from strawberry.types import Info
 
 from app.crud.reservationsCrud import (
     get_reservation_by_id,
@@ -24,6 +25,7 @@ from app.graphql.reservations.types import (
     SeatsResponse
 )
 from app.graphql.auth.permissions import IsAuthenticated
+from app.graphql.context import Context
 
 
 @strawberry.type
@@ -33,7 +35,7 @@ class ReservationQuery:
     @strawberry.field(permission_classes=[IsAuthenticated])
     async def reservation(
         self,
-        info,
+        info: Info[Context],
         id: int
     ) -> Optional[Reservation]:
         """Get a reservation by ID"""
@@ -50,7 +52,7 @@ class ReservationQuery:
     @strawberry.field(permission_classes=[IsAuthenticated])
     async def reservations(
         self,
-        info,
+        info: Info[Context],
         input: Optional[GetReservationsInput] = None
     ) -> ReservationsResponse:
         """Get reservations with filters"""
@@ -98,7 +100,7 @@ class ReservationQuery:
     @strawberry.field(permission_classes=[IsAuthenticated])
     async def available_sessions(
         self,
-        info,
+        info: Info[Context],
         input: Optional[GetSessionsInput] = None
     ) -> SessionsResponse:
         """Get available sessions with capacity information"""
@@ -138,7 +140,7 @@ class ReservationQuery:
     @strawberry.field(permission_classes=[IsAuthenticated])
     async def available_seats(
         self,
-        info,
+        info: Info[Context],
         session_id: int
     ) -> SeatsResponse:
         """Get available seats for a specific session"""
@@ -165,7 +167,7 @@ class ReservationQuery:
     @strawberry.field(permission_classes=[IsAuthenticated])
     async def person_reservations(
         self,
-        info,
+        info: Info[Context],
         person_id: int,
         include_past: bool = False,
         include_canceled: bool = False,
@@ -191,7 +193,7 @@ class ReservationQuery:
     @strawberry.field(permission_classes=[IsAuthenticated])
     async def session_reservations(
         self,
-        info,
+        info: Info[Context],
         session_id: int,
         include_canceled: bool = False
     ) -> List[Reservation]:
@@ -213,7 +215,7 @@ class ReservationQuery:
     @strawberry.field(permission_classes=[IsAuthenticated])
     async def upcoming_sessions(
         self,
-        info,
+        info: Info[Context],
         days_ahead: int = 7,
         class_type_id: Optional[int] = None,
         venue_id: Optional[int] = None
