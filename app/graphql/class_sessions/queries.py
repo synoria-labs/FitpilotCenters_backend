@@ -31,6 +31,41 @@ from app.crud.reservationsCrud import (
     get_week_sessions_with_seats
 )
 
+def _to_session_with_seats_items(data: List[dict]) -> List[SessionWithSeats]:
+    gql_items: List[SessionWithSeats] = []
+    for item in data:
+        seats: List[SeatInfo] = []
+        for s in item.get('seats', []):
+            occ = s.get('occupant')
+            seats.append(
+                SeatInfo(
+                    seat_id=s['seat_id'],
+                    label=s['label'],
+                    status=s['status'],
+                    occupant=SeatOccupant(
+                        person_id=occ['person_id'],
+                        full_name=occ.get('full_name')
+                    ) if occ else None,
+                    will_expire_soon=bool(s.get('will_expire_soon', False))
+                )
+            )
+
+        gql_items.append(
+            SessionWithSeats(
+                id=item['id'],
+                name=item.get('name'),
+                start_at=item['start_at'],
+                end_at=item['end_at'],
+                capacity=item['capacity'],
+                venue_id=item['venue_id'],
+                template_id=item.get('template_id'),
+                class_type_name=item.get('class_type_name'),
+                seats=seats
+            )
+        )
+
+    return gql_items
+
 
 @strawberry.type
 class ClassSessionQueries:
@@ -188,40 +223,7 @@ class ClassSessionQueries:
         """Get sessions for a date including per-seat occupancy and expiry flag."""
         db = info.context.db
         data = await get_sessions_with_seats_by_date(db, date, venue_id)
-
-        gql_items: List[SessionWithSeats] = []
-        for item in data:
-            seats: List[SeatInfo] = []
-            for s in item.get('seats', []):
-                occ = s.get('occupant')
-                seats.append(
-                    SeatInfo(
-                        seat_id=s['seat_id'],
-                        label=s['label'],
-                        status=s['status'],
-                        occupant=SeatOccupant(
-                            person_id=occ['person_id'],
-                            full_name=occ.get('full_name')
-                        ) if occ else None,
-                        will_expire_soon=bool(s.get('will_expire_soon', False))
-                    )
-                )
-
-            gql_items.append(
-                SessionWithSeats(
-                    id=item['id'],
-                    name=item.get('name'),
-                    start_at=item['start_at'],
-                    end_at=item['end_at'],
-                    capacity=item['capacity'],
-                    venue_id=item['venue_id'],
-                    template_id=item.get('template_id'),
-                    class_type_name=item.get('class_type_name'),
-                    seats=seats
-                )
-            )
-
-        return gql_items
+        return _to_session_with_seats_items(data)
 
     @strawberry.field(permission_classes=[IsAuthenticated])
     async def week_sessions_with_seats(
@@ -238,37 +240,4 @@ class ClassSessionQueries:
         """
         db = info.context.db
         data = await get_week_sessions_with_seats(db, start_date, end_date, class_type_id, venue_id)
-
-        gql_items: List[SessionWithSeats] = []
-        for item in data:
-            seats: List[SeatInfo] = []
-            for s in item.get('seats', []):
-                occ = s.get('occupant')
-                seats.append(
-                    SeatInfo(
-                        seat_id=s['seat_id'],
-                        label=s['label'],
-                        status=s['status'],
-                        occupant=SeatOccupant(
-                            person_id=occ['person_id'],
-                            full_name=occ.get('full_name')
-                        ) if occ else None,
-                        will_expire_soon=bool(s.get('will_expire_soon', False))
-                    )
-                )
-
-            gql_items.append(
-                SessionWithSeats(
-                    id=item['id'],
-                    name=item.get('name'),
-                    start_at=item['start_at'],
-                    end_at=item['end_at'],
-                    capacity=item['capacity'],
-                    venue_id=item['venue_id'],
-                    template_id=item.get('template_id'),
-                    class_type_name=item.get('class_type_name'),
-                    seats=seats
-                )
-            )
-
-        return gql_items
+        return _to_session_with_seats_items(data)

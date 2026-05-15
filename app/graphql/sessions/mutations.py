@@ -1,5 +1,6 @@
 import strawberry
 from sqlalchemy.ext.asyncio import AsyncSession
+from strawberry.types import Info
 
 from app.graphql.auth.permissions import IsAuthenticated
 from app.graphql.sessions.types import RevokeSessionInput
@@ -13,7 +14,7 @@ logger = get_logger("graphql.sessions.mutations")
 @strawberry.type
 class SessionMutation:
     @strawberry.mutation(permission_classes=[IsAuthenticated])
-    async def revoke_session(self, info, input: RevokeSessionInput) -> bool:
+    async def revoke_session(self, info: Info, input: RevokeSessionInput) -> bool:
         """Revoca una sesión específica."""
         db: AsyncSession = info.context.db
         user = info.context.user
