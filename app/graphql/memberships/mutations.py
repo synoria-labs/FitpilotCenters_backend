@@ -1,7 +1,10 @@
-﻿from datetime import datetime, timezone
+
+from datetime import datetime, timezone
+import json
 
 import strawberry
 from sqlalchemy.ext.asyncio import AsyncSession
+from strawberry.types import Info
 
 from app.crud.membershipsCrud import (
     create_membership_plan,
@@ -10,7 +13,9 @@ from app.crud.membershipsCrud import (
     create_member_enrollment,
     create_member_enrollment_with_standing_booking,
     renew_subscription_with_standing_booking,
-    SubscriptionData
+    SubscriptionData,
+    update_payment,
+    delete_payment
 )
 from app.crud.membersCrud import get_member_by_id
 from app.graphql.memberships.types import (
@@ -18,16 +23,41 @@ from app.graphql.memberships.types import (
     CreateMemberEnrollmentInput, RenewSubscriptionInput,
     MembershipPlanResponse, SubscriptionResponse,
     MemberEnrollmentResponse, SubscriptionRenewalResponse,
-    MembershipPlan, Subscription, PaymentRecord
+    MembershipPlan, Subscription, PaymentRecord,
+    UpdatePaymentInput, PaymentMutationResponse
 )
 from app.graphql.members.types import Member
 from app.graphql.auth.permissions import IsAuthenticated
 
 
+def _classify_renewal_error(error_text: str) -> tuple[str, str]:
+    """Map low-level renewal errors to stable codes and user-facing causes."""
+    normalized = (error_text or "").lower()
+
+    availability_markers = (
+        "already reserved by another person",
+        "no se pudieron crear los standing bookings",
+        "no se pudieron materializar las reservas",
+        "sin cupo",
+        "asientos ocupados",
+        "seat",
+    )
+    if any(marker in normalized for marker in availability_markers):
+        return "NO_AVAILABILITY", "Falta de disponibilidad"
+
+    if "debe seleccionar un horario" in normalized:
+        return "MISSING_TEMPLATE", "Falta seleccionar horario"
+
+    if "no active subscription found" in normalized:
+        return "NO_ACTIVE_SUBSCRIPTION", "No se encontro suscripcion activa"
+
+    return "RENEWAL_FAILED", "Error al renovar"
+
+
 @strawberry.type
 class MembershipMutation:
     @strawberry.mutation(permission_classes=[IsAuthenticated])
-    async def create_membership_plan(self, info, input: CreateMembershipPlanInput) -> MembershipPlanResponse:
+    async def create_membership_plan(self, info: Info, input: CreateMembershipPlanInput) -> MembershipPlanResponse:
         """Create a new membership plan"""
         db: AsyncSession = info.context.db
 
@@ -62,7 +92,7 @@ class MembershipMutation:
             )
 
     @strawberry.mutation(permission_classes=[IsAuthenticated])
-    async def create_subscription(self, info, input: CreateSubscriptionInput) -> SubscriptionResponse:
+    async def create_subscription(self, info: Info, input: CreateSubscriptionInput) -> SubscriptionResponse:
         """Create a new membership subscription"""
         db: AsyncSession = info.context.db
 
@@ -119,7 +149,7 @@ class MembershipMutation:
             )
 
     @strawberry.mutation(permission_classes=[IsAuthenticated])
-    async def create_member_enrollment(self, info, input: CreateMemberEnrollmentInput) -> MemberEnrollmentResponse:
+    async def create_member_enrollment(self, info: Info, input: CreateMemberEnrollmentInput) -> MemberEnrollmentResponse:
         """Create member, subscription and payment; optionally create standing bookings + sessions like renewal."""
         db: AsyncSession = info.context.db
 
@@ -224,7 +254,7 @@ class MembershipMutation:
             )
 
     @strawberry.mutation(permission_classes=[IsAuthenticated])
-    async def renew_subscription(self, info, input: RenewSubscriptionInput) -> SubscriptionRenewalResponse:
+    async def renew_subscription(self, info: Info, input: RenewSubscriptionInput) -> SubscriptionRenewalResponse:
         """Renew a member's subscription."""
         db: AsyncSession = info.context.db
 
@@ -280,8 +310,8 @@ class MembershipMutation:
             )
 
             # Prepare response message with standing booking info embedded as JSON
-            import json
             response_data = {
+                "success": True,
                 "text": "Suscripción renovada exitosamente",
                 "standingBookingId": standing_booking_id,  # Backward compatibility: first ID
                 "standingBookingIds": materialization_stats.get("standing_booking_ids", []),  # NEW: all IDs
@@ -290,9 +320,16 @@ class MembershipMutation:
             message_with_data = json.dumps(response_data)
 
             return SubscriptionRenewalResponse(
+                success=True,
                 subscription=Subscription.from_data(subscription_data),
                 payment=PaymentRecord.from_model(payment),
-                message=message_with_data
+                message=message_with_data,
+                standingBookingId=standing_booking_id,
+                materializationStats=(
+                    json.dumps(materialization_stats)
+                    if materialization_stats is not None
+                    else None
+                ),
             )
 
         except Exception as e:
@@ -302,8 +339,92 @@ class MembershipMutation:
 
             await db.rollback()
 
+            error_text = str(e)
+            error_code, cause = _classify_renewal_error(error_text)
+            error_payload = {
+                "success": False,
+                "text": f"{cause}.",
+                "errorCode": error_code,
+                "cause": cause,
+                "details": error_text,
+            }
+
             return SubscriptionRenewalResponse(
+                success=False,
                 subscription=None,
                 payment=None,
-                message=f"Error al renovar suscripción: {str(e)}"
+                message=json.dumps(error_payload),
+                standingBookingId=None,
+                materializationStats=None,
+            )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated])
+    async def update_payment(self, info: Info, input: UpdatePaymentInput) -> PaymentMutationResponse:
+        """Update an existing payment."""
+        db: AsyncSession = info.context.db
+        
+        try:
+            from sqlalchemy.orm import selectinload
+            payment = await update_payment(
+                db=db,
+                payment_id=input.payment_id,
+                amount=input.amount,
+                method=input.method,
+                status=input.status,
+                comment=input.comment,
+                commit=True
+            )
+            
+            if not payment:
+                return PaymentMutationResponse(
+                    success=False,
+                    payment=None,
+                    message="Pago no encontrado."
+                )
+                
+            # Eager load the person
+            from app.models import Payment as PaymentModel
+            from sqlalchemy import select
+            stmt = select(PaymentModel).options(selectinload(PaymentModel.person)).where(PaymentModel.id == payment.id)
+            result = await db.execute(stmt)
+            payment_with_person = result.scalar_one()
+
+            return PaymentMutationResponse(
+                success=True,
+                payment=PaymentRecord.from_model(payment_with_person),
+                message="Pago actualizado exitosamente."
+            )
+        except Exception as e:
+            await db.rollback()
+            return PaymentMutationResponse(
+                success=False,
+                payment=None,
+                message=f"Error al actualizar pago: {str(e)}"
+            )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated])
+    async def delete_payment(self, info: Info, payment_id: int) -> PaymentMutationResponse:
+        """Delete an existing payment."""
+        db: AsyncSession = info.context.db
+        
+        try:
+            success = await delete_payment(db=db, payment_id=payment_id, commit=True)
+            if success:
+                return PaymentMutationResponse(
+                    success=True,
+                    payment=None,
+                    message="Pago eliminado exitosamente."
+                )
+            else:
+                return PaymentMutationResponse(
+                    success=False,
+                    payment=None,
+                    message="Pago no encontrado."
+                )
+        except Exception as e:
+            await db.rollback()
+            return PaymentMutationResponse(
+                success=False,
+                payment=None,
+                message=f"Error al eliminar pago: {str(e)}"
             )
