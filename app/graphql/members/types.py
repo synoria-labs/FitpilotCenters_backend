@@ -48,17 +48,13 @@ class MembershipInfo:
 
     @strawberry.field
     def status(self) -> str:
-        """Calculate real status based on end_date, not just DB status."""
+        """Calculate real status based on end_date using local calendar dates."""
         if self.end_date:
-            from datetime import timezone
-            now = datetime.now(timezone.utc)
+            from datetime import date as date_type
+            today = date_type.today()
+            end_local = self.end_date.astimezone().date() if self.end_date.tzinfo else self.end_date.date()
 
-            # Make end_date timezone-aware if it isn't already
-            end_date_aware = self.end_date
-            if end_date_aware.tzinfo is None:
-                end_date_aware = end_date_aware.replace(tzinfo=timezone.utc)
-
-            if end_date_aware < now:
+            if end_local < today:
                 return "expired"
             else:
                 return "active"
@@ -68,18 +64,12 @@ class MembershipInfo:
 
     @strawberry.field
     def remaining_days(self) -> Optional[int]:
-        """Calculate real remaining days based on end_date."""
+        """Calculate remaining days using local calendar dates."""
         if self.end_date:
-            from datetime import timezone
-            now = datetime.now(timezone.utc)
-
-            # Make end_date timezone-aware if it isn't already
-            end_date_aware = self.end_date
-            if end_date_aware.tzinfo is None:
-                end_date_aware = end_date_aware.replace(tzinfo=timezone.utc)
-
-            delta = end_date_aware - now
-            return delta.days
+            from datetime import date as date_type
+            today = date_type.today()
+            end_local = self.end_date.astimezone().date() if self.end_date.tzinfo else self.end_date.date()
+            return (end_local - today).days
 
         return None
 
@@ -156,8 +146,11 @@ class UpdateMemberInput:
 
 @strawberry.type
 class MemberResponse:
-    member: Member
-    message: str
+    success: bool = False
+    member: Optional[Member] = None
+    message: str = ""
+    error_code: Optional[str] = None
+    error_cause: Optional[str] = None
 
 
 @strawberry.type

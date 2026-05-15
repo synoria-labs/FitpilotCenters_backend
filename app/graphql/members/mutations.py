@@ -1,10 +1,13 @@
-from typing import Optional
+﻿from typing import Optional
 from datetime import datetime, timezone
+import logging
+import time
 
 import strawberry
 from strawberry.file_uploads import Upload
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import update
+from strawberry.types import Info
 
 from app.crud.membersCrud import create_member, update_member, delete_member_and_related
 from app.graphql.members.types import Member, MemberResponse, DeleteMemberResponse
@@ -14,6 +17,8 @@ from app.security.hashing import verify_password
 from app.services.image_service import ImageService
 from app.models import People
 from app.core.conversions import coerce_int
+
+logger = logging.getLogger(__name__)
 
 
 @strawberry.input
@@ -45,20 +50,24 @@ async def _build_member_response(
     member_data = await get_member_by_id(db=db, member_id=member_id)
     if not member_data:
         return MemberResponse(
+            success=False,
             member=None,
-            message=missing_message
+            message=missing_message,
+            error_code="MEMBER_NOT_FOUND",
+            error_cause="Socio no encontrado",
         )
 
     return MemberResponse(
+        success=True,
         member=Member.from_data(member_data),
-        message=success_message
+        message=success_message,
     )
 
 
 @strawberry.type
 class MemberMutation:
     @strawberry.mutation(permission_classes=[IsAuthenticated])
-    async def create_member(self, info, input: CreateMemberInput) -> MemberResponse:
+    async def create_member(self, info: Info, input: CreateMemberInput) -> MemberResponse:
         """Create a new member"""
         db: AsyncSession = info.context.db
 
@@ -80,57 +89,114 @@ class MemberMutation:
 
         except Exception as e:
             return MemberResponse(
+                success=False,
                 member=None,
-                message=f"Error al crear miembro: {str(e)}"
+                message=f"Error al crear miembro: {str(e)}",
+                error_code="CREATE_FAILED",
+                error_cause="Error al crear socio",
             )
 
     @strawberry.mutation(permission_classes=[IsAuthenticated])
-    async def update_member(self, info, member_id: int, input: UpdateMemberInput) -> MemberResponse:
-        """Update member information"""
+    async def update_member(self, info: Info, member_id: int, input: UpdateMemberInput) -> MemberResponse:
+        """Update member information with explicit success/error metadata."""
         db: AsyncSession = info.context.db
+        started_at = time.perf_counter()
+        response = MemberResponse(
+            success=False,
+            member=None,
+            message="No se guardaron los cambios.",
+            error_code="UPDATE_FAILED",
+            error_cause="Error al actualizar socio",
+        )
 
         member_id = coerce_int(member_id)
         if member_id is None:
-            return MemberResponse(
+            response = MemberResponse(
+                success=False,
                 member=None,
-                message="ID de miembro inválido"
+                message="No se guardaron los cambios. Causa: ID de socio invalido.",
+                error_code="VALIDATION_ERROR",
+                error_cause="ID de socio invalido",
             )
+            duration_ms = (time.perf_counter() - started_at) * 1000
+            logger.info(
+                "update_member member_id=%s success=%s error_code=%s duration_ms=%.2f",
+                member_id,
+                response.success,
+                response.error_code,
+                duration_ms,
+            )
+            return response
 
         try:
-            # Build update dict
             update_data = {}
             if input.full_name is not None:
-                update_data['full_name'] = input.full_name
+                update_data["full_name"] = input.full_name
             if input.email is not None:
-                update_data['email'] = input.email
+                update_data["email"] = input.email
             if input.phone_number is not None:
-                update_data['phone_number'] = input.phone_number
+                update_data["phone_number"] = input.phone_number
             if input.wa_id is not None:
-                update_data['wa_id'] = input.wa_id
+                update_data["wa_id"] = input.wa_id
+
+            if not update_data:
+                response = MemberResponse(
+                    success=False,
+                    member=None,
+                    message="No se guardaron los cambios. Causa: no se enviaron campos para actualizar.",
+                    error_code="VALIDATION_ERROR",
+                    error_cause="Sin datos para actualizar",
+                )
+                return response
+
+            logger.info(
+                "update_member requested member_id=%s fields=%s",
+                member_id,
+                sorted(update_data.keys()),
+            )
 
             person = await update_member(db=db, member_id=member_id, **update_data)
 
             if not person:
-                return MemberResponse(
+                response = MemberResponse(
+                    success=False,
                     member=None,
-                    message="Miembro no encontrado"
+                    message="No se guardaron los cambios. Causa: socio no encontrado.",
+                    error_code="MEMBER_NOT_FOUND",
+                    error_cause="Socio no encontrado",
                 )
+                return response
 
-            return await _build_member_response(
+            response = await _build_member_response(
                 db=db,
                 member_id=person.id,
                 success_message="Miembro actualizado exitosamente",
                 missing_message="Error al obtener datos del miembro actualizado",
             )
+            return response
 
         except Exception as e:
-            return MemberResponse(
+            await db.rollback()
+            response = MemberResponse(
+                success=False,
                 member=None,
-                message=f"Error al actualizar miembro: {str(e)}"
+                message=f"No se guardaron los cambios. Causa: {str(e)}",
+                error_code="UPDATE_FAILED",
+                error_cause="Error al actualizar socio",
+            )
+            return response
+        finally:
+            duration_ms = (time.perf_counter() - started_at) * 1000
+            logger.info(
+                "update_member member_id=%s success=%s error_code=%s duration_ms=%.2f",
+                member_id,
+                response.success,
+                response.error_code,
+                duration_ms,
             )
 
     @strawberry.mutation(name="deleteMember", permission_classes=[IsAuthenticated])
-    async def delete_member(self, info, member_id: int, admin_password: str) -> DeleteMemberResponse:
+    async def delete_member(self, info: Info, member_id: int, admin_password: str) -> DeleteMemberResponse:
         """Delete a member after validating administrator password."""
         db: AsyncSession = info.context.db
 
@@ -178,7 +244,7 @@ class MemberMutation:
         return DeleteMemberResponse(success=success, message=message)
 
     @strawberry.mutation(permission_classes=[IsAuthenticated])
-    async def upload_profile_picture(self, info, member_id: int, file: Upload) -> MemberResponse:
+    async def upload_profile_picture(self, info: Info, member_id: int, file: Upload) -> MemberResponse:
         """Upload or update a member's profile picture"""
         db: AsyncSession = info.context.db
         image_service = ImageService()
@@ -186,8 +252,11 @@ class MemberMutation:
         member_id = coerce_int(member_id)
         if member_id is None:
             return MemberResponse(
+                success=False,
                 member=None,
-                message="ID de miembro inválido"
+                message="ID de miembro invalido",
+                error_code="VALIDATION_ERROR",
+                error_cause="ID de socio invalido",
             )
 
         try:
@@ -198,8 +267,11 @@ class MemberMutation:
             is_valid, error_message = image_service.validate_image(file_data, file.filename)
             if not is_valid:
                 return MemberResponse(
+                    success=False,
                     member=None,
-                    message=f"Archivo inválido: {error_message}"
+                    message=f"Archivo invalido: {error_message}",
+                    error_code="VALIDATION_ERROR",
+                    error_cause="Archivo invalido",
                 )
 
             # Get current member to check old picture
@@ -207,8 +279,11 @@ class MemberMutation:
             member_data = await get_member_by_id(db=db, member_id=member_id)
             if not member_data:
                 return MemberResponse(
+                    success=False,
                     member=None,
-                    message="Miembro no encontrado"
+                    message="Miembro no encontrado",
+                    error_code="MEMBER_NOT_FOUND",
+                    error_cause="Socio no encontrado",
                 )
 
             # Delete old picture if exists
@@ -224,8 +299,11 @@ class MemberMutation:
 
             if not new_path:
                 return MemberResponse(
+                    success=False,
                     member=None,
-                    message="Error al procesar la imagen"
+                    message="Error al procesar la imagen",
+                    error_code="UPLOAD_FAILED",
+                    error_cause="Error al procesar la imagen",
                 )
 
             # Update database
@@ -250,12 +328,15 @@ class MemberMutation:
         except Exception as e:
             await db.rollback()
             return MemberResponse(
+                success=False,
                 member=None,
-                message=f"Error al cargar foto: {str(e)}"
+                message=f"Error al cargar foto: {str(e)}",
+                error_code="UPLOAD_FAILED",
+                error_cause="Error al cargar foto",
             )
 
     @strawberry.mutation(permission_classes=[IsAuthenticated])
-    async def delete_profile_picture(self, info, member_id: int) -> MemberResponse:
+    async def delete_profile_picture(self, info: Info, member_id: int) -> MemberResponse:
         """Delete a member's profile picture"""
         db: AsyncSession = info.context.db
         image_service = ImageService()
@@ -263,8 +344,11 @@ class MemberMutation:
         member_id = coerce_int(member_id)
         if member_id is None:
             return MemberResponse(
+                success=False,
                 member=None,
-                message="ID de miembro inválido"
+                message="ID de miembro invalido",
+                error_code="VALIDATION_ERROR",
+                error_cause="ID de socio invalido",
             )
 
         try:
@@ -273,8 +357,11 @@ class MemberMutation:
             member_data = await get_member_by_id(db=db, member_id=member_id)
             if not member_data:
                 return MemberResponse(
+                    success=False,
                     member=None,
-                    message="Miembro no encontrado"
+                    message="Miembro no encontrado",
+                    error_code="MEMBER_NOT_FOUND",
+                    error_cause="Socio no encontrado",
                 )
 
             # Delete picture file if exists
@@ -303,6 +390,10 @@ class MemberMutation:
         except Exception as e:
             await db.rollback()
             return MemberResponse(
+                success=False,
                 member=None,
-                message=f"Error al eliminar foto: {str(e)}"
+                message=f"Error al eliminar foto: {str(e)}",
+                error_code="DELETE_PICTURE_FAILED",
+                error_cause="Error al eliminar foto",
             )
+
