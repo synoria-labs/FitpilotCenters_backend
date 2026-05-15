@@ -22,6 +22,7 @@ from app.graphql.standing_bookings.queries import StandingBookingQuery
 from app.graphql.standing_bookings.mutations import StandingBookingMutation
 from app.graphql.sessions.queries import SessionQuery
 from app.graphql.sessions.mutations import SessionMutation
+from app.graphql.dashboard.queries import DashboardQuery
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,7 @@ except ImportError as e:
         pass
 
 @strawberry.type
-class Query(UserQuery, MembersQuery, MembershipsQuery, LeadsQuery, ReservationQuery, StandingBookingQuery, SessionQuery, ClassSessionQueries):
+class Query(UserQuery, MembersQuery, MembershipsQuery, LeadsQuery, ReservationQuery, StandingBookingQuery, SessionQuery, ClassSessionQueries, DashboardQuery):
     @strawberry.field
     def hello(self) -> str:
         return "Hello from GraphQL!"
