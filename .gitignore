@@ -79,3 +79,19 @@ node_modules/
 migration/00_backup.sh
 migration/99_run_migration.sh
 list_backup_tables.py
+
+# --- Investigation / debug scripts (one-off tools, not source code) ---
+analyze_*.py
+debug_*.py
+fix_*.py
+inspect_*.py
+get_migrated_*.py
+find_*.py
+
+# --- Investigation / debug outputs ---
+*_report.txt
+*_dump.txt
+debug_output*.txt
+fix_proposal.txt
+final_verification.txt
+migrated_names.txt
