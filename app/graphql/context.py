@@ -1,8 +1,9 @@
 from dataclasses import dataclass
-import datetime
 from strawberry.fastapi import BaseContext
-from fastapi import Depends, Request, Response
+from fastapi import Depends, Response
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import HTTPConnection, Request
+from starlette.websockets import WebSocket
 
 from app.security.jwt import (
     create_access_token,
@@ -24,17 +25,22 @@ logger = get_logger("graphql.context")
 @dataclass
 class Context(BaseContext):
     db: AsyncSession
-    request: Request
-    response: Response
+    request: Request | WebSocket
+    response: Response | None
     user: object = None
     account_id: int = None
 
 
-async def _mint_access_from_refresh(db: AsyncSession, request: Request, response: Response, refresh_token: str):
+async def _mint_access_from_refresh(
+    db: AsyncSession,
+    request: HTTPConnection,
+    response: Response | None,
+    refresh_token: str,
+):
     payload_refresh = verify_refresh_token(refresh_token)
     if payload_refresh is None:
         logger.warning("Invalid refresh token provided; skipping context auth")
-        return None, None, None
+        return None, None
 
     session_id = str(payload_refresh.get("session_id"))
     verified_session = await verify_session(db, session_id)
@@ -45,7 +51,7 @@ async def _mint_access_from_refresh(db: AsyncSession, request: Request, response
     if verified_session and (verified_session.deleted_at is not None or verified_session.revoked_at is not None):
         status = "deleted" if verified_session.deleted_at else "revoked"
         logger.warning("Attempted to use %s session: %s", status, session_id[:8])
-        return None, None, None
+        return None, None
 
     person_id = payload_refresh.get("person_id")
     username = payload_refresh.get("username")
@@ -72,31 +78,32 @@ async def _mint_access_from_refresh(db: AsyncSession, request: Request, response
     except Exception as e:
         logger.warning("Failed to update last_active_at for session %s: %s", session_id[:8], e)
 
-    cookie_secure = get_cookie_secure_setting()
-    cookie_samesite = get_cookie_samesite_setting()
-    response.set_cookie(
-        key="access_token",
-        value=new_access_token,
-        httponly=True,
-        secure=cookie_secure,
-        samesite=cookie_samesite,
-        max_age=get_access_cookie_max_age_seconds(),
-    )
-    response.headers["x-access-token"] = new_access_token
+    if response is not None:
+        cookie_secure = get_cookie_secure_setting()
+        cookie_samesite = get_cookie_samesite_setting()
+        response.set_cookie(
+            key="access_token",
+            value=new_access_token,
+            httponly=True,
+            secure=cookie_secure,
+            samesite=cookie_samesite,
+            max_age=get_access_cookie_max_age_seconds(),
+        )
+        response.headers["x-access-token"] = new_access_token
 
-    return user, account_id, new_access_token
+    return user, account_id
 
 
 async def build_context(
-    request: Request,
-    response: Response,
+    connection: HTTPConnection,
+    response: Response = None,
     db: AsyncSession = Depends(get_db),
 ) -> Context:
+    request = connection
     refresh_token = request.cookies.get("refresh_token")
 
     user = None
     account_id = None
-    new_access_token = None
 
     # Priorizar cookies HTTP-Only, luego headers para compatibilidad
     access_token = request.cookies.get("access_token")
@@ -130,10 +137,10 @@ async def build_context(
         else:
             # Access token invalid/expired -> attempt refresh
             if refresh_token:
-                user, account_id, new_access_token = await _mint_access_from_refresh(db, request, response, refresh_token)
+                user, account_id = await _mint_access_from_refresh(db, request, response, refresh_token)
     elif refresh_token:
         # No access token present but refresh_cookie exists -> proactively mint new access token
-        user, account_id, new_access_token = await _mint_access_from_refresh(db, request, response, refresh_token)
+        user, account_id = await _mint_access_from_refresh(db, request, response, refresh_token)
 
     return Context(db=db, request=request, response=response, user=user, account_id=account_id)
 

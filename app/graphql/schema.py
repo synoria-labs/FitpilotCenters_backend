@@ -23,6 +23,9 @@ from app.graphql.standing_bookings.mutations import StandingBookingMutation
 from app.graphql.sessions.queries import SessionQuery
 from app.graphql.sessions.mutations import SessionMutation
 from app.graphql.dashboard.queries import DashboardQuery
+from app.graphql.whatsapp.queries import WhatsAppChatQuery
+from app.graphql.whatsapp.mutations import WhatsAppChatMutation
+from app.graphql.whatsapp.subscriptions import WhatsAppChatSubscription
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +48,20 @@ except ImportError as e:
         pass
 
 @strawberry.type
-class Query(UserQuery, MembersQuery, MembershipsQuery, LeadsQuery, ReservationQuery, StandingBookingQuery, SessionQuery, ClassSessionQueries, DashboardQuery):
+class Query(UserQuery, MembersQuery, MembershipsQuery, LeadsQuery, ReservationQuery, StandingBookingQuery, SessionQuery, ClassSessionQueries, DashboardQuery, WhatsAppChatQuery):
     @strawberry.field
     def hello(self) -> str:
         return "Hello from GraphQL!"
 
 @strawberry.type
-class Mutation(AuthMutation, UserMutation, MemberMutation, MembershipMutation, LeadsMutation, ReservationMutation, StandingBookingMutation, SessionMutation, ClassSessionMutations):
+class Mutation(AuthMutation, UserMutation, MemberMutation, MembershipMutation, LeadsMutation, ReservationMutation, StandingBookingMutation, SessionMutation, ClassSessionMutations, WhatsAppChatMutation):
+    pass
+
+
+# Named "RootSubscription" (not "Subscription") to avoid clashing with the existing
+# membership domain type also named "Subscription" (memberships/types.py).
+@strawberry.type
+class RootSubscription(WhatsAppChatSubscription):
     pass
 
 # @dataclass
@@ -61,4 +71,4 @@ class Mutation(AuthMutation, UserMutation, MemberMutation, MembershipMutation, L
 #     response: Response
 #     user: object | None = None
    
-schema = strawberry.Schema(query=Query, mutation=Mutation)
+schema = strawberry.Schema(query=Query, mutation=Mutation, subscription=RootSubscription)

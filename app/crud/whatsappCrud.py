@@ -1,0 +1,457 @@
+"""
+CRUD operations for the WhatsApp chat feature.
+
+Read helpers power the desktop chat UI (conversation list + message thread).
+Write/upsert helpers are used by the inbound webhook ingest pipeline and the
+outbound send mutation. Primary keys are assigned by the database (never set ``id``).
+"""
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Optional, List, Dict
+
+import logging
+
+from sqlalchemy import func, or_, select, and_
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.models import Contact, Conversation, Message, MessageStatus, Media
+
+logger = logging.getLogger(__name__)
+
+# Customer-service window for free-form messages (WhatsApp Cloud API rule).
+CONVERSATION_WINDOW = timedelta(hours=24)
+
+
+# ---------------------------------------------------------------------------
+# Data transfer objects
+# ---------------------------------------------------------------------------
+@dataclass
+class ChatContactData:
+    id: int
+    wa_id: str
+    phone_number: str
+    name: Optional[str]
+    profile_name: Optional[str]
+
+
+@dataclass
+class ChatMessageData:
+    id: int
+    conversation_id: int
+    contact_id: int
+    direction: str
+    message_type: str
+    text_content: Optional[str]
+    timestamp: datetime
+    wa_message_id: Optional[str]
+    media_url: Optional[str] = None
+
+    @classmethod
+    def from_model(cls, m: Message) -> "ChatMessageData":
+        media_url = None
+        # ``m.media`` is only populated when eager-loaded; guard against lazy access.
+        try:
+            media_items = m.__dict__.get("media")
+            if media_items:
+                media_url = media_items[0].media_url
+        except Exception:  # noqa: BLE001
+            media_url = None
+        return cls(
+            id=m.id,
+            conversation_id=m.conversation_id,
+            contact_id=m.contact_id,
+            direction=m.direction,
+            message_type=m.message_type,
+            text_content=m.text_content,
+            timestamp=m.timestamp,
+            wa_message_id=m.wa_message_id,
+            media_url=media_url,
+        )
+
+
+@dataclass
+class ConversationData:
+    id: int
+    status: str
+    contact: ChatContactData
+    last_message: Optional[ChatMessageData]
+    last_activity: Optional[datetime]
+    unread_count: int = 0
+
+
+def _contact_data(contact: Contact) -> ChatContactData:
+    return ChatContactData(
+        id=contact.id,
+        wa_id=contact.wa_id,
+        phone_number=contact.phone_number,
+        name=contact.name,
+        profile_name=contact.profile_name,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Reads
+# ---------------------------------------------------------------------------
+async def get_conversations(
+    db: AsyncSession,
+    limit: Optional[int] = 50,
+    offset: int = 0,
+    search: Optional[str] = None,
+) -> List[ConversationData]:
+    """Return conversations ordered by most recent message activity."""
+    last_activity_sq = (
+        select(func.max(Message.timestamp))
+        .where(Message.conversation_id == Conversation.id)
+        .correlate(Conversation)
+        .scalar_subquery()
+    )
+
+    stmt = (
+        select(Conversation, last_activity_sq.label("last_activity"))
+        .options(selectinload(Conversation.contact))
+    )
+
+    if search:
+        like = f"%{search.strip()}%"
+        stmt = stmt.join(Contact, Conversation.contact_id == Contact.id).where(
+            or_(
+                Contact.name.ilike(like),
+                Contact.profile_name.ilike(like),
+                Contact.phone_number.ilike(like),
+                Contact.wa_id.ilike(like),
+            )
+        )
+
+    stmt = stmt.order_by(last_activity_sq.desc().nullslast()).offset(offset)
+    if limit is not None:
+        stmt = stmt.limit(limit)
+
+    rows = (await db.execute(stmt)).all()
+    if not rows:
+        return []
+
+    conv_ids = [conv.id for conv, _ in rows]
+    last_messages = await _latest_message_per_conversation(db, conv_ids)
+
+    result: List[ConversationData] = []
+    for conv, last_activity in rows:
+        last = last_messages.get(conv.id)
+        result.append(
+            ConversationData(
+                id=conv.id,
+                status=conv.status,
+                contact=_contact_data(conv.contact),
+                last_message=last,
+                last_activity=last_activity,
+                unread_count=0,  # reserved for a later phase
+            )
+        )
+    return result
+
+
+async def _latest_message_per_conversation(
+    db: AsyncSession, conv_ids: List[int]
+) -> Dict[int, ChatMessageData]:
+    """Fetch the most recent message for each given conversation id."""
+    if not conv_ids:
+        return {}
+
+    maxts_sq = (
+        select(
+            Message.conversation_id.label("cid"),
+            func.max(Message.timestamp).label("maxts"),
+        )
+        .where(Message.conversation_id.in_(conv_ids))
+        .group_by(Message.conversation_id)
+        .subquery()
+    )
+
+    stmt = select(Message).join(
+        maxts_sq,
+        and_(
+            Message.conversation_id == maxts_sq.c.cid,
+            Message.timestamp == maxts_sq.c.maxts,
+        ),
+    )
+    messages = (await db.execute(stmt)).scalars().all()
+
+    latest: Dict[int, ChatMessageData] = {}
+    for m in messages:
+        latest[m.conversation_id] = ChatMessageData.from_model(m)
+    return latest
+
+
+async def get_conversation_messages(
+    db: AsyncSession,
+    conversation_id: int,
+    limit: int = 50,
+    offset: int = 0,
+) -> List[ChatMessageData]:
+    """Return messages of a conversation in chronological (ascending) order."""
+    stmt = (
+        select(Message)
+        .options(selectinload(Message.media))
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.timestamp.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    messages = list((await db.execute(stmt)).scalars().all())
+    messages.reverse()  # display oldest -> newest
+    return [ChatMessageData.from_model(m) for m in messages]
+
+
+async def get_message_by_id(db: AsyncSession, message_id: int) -> Optional[ChatMessageData]:
+    """Load a single message (used by the realtime subscription)."""
+    stmt = (
+        select(Message)
+        .options(selectinload(Message.media))
+        .where(Message.id == message_id)
+    )
+    m = (await db.execute(stmt)).scalars().first()
+    return ChatMessageData.from_model(m) if m else None
+
+
+# ---------------------------------------------------------------------------
+# Writes / upserts (used by the webhook ingest pipeline and send mutation)
+# ---------------------------------------------------------------------------
+async def get_contact_by_wa_id(db: AsyncSession, wa_id: str) -> Optional[Contact]:
+    stmt = select(Contact).where(Contact.wa_id == wa_id)
+    return (await db.execute(stmt)).scalars().first()
+
+
+async def get_conversation(db: AsyncSession, conversation_id: int) -> Optional[Conversation]:
+    """Load a conversation with its contact eager-loaded (used by send mutation)."""
+    stmt = (
+        select(Conversation)
+        .options(selectinload(Conversation.contact))
+        .where(Conversation.id == conversation_id)
+    )
+    return (await db.execute(stmt)).scalars().first()
+
+
+async def upsert_contact(
+    db: AsyncSession,
+    wa_id: str,
+    phone_number: Optional[str] = None,
+    profile_name: Optional[str] = None,
+) -> Contact:
+    """Create or update a contact by wa_id. Caller commits."""
+    contact = await get_contact_by_wa_id(db, wa_id)
+    now = datetime.utcnow()
+    if contact is None:
+        contact = Contact(
+            wa_id=wa_id,
+            phone_number=phone_number or wa_id,
+            profile_name=profile_name,
+            created_at=now,
+            updated_at=now,
+            is_saved=0,
+        )
+        db.add(contact)
+        await db.flush()
+        return contact
+
+    changed = False
+    if profile_name and contact.profile_name != profile_name:
+        contact.profile_name = profile_name
+        changed = True
+    if phone_number and contact.phone_number != phone_number:
+        contact.phone_number = phone_number
+        changed = True
+    if changed:
+        contact.updated_at = now
+        await db.flush()
+    return contact
+
+
+async def get_or_open_conversation(
+    db: AsyncSession,
+    contact_id: int,
+    window_anchor: Optional[datetime] = None,
+) -> Conversation:
+    """Reuse the active conversation for a contact, or open a new one. Caller commits."""
+    anchor = window_anchor or datetime.utcnow()
+    stmt = (
+        select(Conversation)
+        .where(Conversation.contact_id == contact_id, Conversation.status == "active")
+        .order_by(Conversation.id.desc())
+    )
+    conv = (await db.execute(stmt)).scalars().first()
+    now = datetime.utcnow()
+    if conv is None:
+        conv = Conversation(
+            contact_id=contact_id,
+            status="active",
+            expiration_timestamp=anchor + CONVERSATION_WINDOW,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(conv)
+        await db.flush()
+        return conv
+
+    # Refresh the customer-service window on inbound activity.
+    conv.expiration_timestamp = anchor + CONVERSATION_WINDOW
+    conv.updated_at = now
+    await db.flush()
+    return conv
+
+
+async def _message_exists_by_wa_id(db: AsyncSession, wa_message_id: str) -> Optional[Message]:
+    stmt = select(Message).where(Message.wa_message_id == wa_message_id)
+    return (await db.execute(stmt)).scalars().first()
+
+
+async def insert_inbound_message(
+    db: AsyncSession,
+    conversation_id: int,
+    contact_id: int,
+    message_type: str,
+    timestamp: datetime,
+    wa_message_id: Optional[str] = None,
+    text_content: Optional[str] = None,
+    context_message_id: Optional[str] = None,
+) -> Optional[Message]:
+    """Insert an inbound message, idempotent by wa_message_id. Caller commits.
+
+    Returns the new Message, or None if it already existed (deduped).
+    """
+    if wa_message_id:
+        existing = await _message_exists_by_wa_id(db, wa_message_id)
+        if existing is not None:
+            return None
+
+    msg = Message(
+        wa_message_id=wa_message_id,
+        conversation_id=conversation_id,
+        contact_id=contact_id,
+        direction="inbound",
+        message_type=message_type,
+        text_content=text_content,
+        context_message_id=context_message_id,
+        timestamp=timestamp,
+        created_at=datetime.utcnow(),
+        is_processed=0,
+        is_temp=0,
+    )
+    db.add(msg)
+    await db.flush()
+    return msg
+
+
+async def insert_outbound_message(
+    db: AsyncSession,
+    conversation_id: int,
+    contact_id: int,
+    text: str,
+    wa_message_id: Optional[str] = None,
+    message_type: str = "text",
+) -> Message:
+    """Insert an outbound message after a successful Cloud API send. Caller commits."""
+    now = datetime.utcnow()
+    msg = Message(
+        wa_message_id=wa_message_id,
+        conversation_id=conversation_id,
+        contact_id=contact_id,
+        direction="outbound",
+        message_type=message_type,
+        text_content=text,
+        timestamp=now,
+        created_at=now,
+        is_processed=1,
+        is_temp=0,
+    )
+    db.add(msg)
+    await db.flush()
+    return msg
+
+
+async def insert_message_status(
+    db: AsyncSession,
+    wa_message_id: str,
+    status: str,
+    timestamp: datetime,
+) -> Optional[MessageStatus]:
+    """Record a delivery status for a message identified by its wa_message_id.
+
+    Idempotent on (message_id, status). Caller commits. Returns None if the
+    referenced message is unknown or the status was already recorded.
+    """
+    msg = await _message_exists_by_wa_id(db, wa_message_id)
+    if msg is None:
+        return None
+
+    dup_stmt = select(MessageStatus).where(
+        MessageStatus.message_id == msg.id, MessageStatus.status == status
+    )
+    if (await db.execute(dup_stmt)).scalars().first() is not None:
+        return None
+
+    row = MessageStatus(
+        message_id=msg.id,
+        status=status,
+        timestamp=timestamp,
+        created_at=datetime.utcnow(),
+    )
+    db.add(row)
+    await db.flush()
+    return row
+
+
+async def insert_media(
+    db: AsyncSession,
+    message_id: int,
+    media_type: str,
+    mime_type: Optional[str] = None,
+    caption: Optional[str] = None,
+) -> Media:
+    """Insert a media row (pre-download). Caller commits."""
+    media = Media(
+        message_id=message_id,
+        media_type=media_type,
+        mime_type=mime_type,
+        caption=caption,
+        created_at=datetime.utcnow(),
+        downloaded=0,
+        download_failed=0,
+    )
+    db.add(media)
+    await db.flush()
+    return media
+
+
+async def mark_media_downloaded(
+    db: AsyncSession,
+    media_id: int,
+    *,
+    sha256: Optional[str],
+    filename: Optional[str],
+    file_size: Optional[int],
+    media_url: Optional[str],
+    mime_type: Optional[str] = None,
+) -> None:
+    """Update a media row after a successful download. Caller commits."""
+    media = (await db.execute(select(Media).where(Media.id == media_id))).scalars().first()
+    if media is None:
+        return
+    media.sha256 = sha256
+    media.filename = filename
+    media.file_size = file_size
+    media.media_url = media_url
+    if mime_type:
+        media.mime_type = mime_type
+    media.downloaded = 1
+    media.download_failed = 0
+    media.download_time = datetime.utcnow()
+    await db.flush()
+
+
+async def mark_media_failed(db: AsyncSession, media_id: int) -> None:
+    media = (await db.execute(select(Media).where(Media.id == media_id))).scalars().first()
+    if media is None:
+        return
+    media.download_failed = 1
+    media.download_time = datetime.utcnow()
+    await db.flush()

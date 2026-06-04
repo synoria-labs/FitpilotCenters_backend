@@ -1,12 +1,19 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from strawberry.fastapi import GraphQLRouter
+from strawberry.subscriptions import (
+    GRAPHQL_TRANSPORT_WS_PROTOCOL,
+    GRAPHQL_WS_PROTOCOL,
+)
 
 from app.graphql.schema import schema
 from app.graphql.context import build_context
+from app.webhooks.whatsapp_webhook import router as whatsapp_webhook_router
+from app.services.whatsapp_listener import listener as whatsapp_listener
 
 # Initialize logging system
 from app.core.logging_config import setup_logging, get_logger
@@ -15,7 +22,20 @@ from app.core.logging_config import setup_logging, get_logger
 logger = setup_logging()
 logger.info("Starting FitPilot backend application")
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Start the Postgres LISTEN/NOTIFY bridge for WhatsApp realtime events.
+    await whatsapp_listener.start()
+    logger.info("WhatsApp NOTIFY listener started")
+    try:
+        yield
+    finally:
+        await whatsapp_listener.stop()
+        logger.info("WhatsApp NOTIFY listener stopped")
+
+
+app = FastAPI(lifespan=lifespan)
 
 # Mount static files for profile pictures
 uploads_path = Path(__file__).parent.parent / "uploads"
@@ -46,6 +66,13 @@ graphql_app = GraphQLRouter(
     schema=schema,
     context_getter=build_context,
     graphql_ide="graphiql",
+    subscription_protocols=[
+        GRAPHQL_TRANSPORT_WS_PROTOCOL,
+        GRAPHQL_WS_PROTOCOL,
+    ],
 )
 app.include_router(graphql_app, prefix="/graphql")
+
+# Inbound WhatsApp Cloud API webhook (FitPilot owns ingestion)
+app.include_router(whatsapp_webhook_router)
 
