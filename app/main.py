@@ -37,6 +37,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+
+@app.get("/health", tags=["health"])
+async def health_check():
+    return {"status": "ok"}
+
+
 # Mount static files for profile pictures
 uploads_path = Path(__file__).parent.parent / "uploads"
 uploads_path.mkdir(exist_ok=True)  # Ensure uploads directory exists
