@@ -15,7 +15,8 @@ RUN pip install --upgrade pip \
     && pip install -r requirements.txt
 
 COPY app ./app
-COPY migrations ./migrations
+COPY alembic.ini ./alembic.ini
+COPY alembic ./alembic
 
 RUN mkdir -p /app/logs /app/uploads \
     && useradd --create-home --shell /usr/sbin/nologin appuser \

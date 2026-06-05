@@ -8,6 +8,7 @@ strawberry-graphql[fastapi]>=0.282.0
 # Database
 sqlalchemy>=2.0.25
 asyncpg>=0.29.0
+alembic>=1.13.0
 
 # Authentication
 python-jose[cryptography]>=3.3.0

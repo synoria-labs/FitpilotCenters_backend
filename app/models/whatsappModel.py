@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Optional, List
 
 from sqlalchemy import (
-    BigInteger, SmallInteger, String, Text, ForeignKey, TIMESTAMP, JSON
+    BigInteger, SmallInteger, String, Text, ForeignKey, TIMESTAMP, JSON, Index
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -142,7 +142,7 @@ class WhatsAppTemplate(Base):
     Meta, ``template_status`` (APPROVED/PENDING/REJECTED) is dictated by Meta, and
     ``components`` is the Meta component array (BODY/HEADER/FOOTER/BUTTONS) with
     positional ``{{1}}`` placeholders. ``category`` and ``meta_template_id`` are added by
-    FitPilot (see migrations/add_whatsapp_template_meta_fields.sql): ``category`` is required
+    FitPilot: ``category`` is required
     by Meta on create, and ``meta_template_id`` stores Meta's template id for edit/delete.
     """
 
@@ -158,3 +158,12 @@ class WhatsAppTemplate(Base):
     components: Mapped[Optional[list]] = mapped_column(JSON)
     created_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, default=datetime.utcnow)
     updated_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index(
+            "uq_whatsapp_templates_name_language",
+            "template_name",
+            "template_language",
+            unique=True,
+        ),
+    )
