@@ -26,6 +26,8 @@ from app.graphql.dashboard.queries import DashboardQuery
 from app.graphql.whatsapp.queries import WhatsAppChatQuery
 from app.graphql.whatsapp.mutations import WhatsAppChatMutation
 from app.graphql.whatsapp.subscriptions import WhatsAppChatSubscription
+from app.graphql.whatsapp.template_queries import WhatsAppTemplateQuery
+from app.graphql.whatsapp.template_mutations import WhatsAppTemplateMutation
 
 logger = logging.getLogger(__name__)
 
@@ -48,13 +50,13 @@ except ImportError as e:
         pass
 
 @strawberry.type
-class Query(UserQuery, MembersQuery, MembershipsQuery, LeadsQuery, ReservationQuery, StandingBookingQuery, SessionQuery, ClassSessionQueries, DashboardQuery, WhatsAppChatQuery):
+class Query(UserQuery, MembersQuery, MembershipsQuery, LeadsQuery, ReservationQuery, StandingBookingQuery, SessionQuery, ClassSessionQueries, DashboardQuery, WhatsAppChatQuery, WhatsAppTemplateQuery):
     @strawberry.field
     def hello(self) -> str:
         return "Hello from GraphQL!"
 
 @strawberry.type
-class Mutation(AuthMutation, UserMutation, MemberMutation, MembershipMutation, LeadsMutation, ReservationMutation, StandingBookingMutation, SessionMutation, ClassSessionMutations, WhatsAppChatMutation):
+class Mutation(AuthMutation, UserMutation, MemberMutation, MembershipMutation, LeadsMutation, ReservationMutation, StandingBookingMutation, SessionMutation, ClassSessionMutations, WhatsAppChatMutation, WhatsAppTemplateMutation):
     pass
 
 

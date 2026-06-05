@@ -13,6 +13,11 @@ class WhatsAppConfig:
     API_VERSION: str = os.getenv("WHATSAPP_API_VERSION", "v21.0")
     GRAPH_BASE: str = os.getenv("WHATSAPP_GRAPH_BASE", "https://graph.facebook.com")
 
+    # WhatsApp Business Account (template management).
+    # The ACCESS_TOKEN must carry the ``whatsapp_business_management`` permission
+    # to create/edit/delete/list message templates on this WABA.
+    BUSINESS_ACCOUNT_ID: str = os.getenv("WHATSAPP_BUSINESS_ACCOUNT_ID", "")
+
     # Inbound webhook
     WEBHOOK_VERIFY_TOKEN: str = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "")
     APP_SECRET: str = os.getenv("WHATSAPP_APP_SECRET", "")
@@ -25,6 +30,11 @@ class WhatsAppConfig:
     @classmethod
     def is_send_configured(cls) -> bool:
         return bool(cls.PHONE_NUMBER_ID and cls.ACCESS_TOKEN)
+
+    @classmethod
+    def is_management_configured(cls) -> bool:
+        """True when template management (Business Management API) can be called."""
+        return bool(cls.BUSINESS_ACCOUNT_ID and cls.ACCESS_TOKEN)
 
 
 whatsapp_config = WhatsAppConfig()
