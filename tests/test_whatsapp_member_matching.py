@@ -7,6 +7,7 @@ from app.crud.whatsappCrud import (
     _MemberCandidate,
     _member_contact_match_rank,
     _phone_match_keys,
+    get_conversation_data,
     get_conversations,
 )
 from app.models import (
@@ -172,3 +173,58 @@ async def test_get_conversations_searches_by_member_name(db):
 
     assert conversation.id in by_id
     assert by_id[conversation.id].contact.member_name == "Nombre Buscable WhatsApp 3008"
+
+
+async def test_get_conversation_data_returns_enriched_single(db):
+    role = await _ensure_member_role(db)
+    plan = await _make_plan(db, "WhatsApp Single Plan 3008")
+    await _make_member(
+        db,
+        role=role,
+        plan=plan,
+        full_name="Socia Single WhatsApp 3008",
+        phone_number="3006550004",
+    )
+    conversation = await _make_conversation(
+        db,
+        wa_id="5213006550004",
+        text="mensaje individual",
+    )
+
+    data = await get_conversation_data(db, conversation.id)
+    assert data is not None
+    assert data.id == conversation.id
+    assert data.contact.member_name == "Socia Single WhatsApp 3008"
+    assert data.last_message is not None
+    assert data.last_message.text_content == "mensaje individual"
+
+    assert await get_conversation_data(db, 999_999_999) is None
+
+
+async def test_latest_message_dedupes_on_equal_timestamp(db):
+    conversation = await _make_conversation(
+        db,
+        wa_id="5213006550005",
+        text="primer mensaje",
+    )
+    # Second message with the SAME timestamp as the first; deterministic tie-break
+    # must pick the higher id (newest) as the last message — and only one row.
+    same_ts = datetime(3008, 1, 10, 12, 0, 0)
+    second = Message(
+        conversation_id=conversation.id,
+        contact_id=conversation.contact_id,
+        direction="inbound",
+        message_type="text",
+        text_content="segundo mensaje",
+        timestamp=same_ts,
+    )
+    db.add(second)
+    await db.flush()
+
+    conversations = await get_conversations(db, limit=None)
+    matching = [c for c in conversations if c.id == conversation.id]
+
+    assert len(matching) == 1  # no duplicate conversation rows
+    assert matching[0].last_message is not None
+    assert matching[0].last_message.id == second.id
+    assert matching[0].last_message.text_content == "segundo mensaje"

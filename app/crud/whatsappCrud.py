@@ -348,6 +348,22 @@ def _contact_data(
 # ---------------------------------------------------------------------------
 # Reads
 # ---------------------------------------------------------------------------
+def _last_activity_subquery():
+    """Grouped max(timestamp) per conversation.
+
+    Replaces a per-row correlated subquery with a single ``GROUP BY`` scan so the
+    list can be ordered and paginated (``OFFSET``/``LIMIT``) efficiently.
+    """
+    return (
+        select(
+            Message.conversation_id.label("cid"),
+            func.max(Message.timestamp).label("last_activity"),
+        )
+        .group_by(Message.conversation_id)
+        .subquery()
+    )
+
+
 async def get_conversations(
     db: AsyncSession,
     limit: Optional[int] = 50,
@@ -355,15 +371,11 @@ async def get_conversations(
     search: Optional[str] = None,
 ) -> List[ConversationData]:
     """Return conversations ordered by most recent message activity."""
-    last_activity_sq = (
-        select(func.max(Message.timestamp))
-        .where(Message.conversation_id == Conversation.id)
-        .correlate(Conversation)
-        .scalar_subquery()
-    )
+    activity_sq = _last_activity_subquery()
 
     stmt = (
-        select(Conversation, last_activity_sq.label("last_activity"))
+        select(Conversation, activity_sq.c.last_activity)
+        .outerjoin(activity_sq, activity_sq.c.cid == Conversation.id)
         .options(selectinload(Conversation.contact))
     )
 
@@ -390,7 +402,7 @@ async def get_conversations(
             )
         )
 
-    stmt = stmt.order_by(last_activity_sq.desc().nullslast()).offset(offset)
+    stmt = stmt.order_by(activity_sq.c.last_activity.desc().nullslast()).offset(offset)
     if limit is not None:
         stmt = stmt.limit(limit)
 
@@ -420,29 +432,61 @@ async def get_conversations(
     return result
 
 
+async def get_conversation_data(
+    db: AsyncSession, conversation_id: int
+) -> Optional[ConversationData]:
+    """Return a single conversation enriched like ``get_conversations``.
+
+    Used by the desktop client to insert a newly-active conversation incrementally
+    (e.g. a realtime message arrives for a conversation outside the loaded pages)
+    without reloading the whole list.
+    """
+    activity_sq = _last_activity_subquery()
+    stmt = (
+        select(Conversation, activity_sq.c.last_activity)
+        .outerjoin(activity_sq, activity_sq.c.cid == Conversation.id)
+        .options(selectinload(Conversation.contact))
+        .where(Conversation.id == conversation_id)
+    )
+    row = (await db.execute(stmt)).first()
+    if row is None:
+        return None
+
+    conv, last_activity = row
+    last_messages = await _latest_message_per_conversation(db, [conv.id])
+    member_by_contact_id = await _resolve_member_contacts(db, [conv.contact])
+    member = member_by_contact_id.get(conv.contact_id)
+    return ConversationData(
+        id=conv.id,
+        status=conv.status,
+        contact=_contact_data(conv.contact, member),
+        last_message=last_messages.get(conv.id),
+        last_activity=last_activity,
+        unread_count=0,  # reserved for a later phase
+    )
+
+
 async def _latest_message_per_conversation(
     db: AsyncSession, conv_ids: List[int]
 ) -> Dict[int, ChatMessageData]:
-    """Fetch the most recent message for each given conversation id."""
+    """Fetch the most recent message for each given conversation id.
+
+    Uses ``DISTINCT ON (conversation_id)`` ordered by ``timestamp DESC, id DESC`` so
+    exactly one row is returned per conversation even when two messages share the same
+    timestamp (deterministic tie-break by id).
+    """
     if not conv_ids:
         return {}
 
-    maxts_sq = (
-        select(
-            Message.conversation_id.label("cid"),
-            func.max(Message.timestamp).label("maxts"),
-        )
+    stmt = (
+        select(Message)
         .where(Message.conversation_id.in_(conv_ids))
-        .group_by(Message.conversation_id)
-        .subquery()
-    )
-
-    stmt = select(Message).join(
-        maxts_sq,
-        and_(
-            Message.conversation_id == maxts_sq.c.cid,
-            Message.timestamp == maxts_sq.c.maxts,
-        ),
+        .distinct(Message.conversation_id)
+        .order_by(
+            Message.conversation_id,
+            Message.timestamp.desc(),
+            Message.id.desc(),
+        )
     )
     messages = (await db.execute(stmt)).scalars().all()
 
