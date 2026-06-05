@@ -12,6 +12,9 @@ from app.models.leadsModel import (
     LeadSource, Lead, LeadEvent, FormSubmission, MarketingCampaign,
     LeadAttribution, CommunicationOptIn, WhatsAppThread
 )
+from app.models.whatsappModel import (
+    Contact, Conversation, Message, MessageStatus, Media, WebhookLog
+)
 
 __all__ = [
     "People", "Role", "PersonRole", "Account",
@@ -20,5 +23,6 @@ __all__ = [
     "ClassType", "ClassTemplate", "ClassSession", "Reservation", "StandingBooking", "StandingBookingException",
     "Session",
     "LeadSource", "Lead", "LeadEvent", "FormSubmission", "MarketingCampaign",
-    "LeadAttribution", "CommunicationOptIn", "WhatsAppThread"
+    "LeadAttribution", "CommunicationOptIn", "WhatsAppThread",
+    "Contact", "Conversation", "Message", "MessageStatus", "Media", "WebhookLog"
 ]
