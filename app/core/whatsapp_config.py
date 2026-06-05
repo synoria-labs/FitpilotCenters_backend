@@ -1,17 +1,9 @@
-"""Configuration for the WhatsApp Cloud API integration.
-
-Values are read from environment variables. ``.env`` is loaded best-effort (without
-overriding variables already present in the environment) so the same file used for
-``DATABASE_URL`` etc. also supplies the WhatsApp credentials.
-"""
+"""Configuration for the WhatsApp Cloud API integration."""
 import os
 
-try:  # best-effort .env load; does not override existing env vars
-    from dotenv import load_dotenv
+from app.core.env import load_environment
 
-    load_dotenv()
-except Exception:  # noqa: BLE001 - dotenv is optional
-    pass
+load_environment()
 
 
 class WhatsAppConfig:
