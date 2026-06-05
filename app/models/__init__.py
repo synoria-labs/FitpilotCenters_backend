@@ -13,7 +13,7 @@ from app.models.leadsModel import (
     LeadAttribution, CommunicationOptIn, WhatsAppThread
 )
 from app.models.whatsappModel import (
-    Contact, Conversation, Message, MessageStatus, Media, WebhookLog
+    Contact, Conversation, Message, MessageStatus, Media, WebhookLog, WhatsAppTemplate
 )
 
 __all__ = [
@@ -24,5 +24,5 @@ __all__ = [
     "Session",
     "LeadSource", "Lead", "LeadEvent", "FormSubmission", "MarketingCampaign",
     "LeadAttribution", "CommunicationOptIn", "WhatsAppThread",
-    "Contact", "Conversation", "Message", "MessageStatus", "Media", "WebhookLog"
+    "Contact", "Conversation", "Message", "MessageStatus", "Media", "WebhookLog", "WhatsAppTemplate"
 ]

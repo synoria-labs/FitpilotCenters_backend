@@ -19,6 +19,8 @@ class ChatContact:
     phone_number: str
     name: Optional[str]
     profile_name: Optional[str]
+    member_id: Optional[int]
+    member_name: Optional[str]
 
     @classmethod
     def from_data(cls, d: ChatContactData) -> "ChatContact":
@@ -28,6 +30,8 @@ class ChatContact:
             phone_number=d.phone_number,
             name=d.name,
             profile_name=d.profile_name,
+            member_id=d.member_id,
+            member_name=d.member_name,
         )
 
 

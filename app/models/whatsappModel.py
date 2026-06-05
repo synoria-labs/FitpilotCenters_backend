@@ -132,3 +132,29 @@ class WebhookLog(Base):
     payload: Mapped[Optional[dict]] = mapped_column(JSON)
     processed: Mapped[Optional[int]] = mapped_column(SmallInteger, default=1)
     created_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, default=datetime.utcnow)
+
+
+class WhatsAppTemplate(Base):
+    """A Meta Cloud API message template (HSM), mirrored locally.
+
+    The table pre-exists (created by the external bot) and stores the Meta template
+    structure: ``template_name`` + ``template_language`` are immutable once created in
+    Meta, ``template_status`` (APPROVED/PENDING/REJECTED) is dictated by Meta, and
+    ``components`` is the Meta component array (BODY/HEADER/FOOTER/BUTTONS) with
+    positional ``{{1}}`` placeholders. ``category`` and ``meta_template_id`` are added by
+    FitPilot (see migrations/add_whatsapp_template_meta_fields.sql): ``category`` is required
+    by Meta on create, and ``meta_template_id`` stores Meta's template id for edit/delete.
+    """
+
+    __tablename__ = "whatsapp_templates"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    template_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    template_namespace: Mapped[str] = mapped_column(String(100), nullable=False)
+    template_language: Mapped[str] = mapped_column(String(10), nullable=False)
+    template_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    category: Mapped[Optional[str]] = mapped_column(String(30))
+    meta_template_id: Mapped[Optional[str]] = mapped_column(String(64))
+    components: Mapped[Optional[list]] = mapped_column(JSON)
+    created_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, default=datetime.utcnow)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, default=datetime.utcnow)
