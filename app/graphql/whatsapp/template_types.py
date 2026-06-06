@@ -65,6 +65,8 @@ class SendTemplateTestInput:
     phone: str
     template_id: int
     body_params: Optional[List[str]] = None
+    header_media_url: Optional[str] = None
+    header_media_id: Optional[str] = None
 
 
 @strawberry.type

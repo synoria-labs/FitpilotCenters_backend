@@ -190,6 +190,9 @@ class WhatsAppTemplateMutation:
                 template_name=tpl.template_name,
                 language_code=tpl.template_language,
                 body_params=input.body_params,
+                components=tpl.components,
+                header_media_url=input.header_media_url,
+                header_media_id=input.header_media_id,
             )
         except cloud.WhatsAppError as e:
             await db.rollback()
