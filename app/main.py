@@ -14,6 +14,7 @@ from app.graphql.schema import schema
 from app.graphql.context import build_context
 from app.webhooks.whatsapp_webhook import router as whatsapp_webhook_router
 from app.services.whatsapp_listener import listener as whatsapp_listener
+from app.services.notification_scheduler import scheduler as notification_scheduler
 
 # Initialize logging system
 from app.core.logging_config import setup_logging, get_logger
@@ -28,9 +29,12 @@ async def lifespan(app: FastAPI):
     # Start the Postgres LISTEN/NOTIFY bridge for WhatsApp realtime events.
     await whatsapp_listener.start()
     logger.info("WhatsApp NOTIFY listener started")
+    # Start the daily notification sweep (renewal reminders + expired win-back).
+    notification_scheduler.start()
     try:
         yield
     finally:
+        notification_scheduler.stop()
         await whatsapp_listener.stop()
         logger.info("WhatsApp NOTIFY listener stopped")
 

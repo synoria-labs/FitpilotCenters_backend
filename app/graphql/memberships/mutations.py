@@ -1,10 +1,18 @@
 
+import asyncio
 from datetime import datetime, timezone
 import json
+import logging
 
 import strawberry
 from sqlalchemy.ext.asyncio import AsyncSession
 from strawberry.types import Info
+
+from app.models.notificationModel import (
+    EVENT_NEW_REGISTRATION,
+    EVENT_RENEWAL_CONFIRMATION,
+)
+from app.services.notification_service import dispatch_event_in_background
 
 from app.crud.membershipsCrud import (
     create_membership_plan,
@@ -216,6 +224,20 @@ class MembershipMutation:
             # Commit the transaction after all operations
             await db.commit()
 
+            # Fire-and-forget welcome notification (own session, never blocks/rolls back the alta).
+            try:
+                asyncio.create_task(
+                    dispatch_event_in_background(
+                        EVENT_NEW_REGISTRATION,
+                        person_id=person.id,
+                        subscription_id=subscription.id,
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                logging.getLogger(__name__).warning(
+                    "Could not schedule welcome notification", exc_info=True
+                )
+
             # Build message and top-level fields like renewal
             try:
                 import json
@@ -292,6 +314,18 @@ class MembershipMutation:
 
             # Ensure the transaction is committed before returning
             await db.commit()
+
+            # Fire-and-forget renewal confirmation (own session, never blocks/rolls back the renovación).
+            try:
+                asyncio.create_task(
+                    dispatch_event_in_background(
+                        EVENT_RENEWAL_CONFIRMATION,
+                        person_id=subscription.person_id,
+                        subscription_id=subscription.id,
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("Could not schedule renewal confirmation", exc_info=True)
 
             # Calculate remaining days for response
             now = datetime.now(timezone.utc)

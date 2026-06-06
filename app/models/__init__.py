@@ -15,6 +15,7 @@ from app.models.leadsModel import (
 from app.models.whatsappModel import (
     Contact, Conversation, Message, MessageStatus, Media, WebhookLog, WhatsAppTemplate
 )
+from app.models.notificationModel import NotificationSetting, NotificationLog
 
 __all__ = [
     "People", "Role", "PersonRole", "Account",
@@ -24,5 +25,6 @@ __all__ = [
     "Session",
     "LeadSource", "Lead", "LeadEvent", "FormSubmission", "MarketingCampaign",
     "LeadAttribution", "CommunicationOptIn", "WhatsAppThread",
-    "Contact", "Conversation", "Message", "MessageStatus", "Media", "WebhookLog", "WhatsAppTemplate"
+    "Contact", "Conversation", "Message", "MessageStatus", "Media", "WebhookLog", "WhatsAppTemplate",
+    "NotificationSetting", "NotificationLog"
 ]
