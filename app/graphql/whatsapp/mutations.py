@@ -39,9 +39,11 @@ class WhatsAppChatMutation:
                 return SendMessageResult(success=False, error="Conversación no encontrada.")
             contact = conversation.contact
         elif input.wa_id:
-            contact = await crud.get_contact_by_wa_id(db, input.wa_id)
-            if contact is None:
-                contact = await crud.upsert_contact(db, wa_id=input.wa_id, phone_number=input.wa_id)
+            # Resolve by normalized number (52/521 aware) so a send never spawns a
+            # duplicate contact/conversation for a number that already exists.
+            contact = await crud.upsert_contact(
+                db, wa_id=input.wa_id, phone_number=input.wa_id, authoritative=False
+            )
             conversation = await crud.get_or_open_conversation(db, contact.id)
         else:
             return SendMessageResult(success=False, error="Falta conversationId o waId.")

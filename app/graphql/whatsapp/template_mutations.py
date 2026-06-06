@@ -177,7 +177,11 @@ class WhatsAppTemplateMutation:
         if not wa_id:
             return SendMessageResult(success=False, error="Número de teléfono inválido.")
 
-        contact = await chat_crud.upsert_contact(db, wa_id=wa_id, phone_number=phone)
+        # authoritative=False: reuse an existing contact (52/521 aware) instead of
+        # creating a duplicate, and never overwrite its canonical wa_id with the typed one.
+        contact = await chat_crud.upsert_contact(
+            db, wa_id=wa_id, phone_number=phone, authoritative=False
+        )
         conversation = await chat_crud.get_or_open_conversation(db, contact.id)
 
         try:
