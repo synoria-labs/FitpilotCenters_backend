@@ -29,6 +29,7 @@ python-dotenv>=1.0.0
 tzdata>=2024.1
 
 # Background job scheduling
+APScheduler>=3.10.0
 
 # Date utilities (for memberships)
 python-dateutil>=2.9.0
