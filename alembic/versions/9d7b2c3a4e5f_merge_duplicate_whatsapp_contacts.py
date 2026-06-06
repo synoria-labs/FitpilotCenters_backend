@@ -36,7 +36,7 @@ def upgrade() -> None:
                 count(m.id)::bigint AS message_count
             FROM app.contacts AS c
             LEFT JOIN app.messages AS m ON m.contact_id = c.id
-            GROUP BY c.id
+            GROUP BY c.id, c.wa_id, c.phone_number, c.name, c.profile_name
         ),
         keyed AS (
             SELECT
