@@ -535,6 +535,49 @@ async def get_contact_by_wa_id(db: AsyncSession, wa_id: str) -> Optional[Contact
     return (await db.execute(stmt)).scalars().first()
 
 
+def _contact_number_match_condition(keys: set[str], last10: set[str]):
+    """SQL condition matching a Contact by normalized phone keys (52/521 aware).
+
+    Mirrors ``_member_contact_sql_match_condition`` but targets Contact, comparing the
+    digit-only wa_id/phone_number against the candidate key set and the last-10 digits.
+    """
+    contact_wa = _digits_expr(Contact.wa_id)
+    contact_phone = _digits_expr(Contact.phone_number)
+    conds = []
+    if keys:
+        conds.append(contact_wa.in_(keys))
+        conds.append(contact_phone.in_(keys))
+    if last10:
+        conds.append(
+            and_(func.length(contact_wa) >= 10, func.right(contact_wa, 10).in_(last10))
+        )
+        conds.append(
+            and_(func.length(contact_phone) >= 10, func.right(contact_phone, 10).in_(last10))
+        )
+    if not conds:
+        return None
+    return or_(*conds)
+
+
+async def find_contact_by_number(db: AsyncSession, raw_number: Optional[str]) -> Optional[Contact]:
+    """Find an existing contact whose number matches ``raw_number`` (52/521 aware).
+
+    Returns the lowest-id match (deterministic) or None. Used so a send that types the
+    number in a different format (e.g. 52... vs 521...) reuses the existing contact
+    instead of creating a duplicate.
+    """
+    digits = _digits_only(raw_number)
+    if not digits:
+        return None
+    keys = _phone_match_keys(raw_number)
+    last10 = {digits[-10:]} if len(digits) >= 10 else set()
+    cond = _contact_number_match_condition(keys, last10)
+    if cond is None:
+        return None
+    stmt = select(Contact).where(cond).order_by(Contact.id.asc())
+    return (await db.execute(stmt)).scalars().first()
+
+
 async def get_conversation(db: AsyncSession, conversation_id: int) -> Optional[Conversation]:
     """Load a conversation with its contact eager-loaded (used by send mutation)."""
     stmt = (
@@ -550,9 +593,26 @@ async def upsert_contact(
     wa_id: str,
     phone_number: Optional[str] = None,
     profile_name: Optional[str] = None,
+    *,
+    authoritative: bool = True,
 ) -> Contact:
-    """Create or update a contact by wa_id. Caller commits."""
+    """Create or update a contact, matching by normalized number (52/521 aware).
+
+    Lookup order: exact ``wa_id`` (fast path), then a normalized phone match against
+    ``wa_id``/``phone_number``. This keeps a single contact per human number across the
+    inbound webhook and outbound sends, even when the number is stored/typed in
+    different Mexican formats.
+
+    ``authoritative`` should be True for the inbound webhook (Meta's ``from`` is the
+    canonical wa_id) and False for sends (the typed number must not overwrite the good
+    wa_id of an existing contact). Caller commits.
+    """
     contact = await get_contact_by_wa_id(db, wa_id)
+    if contact is None:
+        contact = await find_contact_by_number(db, wa_id)
+    if contact is None and phone_number:
+        contact = await find_contact_by_number(db, phone_number)
+
     now = datetime.utcnow()
     if contact is None:
         contact = Contact(
@@ -571,9 +631,15 @@ async def upsert_contact(
     if profile_name and contact.profile_name != profile_name:
         contact.profile_name = profile_name
         changed = True
-    if phone_number and contact.phone_number != phone_number:
-        contact.phone_number = phone_number
-        changed = True
+    # Only the authoritative inbound source may canonicalize the stored identity;
+    # sends never downgrade an existing contact's wa_id/phone_number.
+    if authoritative:
+        if wa_id and contact.wa_id != wa_id:
+            contact.wa_id = wa_id
+            changed = True
+        if phone_number and contact.phone_number != phone_number:
+            contact.phone_number = phone_number
+            changed = True
     if changed:
         contact.updated_at = now
         await db.flush()
