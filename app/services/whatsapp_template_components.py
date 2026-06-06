@@ -76,3 +76,74 @@ def parse_components(
             footer_text = text
 
     return body_text, body_examples, footer_text
+
+
+def render_template_text(
+    components: Optional[List[Any]],
+    body_params: Optional[List[str]] = None,
+) -> str:
+    """Render BODY + FOOTER for chat storage/presentation.
+
+    ``body_params`` are the actual values sent to Meta. Missing values fall back to the
+    template examples because that is also what the send payload builder uses.
+    """
+    body_text = ""
+    footer_text = ""
+
+    for component in components or []:
+        if not isinstance(component, dict):
+            continue
+        ctype = str(component.get("type") or "").upper()
+        text = component.get("text")
+        if not isinstance(text, str):
+            continue
+        if ctype == "BODY":
+            body_text = _replace_placeholders(text, component, body_params)
+        elif ctype == "FOOTER":
+            footer_text = text
+
+    return _normalize_rendered_text(
+        "\n\n".join(part for part in (body_text, footer_text) if part)
+    )
+
+
+def _replace_placeholders(
+    text: str,
+    component: dict,
+    body_params: Optional[List[str]],
+) -> str:
+    provided = [str(value).strip() for value in body_params or []]
+    examples = _component_example_values(component)
+
+    def replace(match: re.Match) -> str:
+        index = int(match.group(1)) - 1
+        if 0 <= index < len(provided) and provided[index]:
+            return provided[index]
+        if 0 <= index < len(examples) and examples[index]:
+            return examples[index]
+        return match.group(0)
+
+    return _PLACEHOLDER_RE.sub(replace, text)
+
+
+def _component_example_values(component: dict) -> List[str]:
+    example = component.get("example")
+    if not isinstance(example, dict):
+        return []
+    rows = example.get("body_text")
+    if not isinstance(rows, list) or not rows or not isinstance(rows[0], list):
+        return []
+    return [str(value).strip() for value in rows[0]]
+
+
+def _normalize_rendered_text(text: str) -> str:
+    normalized = (
+        str(text)
+        .replace("\\r\\n", "\n")
+        .replace("\\n", "\n")
+        .replace("\\r", "\n")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+    )
+    lines = [line.rstrip() for line in normalized.split("\n")]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines).strip())

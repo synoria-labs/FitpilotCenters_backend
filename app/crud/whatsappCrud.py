@@ -728,6 +728,7 @@ async def insert_outbound_message(
     text: str,
     wa_message_id: Optional[str] = None,
     message_type: str = "text",
+    template_id: Optional[int] = None,
 ) -> Message:
     """Insert an outbound message after a successful Cloud API send. Caller commits."""
     now = datetime.utcnow()
@@ -738,6 +739,7 @@ async def insert_outbound_message(
         direction="outbound",
         message_type=message_type,
         text_content=text,
+        template_id=template_id,
         timestamp=now,
         created_at=now,
         is_processed=1,

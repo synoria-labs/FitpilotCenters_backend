@@ -27,7 +27,7 @@ from app.graphql.whatsapp.template_types import (
 from app.graphql.whatsapp.types import ChatMessage, SendMessageResult
 from app.services import whatsapp_cloud_service as cloud
 from app.services import whatsapp_template_service as mgmt
-from app.services.whatsapp_template_components import build_components
+from app.services.whatsapp_template_components import build_components, render_template_text
 
 logger = logging.getLogger(__name__)
 
@@ -206,9 +206,10 @@ class WhatsAppTemplateMutation:
             db,
             conversation_id=conversation.id,
             contact_id=contact.id,
-            text=f"[Plantilla] {tpl.template_name}",
+            text=render_template_text(tpl.components, input.body_params) or tpl.template_name,
             wa_message_id=result.get("wa_message_id"),
             message_type="template",
+            template_id=tpl.id,
         )
         await db.commit()
 

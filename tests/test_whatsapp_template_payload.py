@@ -4,6 +4,7 @@ from app.services.whatsapp_cloud_service import (
     WhatsAppError,
     _template_send_components,
 )
+from app.services.whatsapp_template_components import render_template_text
 
 
 def test_template_payload_includes_media_header_and_body_params():
@@ -75,3 +76,31 @@ def test_template_payload_rejects_missing_body_params():
 
     with pytest.raises(WhatsAppError, match="requiere 2"):
         _template_send_components(components, ["Alejandro"])
+
+
+def test_render_template_text_uses_sent_params_and_footer():
+    components = [
+        {
+            "type": "BODY",
+            "text": "Hola {{1}}, vence el {{2}}",
+            "example": {"body_text": [["Alejandro", "22 de abril"]]},
+        },
+        {"type": "FOOTER", "text": "Love Fitness"},
+    ]
+
+    assert (
+        render_template_text(components, ["Estefania", "30 de junio"])
+        == "Hola Estefania, vence el 30 de junio\n\nLove Fitness"
+    )
+
+
+def test_render_template_text_falls_back_to_examples():
+    components = [
+        {
+            "type": "BODY",
+            "text": "Hola {{1}}",
+            "example": {"body_text": [["Alejandro"]]},
+        }
+    ]
+
+    assert render_template_text(components, []) == "Hola Alejandro"
