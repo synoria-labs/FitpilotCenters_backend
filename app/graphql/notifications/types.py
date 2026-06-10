@@ -36,6 +36,7 @@ class NotificationSettingType:
     enabled: bool
     template_id: Optional[int]
     param_mapping: Optional[List[str]]
+    header_media_url: Optional[str]
     offsets_days: Optional[List[int]]
     template: Optional[WhatsAppTemplate]
 
@@ -61,6 +62,7 @@ class NotificationSettingType:
             enabled=bool(data.enabled) if data is not None else False,
             template_id=data.template_id if data is not None else None,
             param_mapping=param_mapping,
+            header_media_url=data.header_media_url if data is not None else None,
             offsets_days=offsets_days,
             template=template,
         )
@@ -72,6 +74,7 @@ class SaveNotificationSettingInput:
     enabled: bool = False
     template_id: Optional[int] = None
     param_mapping: Optional[List[str]] = None
+    header_media_url: Optional[str] = None
     offsets_days: Optional[List[int]] = None
 
 
@@ -88,4 +91,11 @@ class SweepResult:
     sent: int = 0
     skipped: int = 0
     failed: int = 0
+    error: Optional[str] = None
+
+
+@strawberry.type
+class NotificationRetryResult:
+    success: bool = False
+    status: Optional[str] = None
     error: Optional[str] = None

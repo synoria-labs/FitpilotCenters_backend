@@ -4,7 +4,10 @@ from app.services.whatsapp_cloud_service import (
     WhatsAppError,
     _template_send_components,
 )
-from app.services.whatsapp_template_components import render_template_text
+from app.services.whatsapp_template_components import (
+    render_template_text,
+    required_header_media_format,
+)
 
 
 def test_template_payload_includes_media_header_and_body_params():
@@ -45,6 +48,12 @@ def test_template_payload_includes_media_header_and_body_params():
             ],
         },
     ]
+
+
+def test_required_header_media_format_detects_only_media_headers():
+    assert required_header_media_format([{"type": "HEADER", "format": "IMAGE"}]) == "IMAGE"
+    assert required_header_media_format([{"type": "HEADER", "format": "TEXT"}]) is None
+    assert required_header_media_format([{"type": "BODY", "text": "Hola"}]) is None
 
 
 def test_template_payload_uses_template_examples_as_send_defaults():

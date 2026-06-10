@@ -6,6 +6,8 @@ each variable must be one the event can actually resolve). ``run_notification_sw
 renewal/expired sweeps on demand — handy for testing and as a manual "send now" action.
 """
 import logging
+from typing import Optional
+from urllib.parse import urlparse
 
 import strawberry
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,16 +17,31 @@ from app.crud import notificationsCrud as crud
 from app.crud import whatsappTemplatesCrud as templates_crud
 from app.graphql.auth.permissions import IsAuthenticated
 from app.graphql.notifications.types import (
+    NotificationRetryResult,
     NotificationSettingResult,
     NotificationSettingType,
     SaveNotificationSettingInput,
     SweepResult,
 )
 from app.graphql.whatsapp.template_types import WhatsAppTemplate
-from app.services.notification_service import EVENT_TYPES, run_all_sweeps
-from app.services.whatsapp_template_components import parse_components, placeholder_count
+from app.services.notification_service import EVENT_TYPES, retry_failed_log, run_all_sweeps
+from app.services.whatsapp_template_components import (
+    parse_components,
+    placeholder_count,
+    required_header_media_format,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _clean_header_media_url(value: Optional[str]) -> Optional[str]:
+    url = (value or "").strip()
+    if not url:
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValueError("La URL de media debe ser una URL pública HTTPS.")
+    return url
 
 
 @strawberry.type
@@ -43,6 +60,10 @@ class NotificationSettingsMutation:
 
         mapping = [str(v) for v in (input.param_mapping or [])]
         offsets = [int(v) for v in (input.offsets_days or [])]
+        try:
+            header_media_url = _clean_header_media_url(input.header_media_url)
+        except ValueError as exc:
+            return NotificationSettingResult(success=False, error=str(exc))
 
         tpl = None
         if input.template_id:
@@ -52,17 +73,29 @@ class NotificationSettingsMutation:
                     success=False, error="Plantilla no encontrada."
                 )
 
-        # Can't enable an event without an approved template.
+        # Can't enable an event without a synchronized, approved template.
         if input.enabled:
             if tpl is None:
                 return NotificationSettingResult(
                     success=False,
                     error="Selecciona una plantilla antes de activar el evento.",
                 )
+            if not tpl.meta_template_id:
+                return NotificationSettingResult(
+                    success=False,
+                    error="La plantilla no está sincronizada con Meta. Sincroniza plantillas primero.",
+                )
             if (tpl.template_status or "").upper() != "APPROVED":
                 return NotificationSettingResult(
                     success=False,
                     error="La plantilla seleccionada no está aprobada por Meta.",
+                )
+
+            media_format = required_header_media_format(tpl.components)
+            if media_format and not header_media_url:
+                return NotificationSettingResult(
+                    success=False,
+                    error=f"La plantilla requiere media de encabezado ({media_format}); agrega una URL HTTPS.",
                 )
 
         # Variable mapping must match the template body placeholders exactly.
@@ -100,6 +133,11 @@ class NotificationSettingsMutation:
                 enabled=input.enabled,
                 template_id=input.template_id,
                 param_mapping=mapping,
+                header_media_url=(
+                    header_media_url
+                    if tpl is not None and required_header_media_format(tpl.components)
+                    else None
+                ),
                 offsets_days=sorted(set(offsets)) if offsets else [],
             )
         except Exception as e:  # noqa: BLE001
@@ -129,3 +167,32 @@ class NotificationSettingsMutation:
         skipped = sum(group.get("skipped", 0) for group in stats.values())
         failed = sum(group.get("failed", 0) for group in stats.values())
         return SweepResult(success=True, sent=sent, skipped=skipped, failed=failed)
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated])
+    async def retry_notification_log(self, info: Info, log_id: int) -> NotificationRetryResult:
+        """Retry one failed notification log using the current saved configuration."""
+        db: AsyncSession = info.context.db
+        try:
+            status = await retry_failed_log(db, log_id)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("Manual notification retry failed")
+            return NotificationRetryResult(success=False, status="failed", error=str(e))
+
+        errors = {
+            "not_found": "No se encontró el intento original.",
+            "not_failed": "Solo se pueden reintentar notificaciones fallidas.",
+            "no_person": "No se encontró el socio asociado al intento.",
+            "disabled": "El evento está desactivado o sin plantilla configurada.",
+            "no_template": "La plantilla actual no está disponible o no está aprobada.",
+            "no_phone": "El socio no tiene teléfono válido.",
+            "opted_out": "El socio revocó consentimiento de WhatsApp.",
+            "duplicate": "El reintento ya fue registrado.",
+            "failed": "El reintento falló; revisa el log para ver el error de Meta.",
+        }
+        if status == "sent":
+            return NotificationRetryResult(success=True, status=status)
+        return NotificationRetryResult(
+            success=False,
+            status=status,
+            error=errors.get(status, f"No se envió la notificación ({status})."),
+        )

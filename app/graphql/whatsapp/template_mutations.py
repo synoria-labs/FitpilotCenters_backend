@@ -44,12 +44,18 @@ class WhatsAppTemplateMutation:
         db: AsyncSession = info.context.db
         namespace = await mgmt.fetch_namespace() or ""
         remote = await mgmt.list_templates()
+        remote_keys = set()
         for t in remote:
             meta_id = t.get("id")
+            name = t.get("name")
+            language = t.get("language")
+            if not name or not language:
+                continue
+            remote_keys.add((name, language))
             await crud.upsert_from_meta(
                 db,
-                name=t.get("name"),
-                language=t.get("language"),
+                name=name,
+                language=language,
                 namespace=namespace,
                 status=t.get("status") or "",
                 category=t.get("category"),
@@ -57,6 +63,7 @@ class WhatsAppTemplateMutation:
                 meta_template_id=str(meta_id) if meta_id is not None else None,
                 commit=False,
             )
+        await crud.mark_not_found_except(db, remote_keys, commit=False)
         await db.commit()
         data = await crud.list_templates(db)
         return [WhatsAppTemplate.from_data(d) for d in data]

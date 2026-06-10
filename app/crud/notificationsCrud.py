@@ -31,6 +31,7 @@ class NotificationSettingData:
     enabled: bool
     template_id: Optional[int]
     param_mapping: Optional[list]
+    header_media_url: Optional[str]
     offsets_days: Optional[list]
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
@@ -43,6 +44,7 @@ class NotificationSettingData:
             enabled=bool(m.enabled),
             template_id=m.template_id,
             param_mapping=m.param_mapping,
+            header_media_url=m.header_media_url,
             offsets_days=m.offsets_days,
             created_at=m.created_at,
             updated_at=m.updated_at,
@@ -79,6 +81,7 @@ async def upsert_setting(
     enabled: bool = False,
     template_id: Optional[int] = None,
     param_mapping: Optional[list] = None,
+    header_media_url: Optional[str] = None,
     offsets_days: Optional[list] = None,
     commit: bool = True,
 ) -> NotificationSetting:
@@ -95,6 +98,7 @@ async def upsert_setting(
             enabled=bool(enabled),
             template_id=template_id,
             param_mapping=param_mapping or [],
+            header_media_url=header_media_url,
             offsets_days=offsets_days or [],
             created_at=now,
             updated_at=now,
@@ -104,6 +108,7 @@ async def upsert_setting(
         setting.enabled = bool(enabled)
         setting.template_id = template_id
         setting.param_mapping = param_mapping or []
+        setting.header_media_url = header_media_url
         setting.offsets_days = offsets_days or []
         setting.updated_at = now
     await db.flush()
