@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
@@ -40,6 +41,7 @@ from app.models.notificationModel import (
     EVENT_NEW_REGISTRATION,
     EVENT_RENEWAL_CONFIRMATION,
     EVENT_RENEWAL_REMINDER,
+    NotificationLog,
 )
 from app.services import whatsapp_cloud_service as cloud
 from app.services.whatsapp_template_components import render_template_text
@@ -264,6 +266,7 @@ async def dispatch(
             language_code=tpl.template_language,
             body_params=body_params,
             components=tpl.components,
+            header_media_url=setting.header_media_url,
         )
     except cloud.WhatsAppError as e:
         await crud.mark_log(db, log, status="failed", error=e.message, commit=True)
@@ -322,6 +325,39 @@ async def _load_subscription(
         .where(MembershipSubscription.id == subscription_id)
     )
     return (await db.execute(stmt)).scalars().first()
+
+
+async def retry_failed_log(db: AsyncSession, log_id: int) -> str:
+    """Retry one failed notification using today's saved configuration.
+
+    The original log row is left untouched. A new log row is created with a derived
+    dedup key so the retry remains auditable without weakening normal idempotency.
+    """
+    original = await db.get(NotificationLog, log_id)
+    if original is None:
+        return "not_found"
+    if original.status != "failed":
+        return "not_failed"
+    if original.person_id is None:
+        return "no_person"
+
+    person = await _load_person(db, original.person_id)
+    if person is None:
+        return "no_person"
+
+    subscription = (
+        await _load_subscription(db, original.subscription_id)
+        if original.subscription_id is not None
+        else None
+    )
+    retry_key = f"{original.dedup_key}:retry:{original.id}:{uuid.uuid4().hex[:8]}"
+    return await dispatch(
+        db,
+        event_type=original.event_type,
+        person=person,
+        subscription=subscription,
+        dedup_key=retry_key,
+    )
 
 
 async def dispatch_event_in_background(

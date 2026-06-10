@@ -5,7 +5,8 @@ Two tables power the automated WhatsApp notification system:
 * ``notification_settings`` — one row per business event (new registration, renewal
   reminder, renewal confirmation, expired membership). Each row stores which approved
   Meta template to use, how its ``{{1}}..{{n}}`` placeholders map to member variables,
-  whether the event is enabled, and (for reminders) the day offsets before expiry.
+  whether the event is enabled, an optional media URL for templates with media headers,
+  and (for reminders) the day offsets before expiry.
 
 * ``notification_log`` — an idempotency + audit ledger. Each send attempt claims a unique
   ``dedup_key`` *before* contacting Meta, so the same notification is never sent twice even
@@ -53,6 +54,8 @@ class NotificationSetting(Base):
     # Ordered list of variable keys for the template body placeholders, e.g.
     # ["member_first_name", "plan_name", "end_date"] maps {{1}}->name, {{2}}->plan, {{3}}->date.
     param_mapping: Mapped[Optional[list]] = mapped_column(JSON)
+    # Public HTTPS URL used when the selected template has IMAGE/VIDEO/DOCUMENT header media.
+    header_media_url: Mapped[Optional[str]] = mapped_column(String(1000))
     # Reminder day offsets before end_at, e.g. [7, 1]. Only used by renewal_reminder.
     offsets_days: Mapped[Optional[list]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(

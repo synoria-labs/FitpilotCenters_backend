@@ -26,6 +26,38 @@ SCHEMA = "app"
 
 
 def upgrade() -> None:
+    # Some legacy deployments created whatsapp_templates without a primary key even
+    # though the SQLAlchemy model treats id as the PK. The notification setting FK
+    # needs a unique referenced column, so repair that invariant before creating it.
+    op.execute(
+        f"""
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conrelid = '{SCHEMA}.whatsapp_templates'::regclass
+              AND contype = 'p'
+          ) THEN
+            IF EXISTS (SELECT 1 FROM {SCHEMA}.whatsapp_templates WHERE id IS NULL) THEN
+              RAISE EXCEPTION 'Cannot add PK: %.whatsapp_templates.id has NULL values', '{SCHEMA}';
+            END IF;
+            IF EXISTS (
+              SELECT 1
+              FROM {SCHEMA}.whatsapp_templates
+              GROUP BY id
+              HAVING COUNT(*) > 1
+            ) THEN
+              RAISE EXCEPTION 'Cannot add PK: %.whatsapp_templates.id has duplicate values', '{SCHEMA}';
+            END IF;
+            ALTER TABLE {SCHEMA}.whatsapp_templates ALTER COLUMN id SET NOT NULL;
+            ALTER TABLE {SCHEMA}.whatsapp_templates
+              ADD CONSTRAINT whatsapp_templates_pkey PRIMARY KEY (id);
+          END IF;
+        END $$;
+        """
+    )
+
     op.create_table(
         "notification_settings",
         sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True),

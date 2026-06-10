@@ -7,7 +7,7 @@ the database; callers commit (``commit=True`` by default for convenience).
 """
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Set, Tuple
 
 import logging
 
@@ -59,6 +59,12 @@ async def list_templates(
         stmt = stmt.where(WhatsAppTemplate.template_name.ilike(f"%{search}%"))
     rows = (await db.execute(stmt)).scalars().all()
     return [WhatsAppTemplateData.from_model(r) for r in rows]
+
+
+async def list_template_models(db: AsyncSession) -> List[WhatsAppTemplate]:
+    """Return local template models for internal reconciliation jobs."""
+    rows = (await db.execute(select(WhatsAppTemplate))).scalars().all()
+    return list(rows)
 
 
 async def get_template(db: AsyncSession, template_id: int) -> Optional[WhatsAppTemplateData]:
@@ -191,10 +197,32 @@ async def upsert_from_meta(
         tpl.template_status = status
         tpl.category = category
         tpl.components = components
-        if meta_template_id:
-            tpl.meta_template_id = meta_template_id
+        tpl.meta_template_id = meta_template_id
         tpl.updated_at = now
     await db.flush()
     if commit:
         await db.commit()
     return tpl
+
+
+async def mark_not_found_except(
+    db: AsyncSession,
+    remote_keys: Set[Tuple[str, str]],
+    *,
+    commit: bool = True,
+) -> int:
+    """Mark local templates absent from Meta as stale without deleting audit references."""
+    count = 0
+    for tpl in await list_template_models(db):
+        key = (tpl.template_name, tpl.template_language)
+        if key in remote_keys:
+            continue
+        if tpl.template_status != "NOT_FOUND" or tpl.meta_template_id is not None:
+            tpl.template_status = "NOT_FOUND"
+            tpl.meta_template_id = None
+            tpl.updated_at = datetime.utcnow()
+            count += 1
+    await db.flush()
+    if commit:
+        await db.commit()
+    return count

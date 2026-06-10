@@ -17,6 +17,19 @@ def placeholder_count(body_text: str) -> int:
     return max(indices) if indices else 0
 
 
+def required_header_media_format(components: Optional[List[Any]]) -> Optional[str]:
+    """Return IMAGE/VIDEO/DOCUMENT when the template requires header media."""
+    for component in components or []:
+        if not isinstance(component, dict):
+            continue
+        if str(component.get("type") or "").upper() != "HEADER":
+            continue
+        header_format = str(component.get("format") or "").upper()
+        if header_format in {"IMAGE", "VIDEO", "DOCUMENT"}:
+            return header_format
+    return None
+
+
 def build_components(
     body_text: str,
     body_examples: Optional[List[str]] = None,
