@@ -32,7 +32,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.crud import notificationsCrud as crud
-from app.crud import whatsappMediaAssetsCrud as media_crud
 from app.crud import whatsappCrud as chat_crud
 from app.crud import whatsappTemplatesCrud as templates_crud
 from app.db.postgresql import async_session_factory
@@ -47,6 +46,7 @@ from app.models.notificationModel import (
 from app.services import whatsapp_cloud_service as cloud
 from app.services import whatsapp_media_assets_service as media_service
 from app.services.whatsapp_template_components import render_template_text
+from app.services.whatsapp_template_send_media import resolve_template_send_header_media
 
 logger = logging.getLogger(__name__)
 
@@ -255,12 +255,12 @@ async def dispatch(
 
     context = build_variable_context(person, subscription, plan)
     body_params = _resolve_body_params(setting.param_mapping, context)
-    header_media_url = setting.header_media_url
     try:
-        asset = await media_crud.get_asset_model(db, setting.header_media_asset_id)
-        header_media_url = media_service.resolve_header_media_url(
-            asset=asset,
-            legacy_url=setting.header_media_url,
+        resolved_media = await resolve_template_send_header_media(
+            db,
+            template=tpl,
+            override_media_asset_id=setting.header_media_asset_id,
+            legacy_header_media_url=setting.header_media_url,
         )
     except media_service.MediaAssetError as exc:
         await crud.mark_log(db, log, status="failed", error=str(exc), commit=True)
@@ -278,7 +278,8 @@ async def dispatch(
             language_code=tpl.template_language,
             body_params=body_params,
             components=tpl.components,
-            header_media_url=header_media_url,
+            header_media_url=resolved_media.media_url,
+            header_media_id=resolved_media.media_id,
         )
     except cloud.WhatsAppError as e:
         await crud.mark_log(db, log, status="failed", error=e.message, commit=True)
