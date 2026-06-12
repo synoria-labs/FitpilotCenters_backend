@@ -7,14 +7,16 @@ send (which works for any recipient, unlike free-form text).
 """
 import logging
 import re
-from typing import List
+from typing import List, Optional
 
 import strawberry
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from strawberry.file_uploads import Upload
 from strawberry.types import Info
 
 from app.crud import whatsappCrud as chat_crud
+from app.crud import whatsappMediaAssetsCrud as media_crud
 from app.crud import whatsappTemplatesCrud as crud
 from app.graphql.auth.permissions import IsAuthenticated
 from app.graphql.whatsapp.template_types import (
@@ -22,12 +24,20 @@ from app.graphql.whatsapp.template_types import (
     SendTemplateTestInput,
     TemplateResult,
     UpdateTemplateInput,
+    WhatsAppMediaAsset,
+    WhatsAppMediaKind,
     WhatsAppTemplate,
 )
 from app.graphql.whatsapp.types import ChatMessage, SendMessageResult
 from app.services import whatsapp_cloud_service as cloud
 from app.services import whatsapp_template_service as mgmt
-from app.services.whatsapp_template_components import build_components, render_template_text
+from app.services import whatsapp_media_assets_service as media_service
+from app.services.whatsapp_template_components import (
+    build_components,
+    header_handle_from_components,
+    render_template_text,
+    required_header_media_format,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +46,74 @@ def _to_template_type(model) -> WhatsAppTemplate:
     return WhatsAppTemplate.from_data(crud.WhatsAppTemplateData.from_model(model))
 
 
+async def _ensure_header_asset(
+    db: AsyncSession,
+    asset_id: Optional[int],
+    header_format: Optional[str],
+):
+    asset = await media_crud.get_asset_model(db, asset_id)
+    media_service.assert_asset_matches_header(asset, header_format)
+    return asset
+
+
+async def _ensure_sample_handle(db: AsyncSession, asset) -> str:
+    existing = (asset.sample_header_handle or "").strip()
+    if existing:
+        return existing
+    raw = await media_service.fetch_public_asset_bytes(asset)
+    handle = await mgmt.upload_template_header_sample(
+        filename=asset.original_filename,
+        mime_type=asset.mime_type,
+        content=raw,
+    )
+    await media_crud.store_sample_handle(db, asset, handle, commit=False)
+    return handle
+
+
 @strawberry.type
 class WhatsAppTemplateMutation:
+    @strawberry.mutation(permission_classes=[IsAuthenticated])
+    async def upload_whatsapp_media_asset(
+        self,
+        info: Info,
+        file: Upload,
+        kind: WhatsAppMediaKind,
+        display_name: Optional[str] = None,
+    ) -> WhatsAppMediaAsset:
+        """Upload a reusable WhatsApp media asset to configured R2/S3 storage."""
+        db: AsyncSession = info.context.db
+        try:
+            asset = await media_service.upload_asset(
+                db,
+                file=file,
+                kind=kind.value,
+                display_name=display_name,
+            )
+        except media_service.MediaAssetError as exc:
+            raise ValueError(str(exc)) from exc
+        return WhatsAppMediaAsset.from_data(media_crud.WhatsAppMediaAssetData.from_model(asset))
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated])
+    async def archive_whatsapp_media_asset(self, info: Info, id: int) -> WhatsAppMediaAsset:
+        db: AsyncSession = info.context.db
+        asset = await media_crud.archive_asset(db, id)
+        if asset is None:
+            raise ValueError("Asset no encontrado.")
+        return WhatsAppMediaAsset.from_data(media_crud.WhatsAppMediaAssetData.from_model(asset))
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated])
+    async def validate_whatsapp_media_asset(self, info: Info, id: int) -> WhatsAppMediaAsset:
+        db: AsyncSession = info.context.db
+        asset = await media_crud.get_asset_model(db, id)
+        if asset is None:
+            raise ValueError("Asset no encontrado.")
+        try:
+            await media_service.validate_asset_url(asset)
+        except media_service.MediaAssetError as exc:
+            raise ValueError(str(exc)) from exc
+        asset = await media_crud.mark_validated(db, asset)
+        return WhatsAppMediaAsset.from_data(media_crud.WhatsAppMediaAssetData.from_model(asset))
+
     @strawberry.mutation(permission_classes=[IsAuthenticated])
     async def sync_whatsapp_templates(self, info: Info) -> List[WhatsAppTemplate]:
         """Pull every template from Meta and upsert the local mirror; return the result."""
@@ -79,7 +155,28 @@ class WhatsAppTemplateMutation:
         if not (input.body_text or "").strip():
             return TemplateResult(success=False, error="El cuerpo de la plantilla es obligatorio.")
 
-        components = build_components(input.body_text, input.body_examples, input.footer_text)
+        header_format = (input.header_format or "").strip().upper() or None
+        header_handle = None
+        header_asset_id = None
+        if header_format:
+            try:
+                asset = await _ensure_header_asset(db, input.header_media_asset_id, header_format)
+                header_handle = await _ensure_sample_handle(db, asset)
+                header_asset_id = asset.id
+            except (media_service.MediaAssetError, cloud.WhatsAppError, ValueError) as exc:
+                await db.rollback()
+                return TemplateResult(success=False, error=str(getattr(exc, "message", exc)))
+
+        try:
+            components = build_components(
+                input.body_text,
+                input.body_examples,
+                input.footer_text,
+                header_format=header_format,
+                header_handle=header_handle,
+            )
+        except ValueError as exc:
+            return TemplateResult(success=False, error=str(exc))
 
         try:
             namespace = await mgmt.fetch_namespace() or ""
@@ -106,6 +203,7 @@ class WhatsAppTemplateMutation:
                 category=created.get("category") or input.category,
                 components=components,
                 meta_template_id=str(meta_id) if meta_id is not None else None,
+                default_header_media_asset_id=header_asset_id,
             )
         except IntegrityError:
             await db.rollback()
@@ -129,7 +227,28 @@ class WhatsAppTemplateMutation:
                 error="La plantilla no tiene id de Meta; sincroniza primero.",
             )
 
-        components = build_components(input.body_text, input.body_examples, input.footer_text)
+        header_format = required_header_media_format(tpl.components)
+        header_handle = header_handle_from_components(tpl.components)
+        header_asset_id = input.header_media_asset_id or tpl.default_header_media_asset_id
+        if header_format and input.header_media_asset_id:
+            try:
+                asset = await _ensure_header_asset(db, input.header_media_asset_id, header_format)
+                header_handle = await _ensure_sample_handle(db, asset)
+                header_asset_id = asset.id
+            except (media_service.MediaAssetError, cloud.WhatsAppError, ValueError) as exc:
+                await db.rollback()
+                return TemplateResult(success=False, error=str(getattr(exc, "message", exc)))
+
+        try:
+            components = build_components(
+                input.body_text,
+                input.body_examples,
+                input.footer_text,
+                header_format=header_format,
+                header_handle=header_handle,
+            )
+        except ValueError as exc:
+            return TemplateResult(success=False, error=str(exc))
         try:
             await mgmt.edit_template(tpl.meta_template_id, components)
         except cloud.WhatsAppError as e:
@@ -140,7 +259,11 @@ class WhatsAppTemplateMutation:
 
         # Editing resets Meta review, so the template goes back to PENDING.
         updated = await crud.update_local(
-            db, input.id, components=components, status="PENDING"
+            db,
+            input.id,
+            components=components,
+            status="PENDING",
+            default_header_media_asset_id=header_asset_id,
         )
         return TemplateResult(success=True, template=_to_template_type(updated))
 
@@ -191,6 +314,15 @@ class WhatsAppTemplateMutation:
         )
         conversation = await chat_crud.get_or_open_conversation(db, contact.id)
 
+        header_media_url = input.header_media_url
+        media_format = required_header_media_format(tpl.components)
+        if input.header_media_asset_id:
+            try:
+                asset = await _ensure_header_asset(db, input.header_media_asset_id, media_format)
+                header_media_url = asset.public_url
+            except (media_service.MediaAssetError, ValueError) as exc:
+                return SendMessageResult(success=False, error=str(exc))
+
         try:
             result = await cloud.send_template(
                 to=contact.wa_id,
@@ -198,7 +330,7 @@ class WhatsAppTemplateMutation:
                 language_code=tpl.template_language,
                 body_params=input.body_params,
                 components=tpl.components,
-                header_media_url=input.header_media_url,
+                header_media_url=header_media_url,
                 header_media_id=input.header_media_id,
             )
         except cloud.WhatsAppError as e:

@@ -80,6 +80,7 @@ graphql_app = GraphQLRouter(
         GRAPHQL_TRANSPORT_WS_PROTOCOL,
         GRAPHQL_WS_PROTOCOL,
     ],
+    multipart_uploads_enabled=True,
 )
 app.include_router(graphql_app, prefix="/graphql")
 

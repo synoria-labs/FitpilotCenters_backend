@@ -28,6 +28,7 @@ class WhatsAppTemplateData:
     template_status: str
     category: Optional[str]
     meta_template_id: Optional[str]
+    default_header_media_asset_id: Optional[int]
     components: Optional[list]
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
@@ -42,6 +43,7 @@ class WhatsAppTemplateData:
             template_status=m.template_status,
             category=m.category,
             meta_template_id=m.meta_template_id,
+            default_header_media_asset_id=m.default_header_media_asset_id,
             components=m.components,
             created_at=m.created_at,
             updated_at=m.updated_at,
@@ -102,6 +104,7 @@ async def create_local(
     category: Optional[str],
     components: Optional[list],
     meta_template_id: Optional[str],
+    default_header_media_asset_id: Optional[int] = None,
     commit: bool = True,
 ) -> WhatsAppTemplate:
     now = datetime.utcnow()
@@ -112,6 +115,7 @@ async def create_local(
         template_status=status,
         category=category,
         meta_template_id=meta_template_id,
+        default_header_media_asset_id=default_header_media_asset_id,
         components=components,
         created_at=now,
         updated_at=now,
@@ -131,6 +135,7 @@ async def update_local(
     category: Optional[str] = None,
     components: Optional[list] = None,
     meta_template_id: Optional[str] = None,
+    default_header_media_asset_id: Optional[int] = None,
     commit: bool = True,
 ) -> Optional[WhatsAppTemplate]:
     tpl = await get_template_model(db, template_id)
@@ -144,6 +149,8 @@ async def update_local(
         tpl.components = components
     if meta_template_id is not None:
         tpl.meta_template_id = meta_template_id
+    if default_header_media_asset_id is not None:
+        tpl.default_header_media_asset_id = default_header_media_asset_id
     tpl.updated_at = datetime.utcnow()
     await db.flush()
     if commit:
@@ -174,6 +181,7 @@ async def upsert_from_meta(
     category: Optional[str],
     components: Optional[list],
     meta_template_id: Optional[str],
+    default_header_media_asset_id: Optional[int] = None,
     commit: bool = True,
 ) -> WhatsAppTemplate:
     """Insert or update a local row to match what Meta reports (used by sync)."""
@@ -187,6 +195,7 @@ async def upsert_from_meta(
             template_status=status,
             category=category,
             meta_template_id=meta_template_id,
+            default_header_media_asset_id=default_header_media_asset_id,
             components=components,
             created_at=now,
             updated_at=now,
@@ -198,6 +207,8 @@ async def upsert_from_meta(
         tpl.category = category
         tpl.components = components
         tpl.meta_template_id = meta_template_id
+        if default_header_media_asset_id is not None:
+            tpl.default_header_media_asset_id = default_header_media_asset_id
         tpl.updated_at = now
     await db.flush()
     if commit:

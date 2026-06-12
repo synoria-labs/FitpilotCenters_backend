@@ -34,6 +34,8 @@ def build_components(
     body_text: str,
     body_examples: Optional[List[str]] = None,
     footer_text: Optional[str] = None,
+    header_format: Optional[str] = None,
+    header_handle: Optional[str] = None,
 ) -> List[dict]:
     """Assemble a Meta ``components`` array from the simplified editor fields.
 
@@ -43,6 +45,21 @@ def build_components(
     """
     body_text = (body_text or "").strip()
     components: List[dict] = []
+
+    header_format = (header_format or "").strip().upper()
+    if header_format:
+        if header_format not in {"IMAGE", "VIDEO", "DOCUMENT"}:
+            raise ValueError("Solo se soportan headers IMAGE, VIDEO o DOCUMENT en este editor.")
+        handle = (header_handle or "").strip()
+        if not handle:
+            raise ValueError(f"El header {header_format} requiere un header_handle de Meta.")
+        components.append(
+            {
+                "type": "HEADER",
+                "format": header_format,
+                "example": {"header_handle": [handle]},
+            }
+        )
 
     body: dict = {"type": "BODY", "text": body_text}
     count = placeholder_count(body_text)
@@ -60,6 +77,24 @@ def build_components(
         components.append({"type": "FOOTER", "text": footer_text})
 
     return components
+
+
+def header_handle_from_components(components: Optional[List[Any]]) -> Optional[str]:
+    """Return the first stored media header sample handle, if present."""
+    for component in components or []:
+        if not isinstance(component, dict):
+            continue
+        if str(component.get("type") or "").upper() != "HEADER":
+            continue
+        example = component.get("example")
+        if not isinstance(example, dict):
+            continue
+        handles = example.get("header_handle")
+        if isinstance(handles, list) and handles:
+            value = str(handles[0] or "").strip()
+            if value:
+                return value
+    return None
 
 
 def parse_components(

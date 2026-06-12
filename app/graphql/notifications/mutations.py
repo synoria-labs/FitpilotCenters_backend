@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from strawberry.types import Info
 
 from app.crud import notificationsCrud as crud
+from app.crud import whatsappMediaAssetsCrud as media_crud
 from app.crud import whatsappTemplatesCrud as templates_crud
 from app.graphql.auth.permissions import IsAuthenticated
 from app.graphql.notifications.types import (
@@ -25,6 +26,7 @@ from app.graphql.notifications.types import (
 )
 from app.graphql.whatsapp.template_types import WhatsAppTemplate
 from app.services.notification_service import EVENT_TYPES, retry_failed_log, run_all_sweeps
+from app.services import whatsapp_media_assets_service as media_service
 from app.services.whatsapp_template_components import (
     parse_components,
     placeholder_count,
@@ -64,6 +66,7 @@ class NotificationSettingsMutation:
             header_media_url = _clean_header_media_url(input.header_media_url)
         except ValueError as exc:
             return NotificationSettingResult(success=False, error=str(exc))
+        header_media_asset_id = getattr(input, "header_media_asset_id", None)
 
         tpl = None
         if input.template_id:
@@ -92,10 +95,27 @@ class NotificationSettingsMutation:
                 )
 
             media_format = required_header_media_format(tpl.components)
-            if media_format and not header_media_url:
+            if media_format:
+                asset = None
+                if header_media_asset_id:
+                    asset = await media_crud.get_asset_model(db, header_media_asset_id)
+                    try:
+                        media_service.assert_asset_matches_header(asset, media_format)
+                    except media_service.MediaAssetError as exc:
+                        return NotificationSettingResult(success=False, error=str(exc))
+                    header_media_url = asset.public_url
+                if not header_media_url:
+                    return NotificationSettingResult(
+                        success=False,
+                        error=(
+                            f"La plantilla requiere media de encabezado ({media_format}); "
+                            "selecciona un asset o agrega una URL HTTPS."
+                        ),
+                    )
+            elif header_media_asset_id:
                 return NotificationSettingResult(
                     success=False,
-                    error=f"La plantilla requiere media de encabezado ({media_format}); agrega una URL HTTPS.",
+                    error="La plantilla seleccionada no requiere media de encabezado.",
                 )
 
         # Variable mapping must match the template body placeholders exactly.
@@ -135,6 +155,11 @@ class NotificationSettingsMutation:
                 param_mapping=mapping,
                 header_media_url=(
                     header_media_url
+                    if tpl is not None and required_header_media_format(tpl.components)
+                    else None
+                ),
+                header_media_asset_id=(
+                    header_media_asset_id
                     if tpl is not None and required_header_media_format(tpl.components)
                     else None
                 ),

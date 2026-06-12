@@ -80,6 +80,20 @@ def test_template_payload_requires_media_header_source():
         _template_send_components(components, [])
 
 
+def test_template_payload_does_not_use_header_handle_as_send_media():
+    components = [
+        {
+            "type": "HEADER",
+            "format": "IMAGE",
+            "example": {"header_handle": ["4:meta-sample-handle"]},
+        },
+        {"type": "BODY", "text": "Hola"},
+    ]
+
+    with pytest.raises(WhatsAppError, match="encabezado de media"):
+        _template_send_components(components, [])
+
+
 def test_template_payload_rejects_missing_body_params():
     components = [{"type": "BODY", "text": "Hola {{1}} {{2}}"}]
 

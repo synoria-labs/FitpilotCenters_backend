@@ -21,6 +21,14 @@ class WhatsAppConfig:
     # Inbound webhook
     WEBHOOK_VERIFY_TOKEN: str = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "")
     APP_SECRET: str = os.getenv("WHATSAPP_APP_SECRET", "")
+    # Owner used by Meta's Resumable Upload API to generate template header sample handles.
+    # Usually the Meta app id; deployments may override it when Meta requires another owner.
+    APP_ID: str = os.getenv("WHATSAPP_APP_ID", "")
+    UPLOAD_OWNER_ID: str = os.getenv("WHATSAPP_UPLOAD_OWNER_ID", "")
+
+    @classmethod
+    def upload_owner_id(cls) -> str:
+        return cls.UPLOAD_OWNER_ID or cls.APP_ID or cls.BUSINESS_ACCOUNT_ID
 
     @classmethod
     def graph_url(cls, path: str) -> str:
