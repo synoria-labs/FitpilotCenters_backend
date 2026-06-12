@@ -56,6 +56,11 @@ class NotificationSetting(Base):
     param_mapping: Mapped[Optional[list]] = mapped_column(JSON)
     # Public HTTPS URL used when the selected template has IMAGE/VIDEO/DOCUMENT header media.
     header_media_url: Mapped[Optional[str]] = mapped_column(String(1000))
+    # Preferred media source for IMAGE/VIDEO/DOCUMENT header templates. The URL column is
+    # retained for legacy configurations and as a denormalized send fallback.
+    header_media_asset_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("whatsapp_media_assets.id", ondelete="SET NULL")
+    )
     # Reminder day offsets before end_at, e.g. [7, 1]. Only used by renewal_reminder.
     offsets_days: Mapped[Optional[list]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(

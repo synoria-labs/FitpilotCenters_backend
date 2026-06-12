@@ -155,6 +155,9 @@ class WhatsAppTemplate(Base):
     template_status: Mapped[str] = mapped_column(String(30), nullable=False)
     category: Mapped[Optional[str]] = mapped_column(String(30))
     meta_template_id: Mapped[Optional[str]] = mapped_column(String(64))
+    default_header_media_asset_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("whatsapp_media_assets.id", ondelete="SET NULL")
+    )
     components: Mapped[Optional[list]] = mapped_column(JSON)
     created_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, default=datetime.utcnow)
     updated_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, default=datetime.utcnow)
@@ -166,4 +169,38 @@ class WhatsAppTemplate(Base):
             "template_language",
             unique=True,
         ),
+    )
+
+
+class WhatsAppMediaAsset(Base):
+    """Reusable media asset for WhatsApp template headers and previews.
+
+    This table is independent from ``media``: inbound message attachments remain tied to
+    a message row, while these assets are admin-managed files stored in S3/R2 and reused
+    by templates, tests and notification settings.
+    """
+
+    __tablename__ = "whatsapp_media_assets"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    media_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    file_ext: Mapped[str] = mapped_column(String(20), nullable=False)
+    file_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    storage_key: Mapped[str] = mapped_column(String(500), nullable=False)
+    public_url: Mapped[str] = mapped_column(String(1000), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    sample_header_handle: Mapped[Optional[str]] = mapped_column(Text)
+    sample_handle_generated_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP)
+    created_by_id: Mapped[Optional[int]] = mapped_column(BigInteger)
+    created_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, default=datetime.utcnow)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, default=datetime.utcnow)
+    last_validated_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP)
+
+    __table_args__ = (
+        Index("uq_whatsapp_media_assets_storage_key", "storage_key", unique=True),
+        Index("idx_whatsapp_media_assets_kind_status", "media_kind", "status"),
     )

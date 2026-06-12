@@ -140,3 +140,59 @@ async def delete_template(
     if resp.status_code >= 400:
         raise _parse_api_error(resp)
     return resp.json()
+
+
+async def upload_template_header_sample(
+    *,
+    filename: str,
+    mime_type: str,
+    content: bytes,
+) -> str:
+    """Upload example media to Meta and return the handle used in ``header_handle``.
+
+    Media headers in template creation do not use the public send URL. Meta requires an
+    asset handle generated through the Graph Resumable Upload API and then stores that
+    handle under ``components[].example.header_handle`` for template review.
+    """
+    _require_management()
+    owner_id = whatsapp_config.upload_owner_id()
+    if not owner_id:
+        raise WhatsAppError(
+            "Falta WHATSAPP_APP_ID o WHATSAPP_UPLOAD_OWNER_ID para subir la muestra de media a Meta."
+        )
+    if not content:
+        raise WhatsAppError("El archivo de muestra esta vacio.")
+
+    start_url = whatsapp_config.graph_url(f"{owner_id}/uploads")
+    params = {
+        "file_name": filename,
+        "file_length": str(len(content)),
+        "file_type": mime_type,
+        "access_token": whatsapp_config.ACCESS_TOKEN,
+    }
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        start = await client.post(start_url, params=params)
+        if start.status_code >= 400:
+            raise _parse_api_error(start)
+        session_id = start.json().get("id")
+        if not session_id:
+            raise WhatsAppError(f"Meta no devolvio upload session id: {start.text}")
+
+        upload_url = whatsapp_config.graph_url(str(session_id))
+        upload = await client.post(
+            upload_url,
+            content=content,
+            headers={
+                **_auth_headers(),
+                "Content-Type": "application/octet-stream",
+                "file_offset": "0",
+            },
+        )
+        if upload.status_code >= 400:
+            raise _parse_api_error(upload)
+
+    payload = upload.json()
+    handle = str(payload.get("h") or payload.get("id") or "").strip()
+    if not handle:
+        raise WhatsAppError(f"Meta no devolvio header handle: {payload}")
+    return handle

@@ -37,6 +37,7 @@ class NotificationSettingType:
     template_id: Optional[int]
     param_mapping: Optional[List[str]]
     header_media_url: Optional[str]
+    header_media_asset_id: Optional[int]
     offsets_days: Optional[List[int]]
     template: Optional[WhatsAppTemplate]
 
@@ -63,6 +64,7 @@ class NotificationSettingType:
             template_id=data.template_id if data is not None else None,
             param_mapping=param_mapping,
             header_media_url=data.header_media_url if data is not None else None,
+            header_media_asset_id=data.header_media_asset_id if data is not None else None,
             offsets_days=offsets_days,
             template=template,
         )
@@ -75,6 +77,7 @@ class SaveNotificationSettingInput:
     template_id: Optional[int] = None
     param_mapping: Optional[List[str]] = None
     header_media_url: Optional[str] = None
+    header_media_asset_id: Optional[int] = None
     offsets_days: Optional[List[int]] = None
 
 

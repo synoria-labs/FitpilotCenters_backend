@@ -60,17 +60,6 @@ def _body_example_values(component: Dict[str, Any]) -> List[str]:
     return [str(value) for value in rows[0]]
 
 
-def _header_example_media_url(component: Dict[str, Any]) -> Optional[str]:
-    example = component.get("example")
-    if not isinstance(example, dict):
-        return None
-    handles = example.get("header_handle")
-    if not isinstance(handles, list) or not handles:
-        return None
-    value = str(handles[0] or "").strip()
-    return value or None
-
-
 def _template_send_components(
     template_components: Optional[List[Dict[str, Any]]],
     body_params: Optional[List[str]],
@@ -97,7 +86,7 @@ def _template_send_components(
         if header_format in {"IMAGE", "VIDEO", "DOCUMENT"}:
             media_type = header_format.lower()
             media_value = (header_media_id or "").strip()
-            media_link = (header_media_url or "").strip() or _header_example_media_url(component)
+            media_link = (header_media_url or "").strip()
             if media_value:
                 media_payload = {"id": media_value}
             elif media_link:
