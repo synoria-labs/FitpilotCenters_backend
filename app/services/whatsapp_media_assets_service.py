@@ -215,17 +215,5 @@ def _extension(filename: str, mime_type: str) -> str:
     return ".jpg" if guessed == ".jpe" else guessed
 
 
-def resolve_header_media_url(
-    *,
-    asset: Optional[WhatsAppMediaAsset],
-    legacy_url: Optional[str] = None,
-) -> Optional[str]:
-    if asset is not None:
-        if (asset.status or "").lower() != "active":
-            raise MediaAssetError("El asset seleccionado no esta activo.")
-        return asset.public_url
-    return (legacy_url or "").strip() or None
-
-
 def header_format_for_kind(kind: str) -> Optional[str]:
     return MEDIA_KIND_TO_HEADER_FORMAT.get((kind or "").lower())

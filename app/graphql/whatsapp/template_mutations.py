@@ -38,6 +38,7 @@ from app.services.whatsapp_template_components import (
     render_template_text,
     required_header_media_format,
 )
+from app.services.whatsapp_template_send_media import resolve_template_send_header_media
 
 logger = logging.getLogger(__name__)
 
@@ -307,31 +308,32 @@ class WhatsAppTemplateMutation:
         if not wa_id:
             return SendMessageResult(success=False, error="Número de teléfono inválido.")
 
-        # authoritative=False: reuse an existing contact (52/521 aware) instead of
-        # creating a duplicate, and never overwrite its canonical wa_id with the typed one.
-        contact = await chat_crud.upsert_contact(
-            db, wa_id=wa_id, phone_number=phone, authoritative=False
-        )
-        conversation = await chat_crud.get_or_open_conversation(db, contact.id)
-
-        header_media_url = input.header_media_url
-        media_format = required_header_media_format(tpl.components)
-        if input.header_media_asset_id:
-            try:
-                asset = await _ensure_header_asset(db, input.header_media_asset_id, media_format)
-                header_media_url = asset.public_url
-            except (media_service.MediaAssetError, ValueError) as exc:
-                return SendMessageResult(success=False, error=str(exc))
+        try:
+            resolved_media = await resolve_template_send_header_media(
+                db,
+                template=tpl,
+                override_media_asset_id=input.header_media_asset_id,
+                legacy_header_media_url=input.header_media_url,
+                header_media_id=input.header_media_id,
+            )
+        except media_service.MediaAssetError as exc:
+            return SendMessageResult(success=False, error=str(exc))
 
         try:
+            # authoritative=False: reuse an existing contact (52/521 aware) instead of
+            # creating a duplicate, and never overwrite its canonical wa_id with the typed one.
+            contact = await chat_crud.upsert_contact(
+                db, wa_id=wa_id, phone_number=phone, authoritative=False
+            )
+            conversation = await chat_crud.get_or_open_conversation(db, contact.id)
             result = await cloud.send_template(
                 to=contact.wa_id,
                 template_name=tpl.template_name,
                 language_code=tpl.template_language,
                 body_params=input.body_params,
                 components=tpl.components,
-                header_media_url=header_media_url,
-                header_media_id=input.header_media_id,
+                header_media_url=resolved_media.media_url,
+                header_media_id=resolved_media.media_id,
             )
         except cloud.WhatsAppError as e:
             await db.rollback()

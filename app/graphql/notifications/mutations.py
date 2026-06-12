@@ -14,7 +14,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from strawberry.types import Info
 
 from app.crud import notificationsCrud as crud
-from app.crud import whatsappMediaAssetsCrud as media_crud
 from app.crud import whatsappTemplatesCrud as templates_crud
 from app.graphql.auth.permissions import IsAuthenticated
 from app.graphql.notifications.types import (
@@ -32,6 +31,7 @@ from app.services.whatsapp_template_components import (
     placeholder_count,
     required_header_media_format,
 )
+from app.services.whatsapp_template_send_media import resolve_template_send_header_media
 
 logger = logging.getLogger(__name__)
 
@@ -96,23 +96,30 @@ class NotificationSettingsMutation:
 
             media_format = required_header_media_format(tpl.components)
             if media_format:
-                asset = None
-                if header_media_asset_id:
-                    asset = await media_crud.get_asset_model(db, header_media_asset_id)
-                    try:
-                        media_service.assert_asset_matches_header(asset, media_format)
-                    except media_service.MediaAssetError as exc:
-                        return NotificationSettingResult(success=False, error=str(exc))
-                    header_media_url = asset.public_url
-                if not header_media_url:
-                    return NotificationSettingResult(
-                        success=False,
-                        error=(
-                            f"La plantilla requiere media de encabezado ({media_format}); "
-                            "selecciona un asset o agrega una URL HTTPS."
-                        ),
+                try:
+                    resolved_media = await resolve_template_send_header_media(
+                        db,
+                        template=tpl,
+                        override_media_asset_id=header_media_asset_id,
+                        legacy_header_media_url=header_media_url,
                     )
+                except media_service.MediaAssetError as exc:
+                    return NotificationSettingResult(success=False, error=str(exc))
+
+                if resolved_media.source == "override_asset":
+                    header_media_url = None
+                elif resolved_media.source == "legacy_url":
+                    header_media_asset_id = None
+                    header_media_url = resolved_media.media_url
+                else:
+                    header_media_asset_id = None
+                    header_media_url = None
             elif header_media_asset_id:
+                return NotificationSettingResult(
+                    success=False,
+                    error="La plantilla seleccionada no requiere media de encabezado.",
+                )
+            elif header_media_url:
                 return NotificationSettingResult(
                     success=False,
                     error="La plantilla seleccionada no requiere media de encabezado.",
