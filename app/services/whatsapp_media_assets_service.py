@@ -8,6 +8,7 @@ from typing import Optional, Tuple
 from urllib.parse import urlparse
 
 import httpx
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.media_storage_config import media_storage_config
@@ -109,20 +110,41 @@ async def upload_asset(
     storage_key = f"whatsapp/templates/{digest}{ext}"
     public_url = public_url_from_key(storage_key)
 
+    existing = await crud.get_asset_by_storage_key(db, storage_key)
+    if existing:
+        return await _reuse_existing_asset(
+            db,
+            existing,
+            media_kind=media_kind,
+            public_url=public_url,
+        )
+
     await _put_object(storage_key, raw, mime_type)
-    return await crud.create_asset(
-        db,
-        media_kind=media_kind,
-        display_name=(display_name or original_filename or digest).strip(),
-        original_filename=original_filename,
-        mime_type=mime_type,
-        file_ext=ext.lstrip("."),
-        file_size=len(raw),
-        sha256=digest,
-        storage_key=storage_key,
-        public_url=public_url,
-        created_by_id=created_by_id,
-    )
+    try:
+        return await crud.create_asset(
+            db,
+            media_kind=media_kind,
+            display_name=(display_name or original_filename or digest).strip(),
+            original_filename=original_filename,
+            mime_type=mime_type,
+            file_ext=ext.lstrip("."),
+            file_size=len(raw),
+            sha256=digest,
+            storage_key=storage_key,
+            public_url=public_url,
+            created_by_id=created_by_id,
+        )
+    except IntegrityError:
+        await db.rollback()
+        existing = await crud.get_asset_by_storage_key(db, storage_key)
+        if existing:
+            return await _reuse_existing_asset(
+                db,
+                existing,
+                media_kind=media_kind,
+                public_url=public_url,
+            )
+        raise
 
 
 async def validate_asset_url(asset: WhatsAppMediaAsset) -> WhatsAppMediaAsset:
@@ -166,6 +188,21 @@ def validate_media(media_kind: str, raw: bytes, mime_type: str) -> None:
         raise MediaAssetError(
             f"MIME no soportado para {media_kind}: {mime_type}. Permitidos: {allowed_list}."
         )
+
+
+async def _reuse_existing_asset(
+    db: AsyncSession,
+    asset: WhatsAppMediaAsset,
+    *,
+    media_kind: str,
+    public_url: str,
+) -> WhatsAppMediaAsset:
+    existing_kind = (asset.media_kind or "").lower()
+    if existing_kind != media_kind:
+        raise MediaAssetError(
+            f"El archivo ya existe como {existing_kind}; no puede reutilizarse como {media_kind}."
+        )
+    return await crud.make_asset_active(db, asset, public_url=public_url)
 
 
 async def _put_object(storage_key: str, raw: bytes, mime_type: str) -> None:

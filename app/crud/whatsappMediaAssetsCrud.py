@@ -84,6 +84,13 @@ async def get_asset_model(
     return await db.get(WhatsAppMediaAsset, asset_id)
 
 
+async def get_asset_by_storage_key(
+    db: AsyncSession, storage_key: str
+) -> Optional[WhatsAppMediaAsset]:
+    stmt = select(WhatsAppMediaAsset).where(WhatsAppMediaAsset.storage_key == storage_key)
+    return (await db.execute(stmt)).scalars().first()
+
+
 async def create_asset(
     db: AsyncSession,
     *,
@@ -119,6 +126,28 @@ async def create_asset(
     await db.flush()
     if commit:
         await db.commit()
+    return asset
+
+
+async def make_asset_active(
+    db: AsyncSession,
+    asset: WhatsAppMediaAsset,
+    *,
+    public_url: Optional[str] = None,
+    commit: bool = True,
+) -> WhatsAppMediaAsset:
+    changed = False
+    if (asset.status or "").lower() != "active":
+        asset.status = "active"
+        changed = True
+    if public_url and asset.public_url != public_url:
+        asset.public_url = public_url
+        changed = True
+    if changed:
+        asset.updated_at = datetime.utcnow()
+        await db.flush()
+        if commit:
+            await db.commit()
     return asset
 
 
