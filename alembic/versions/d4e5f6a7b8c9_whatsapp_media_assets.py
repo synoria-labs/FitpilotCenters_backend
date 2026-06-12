@@ -40,21 +40,35 @@ def upgrade() -> None:
             created_at TIMESTAMP NOT NULL DEFAULT now(),
             updated_at TIMESTAMP NOT NULL DEFAULT now(),
             last_validated_at TIMESTAMP NULL
-        );
+        )
+        """
+    )
+    op.execute(
+        f"""
         CREATE UNIQUE INDEX IF NOT EXISTS uq_whatsapp_media_assets_storage_key
-            ON {SCHEMA}.whatsapp_media_assets (storage_key);
+            ON {SCHEMA}.whatsapp_media_assets (storage_key)
+        """
+    )
+    op.execute(
+        f"""
         CREATE INDEX IF NOT EXISTS idx_whatsapp_media_assets_kind_status
-            ON {SCHEMA}.whatsapp_media_assets (media_kind, status);
+            ON {SCHEMA}.whatsapp_media_assets (media_kind, status)
         """
     )
     op.execute(
         f"""
         ALTER TABLE {SCHEMA}.whatsapp_templates
-        ADD COLUMN IF NOT EXISTS default_header_media_asset_id BIGINT;
-
+        ADD COLUMN IF NOT EXISTS default_header_media_asset_id BIGINT
+        """
+    )
+    op.execute(
+        f"""
         ALTER TABLE {SCHEMA}.notification_settings
-        ADD COLUMN IF NOT EXISTS header_media_asset_id BIGINT;
-
+        ADD COLUMN IF NOT EXISTS header_media_asset_id BIGINT
+        """
+    )
+    op.execute(
+        f"""
         DO $$
         BEGIN
           IF NOT EXISTS (
@@ -89,17 +103,27 @@ def downgrade() -> None:
     op.execute(
         f"""
         ALTER TABLE {SCHEMA}.notification_settings
-        DROP CONSTRAINT IF EXISTS fk_notification_settings_header_media_asset;
-        ALTER TABLE {SCHEMA}.notification_settings
-        DROP COLUMN IF EXISTS header_media_asset_id;
-
-        ALTER TABLE {SCHEMA}.whatsapp_templates
-        DROP CONSTRAINT IF EXISTS fk_whatsapp_templates_default_header_media_asset;
-        ALTER TABLE {SCHEMA}.whatsapp_templates
-        DROP COLUMN IF EXISTS default_header_media_asset_id;
-
-        DROP INDEX IF EXISTS {SCHEMA}.idx_whatsapp_media_assets_kind_status;
-        DROP INDEX IF EXISTS {SCHEMA}.uq_whatsapp_media_assets_storage_key;
-        DROP TABLE IF EXISTS {SCHEMA}.whatsapp_media_assets;
+        DROP CONSTRAINT IF EXISTS fk_notification_settings_header_media_asset
         """
     )
+    op.execute(
+        f"""
+        ALTER TABLE {SCHEMA}.notification_settings
+        DROP COLUMN IF EXISTS header_media_asset_id
+        """
+    )
+    op.execute(
+        f"""
+        ALTER TABLE {SCHEMA}.whatsapp_templates
+        DROP CONSTRAINT IF EXISTS fk_whatsapp_templates_default_header_media_asset
+        """
+    )
+    op.execute(
+        f"""
+        ALTER TABLE {SCHEMA}.whatsapp_templates
+        DROP COLUMN IF EXISTS default_header_media_asset_id
+        """
+    )
+    op.execute(f"DROP INDEX IF EXISTS {SCHEMA}.idx_whatsapp_media_assets_kind_status")
+    op.execute(f"DROP INDEX IF EXISTS {SCHEMA}.uq_whatsapp_media_assets_storage_key")
+    op.execute(f"DROP TABLE IF EXISTS {SCHEMA}.whatsapp_media_assets")
