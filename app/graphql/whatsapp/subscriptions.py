@@ -67,3 +67,34 @@ class WhatsAppChatSubscription:
                 yield ChatMessage.from_data(data)
         finally:
             broadcaster.unsubscribe(queue)
+
+    @strawberry.subscription
+    async def message_updated(
+        self, info: Info, conversation_id: Optional[int] = None
+    ) -> AsyncGenerator[ChatMessage, None]:
+        """Stream messages whose media finished downloading (or failed).
+
+        Emitted by ``notify_media_event`` (application-level pg_notify) so the
+        client can swap the "receiving..." placeholder for the real attachment.
+        """
+        if not _is_authorized(info):
+            raise Exception("Authentication required.")
+
+        queue = broadcaster.subscribe()
+        try:
+            while True:
+                event = await queue.get()
+                if event.get("type") != "media_updated":
+                    continue
+                if conversation_id is not None and event.get("conversation_id") != conversation_id:
+                    continue
+                msg_id = event.get("id")
+                if msg_id is None:
+                    continue
+                async with async_session_factory() as db:
+                    data = await get_message_by_id(db, int(msg_id))
+                if data is None:
+                    continue
+                yield ChatMessage.from_data(data)
+        finally:
+            broadcaster.unsubscribe(queue)

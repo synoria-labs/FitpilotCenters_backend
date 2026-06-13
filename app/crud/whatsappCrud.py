@@ -9,9 +9,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict
 
+import json
 import logging
 
-from sqlalchemy import case, func, or_, select, and_
+from sqlalchemy import case, func, or_, select, and_, text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -58,6 +59,35 @@ class _MemberCandidate:
 
 
 @dataclass
+class ChatMediaData:
+    """Metadata of a message attachment, exposed to the desktop client."""
+
+    id: int
+    media_type: str
+    mime_type: Optional[str]
+    filename: Optional[str]
+    caption: Optional[str]
+    file_size: Optional[int]
+    media_url: Optional[str]
+    downloaded: bool
+    download_failed: bool
+
+    @classmethod
+    def from_model(cls, m: Media) -> "ChatMediaData":
+        return cls(
+            id=m.id,
+            media_type=m.media_type,
+            mime_type=m.mime_type,
+            filename=m.filename,
+            caption=m.caption,
+            file_size=m.file_size,
+            media_url=m.media_url,
+            downloaded=bool(m.downloaded),
+            download_failed=bool(m.download_failed),
+        )
+
+
+@dataclass
 class ChatMessageData:
     id: int
     conversation_id: int
@@ -68,17 +98,20 @@ class ChatMessageData:
     timestamp: datetime
     wa_message_id: Optional[str]
     media_url: Optional[str] = None
+    media: Optional[ChatMediaData] = None
 
     @classmethod
     def from_model(cls, m: Message) -> "ChatMessageData":
-        media_url = None
-        # ``m.media`` is only populated when eager-loaded; guard against lazy access.
+        # WhatsApp delivers one attachment per message; expose the first media
+        # row. ``m.media`` is only populated when eager-loaded; guard against
+        # lazy access on an async session.
+        media = None
         try:
             media_items = m.__dict__.get("media")
             if media_items:
-                media_url = media_items[0].media_url
+                media = ChatMediaData.from_model(media_items[0])
         except Exception:  # noqa: BLE001
-            media_url = None
+            media = None
         return cls(
             id=m.id,
             conversation_id=m.conversation_id,
@@ -88,7 +121,8 @@ class ChatMessageData:
             text_content=m.text_content,
             timestamp=m.timestamp,
             wa_message_id=m.wa_message_id,
-            media_url=media_url,
+            media_url=media.media_url if media else None,
+            media=media,
         )
 
 
@@ -480,6 +514,7 @@ async def _latest_message_per_conversation(
 
     stmt = (
         select(Message)
+        .options(selectinload(Message.media))
         .where(Message.conversation_id.in_(conv_ids))
         .distinct(Message.conversation_id)
         .order_by(
@@ -725,7 +760,7 @@ async def insert_outbound_message(
     db: AsyncSession,
     conversation_id: int,
     contact_id: int,
-    text: str,
+    text: Optional[str],
     wa_message_id: Optional[str] = None,
     message_type: str = "text",
     template_id: Optional[int] = None,
@@ -788,6 +823,7 @@ async def insert_media(
     media_type: str,
     mime_type: Optional[str] = None,
     caption: Optional[str] = None,
+    cloud_media_id: Optional[str] = None,
 ) -> Media:
     """Insert a media row (pre-download). Caller commits."""
     media = Media(
@@ -795,6 +831,7 @@ async def insert_media(
         media_type=media_type,
         mime_type=mime_type,
         caption=caption,
+        cloud_media_id=cloud_media_id,
         created_at=datetime.utcnow(),
         downloaded=0,
         download_failed=0,
@@ -802,6 +839,34 @@ async def insert_media(
     db.add(media)
     await db.flush()
     return media
+
+
+async def notify_media_event(db: AsyncSession, media: Media, status: str) -> None:
+    """Publish a ``media_updated`` event on the realtime channel.
+
+    Uses ``pg_notify`` from the application (no extra DB trigger) so the event
+    reuses the existing ``whatsapp_events`` listener. NOTIFY is transactional:
+    it is delivered when the caller commits, i.e. once the media row update is
+    visible to other connections.
+    """
+    conversation_id = (
+        await db.execute(
+            select(Message.conversation_id).where(Message.id == media.message_id)
+        )
+    ).scalar_one_or_none()
+    payload = json.dumps(
+        {
+            "type": "media_updated",
+            "id": media.message_id,
+            "media_id": media.id,
+            "conversation_id": conversation_id,
+            "status": status,
+        }
+    )
+    await db.execute(
+        sql_text("SELECT pg_notify('whatsapp_events', :payload)"),
+        {"payload": payload},
+    )
 
 
 async def mark_media_downloaded(
@@ -828,6 +893,7 @@ async def mark_media_downloaded(
     media.download_failed = 0
     media.download_time = datetime.utcnow()
     await db.flush()
+    await notify_media_event(db, media, "downloaded")
 
 
 async def mark_media_failed(db: AsyncSession, media_id: int) -> None:
@@ -837,3 +903,45 @@ async def mark_media_failed(db: AsyncSession, media_id: int) -> None:
     media.download_failed = 1
     media.download_time = datetime.utcnow()
     await db.flush()
+    await notify_media_event(db, media, "failed")
+
+
+async def get_media_for_retry(db: AsyncSession, message_id: int) -> Optional[Media]:
+    """Return the media row of a message that can be re-downloaded from Meta."""
+    stmt = select(Media).where(Media.message_id == message_id).order_by(Media.id.asc())
+    return (await db.execute(stmt)).scalars().first()
+
+
+async def insert_outbound_media(
+    db: AsyncSession,
+    message_id: int,
+    media_type: str,
+    *,
+    mime_type: Optional[str],
+    filename: Optional[str],
+    file_size: Optional[int],
+    sha256: Optional[str],
+    media_url: Optional[str],
+    caption: Optional[str] = None,
+    cloud_media_id: Optional[str] = None,
+) -> Media:
+    """Insert the media row of a sent message (file already stored locally). Caller commits."""
+    now = datetime.utcnow()
+    media = Media(
+        message_id=message_id,
+        media_type=media_type,
+        mime_type=mime_type,
+        filename=filename,
+        file_size=file_size,
+        sha256=sha256,
+        media_url=media_url,
+        caption=caption,
+        cloud_media_id=cloud_media_id,
+        created_at=now,
+        downloaded=1,
+        download_time=now,
+        download_failed=0,
+    )
+    db.add(media)
+    await db.flush()
+    return media

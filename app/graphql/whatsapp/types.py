@@ -9,7 +9,12 @@ from typing import Optional
 
 import strawberry
 
-from app.crud.whatsappCrud import ChatContactData, ChatMessageData, ConversationData
+from app.crud.whatsappCrud import (
+    ChatContactData,
+    ChatMediaData,
+    ChatMessageData,
+    ConversationData,
+)
 
 
 @strawberry.type
@@ -36,6 +41,35 @@ class ChatContact:
 
 
 @strawberry.type
+class ChatMessageMedia:
+    """Attachment metadata of a chat message (one per message in practice)."""
+
+    id: int
+    media_type: str
+    mime_type: Optional[str]
+    filename: Optional[str]
+    caption: Optional[str]
+    file_size: Optional[int]
+    media_url: Optional[str]
+    downloaded: bool
+    download_failed: bool
+
+    @classmethod
+    def from_data(cls, d: ChatMediaData) -> "ChatMessageMedia":
+        return cls(
+            id=d.id,
+            media_type=d.media_type,
+            mime_type=d.mime_type,
+            filename=d.filename,
+            caption=d.caption,
+            file_size=d.file_size,
+            media_url=d.media_url,
+            downloaded=d.downloaded,
+            download_failed=d.download_failed,
+        )
+
+
+@strawberry.type
 class ChatMessage:
     id: int
     conversation_id: int
@@ -45,7 +79,8 @@ class ChatMessage:
     text_content: Optional[str]
     timestamp: datetime
     wa_message_id: Optional[str]
-    media_url: Optional[str]
+    media_url: Optional[str]  # deprecated: kept for older clients, use ``media``
+    media: Optional[ChatMessageMedia]
 
     @classmethod
     def from_data(cls, d: ChatMessageData) -> "ChatMessage":
@@ -59,6 +94,7 @@ class ChatMessage:
             timestamp=d.timestamp,
             wa_message_id=d.wa_message_id,
             media_url=d.media_url,
+            media=ChatMessageMedia.from_data(d.media) if d.media else None,
         )
 
 
@@ -88,6 +124,13 @@ class SendTextMessageInput:
     text: str
     conversation_id: Optional[int] = None
     wa_id: Optional[str] = None
+
+
+@strawberry.input
+class SendMediaMessageInput:
+    conversation_id: Optional[int] = None
+    wa_id: Optional[str] = None
+    caption: Optional[str] = None
 
 
 @strawberry.type
