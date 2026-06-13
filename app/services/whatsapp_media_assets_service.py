@@ -236,6 +236,14 @@ async def _put_object(storage_key: str, raw: bytes, mime_type: str) -> None:
         raise MediaAssetError(f"No se pudo subir el archivo a R2/S3: {exc}") from exc
 
 
+async def store_object(storage_key: str, raw: bytes, mime_type: str) -> str:
+    """Upload arbitrary bytes to the configured object storage and return the
+    public URL. Reuses the same S3/R2/MinIO backend as template assets, so chat
+    media persists across container redeploys (unlike the local /uploads mount)."""
+    await _put_object(storage_key, raw, mime_type)
+    return public_url_from_key(storage_key)
+
+
 def _detect_mime_type(file, filename: str) -> str:
     content_type = str(getattr(file, "content_type", "") or "").split(";")[0].strip()
     if content_type:

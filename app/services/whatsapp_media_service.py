@@ -1,25 +1,46 @@
-"""Download inbound WhatsApp media to local storage.
+"""Download inbound WhatsApp media and persist it.
 
 Media arrives by reference (a media id) in the webhook. We resolve the id to a
-temporary URL, download the bytes (authenticated), store them under
-``backend/uploads/whatsapp/`` (served by the existing ``/uploads`` static mount) and
-update the ``media`` row. Downloads run as background tasks so the webhook can return
-200 immediately.
+temporary URL, download the bytes (authenticated), and store them. Storage
+prefers the configured object store (MinIO/R2 — survives container redeploys)
+and falls back to the local ``backend/uploads/whatsapp/`` mount for local dev.
+Downloads run as background tasks so the webhook can return 200 immediately.
 """
 import asyncio
 import hashlib
 import logging
 import mimetypes
 from pathlib import Path
-from typing import Set
+from typing import Optional, Set
 
+from app.core.media_storage_config import media_storage_config
 from app.db.postgresql import async_session_factory
 from app.services import whatsapp_cloud_service as cloud
+from app.services import whatsapp_media_assets_service as media_assets
 from app.crud.whatsappCrud import mark_media_downloaded, mark_media_failed
 
 logger = logging.getLogger(__name__)
 
 UPLOAD_DIR = Path(__file__).resolve().parent.parent.parent / "uploads" / "whatsapp"
+
+
+async def store_media_bytes(
+    data: bytes, *, sha256: str, ext: str, filename: str, mime_type: Optional[str]
+) -> str:
+    """Persist chat media bytes and return the value for ``media.media_url``.
+
+    Uses object storage (MinIO/R2, served via ``MEDIA_PUBLIC_BASE_URL``) when
+    configured so files survive redeploys; otherwise writes to the local
+    ``/uploads`` mount (dev). Used by both inbound downloads and outbound sends.
+    """
+    if media_storage_config.is_configured():
+        key = f"whatsapp/chat/{sha256}{ext}"
+        return await media_assets.store_object(
+            key, data, mime_type or "application/octet-stream"
+        )
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    (UPLOAD_DIR / filename).write_bytes(data)
+    return f"/uploads/whatsapp/{filename}"
 
 # Keep strong references so background tasks are not garbage-collected.
 _background_tasks: Set["asyncio.Task"] = set()
@@ -59,8 +80,9 @@ async def _download_and_store(media_row_id: int, cloud_media_id: str) -> None:
             ext = mimetypes.guess_extension(mime_type or "") or ""
             filename = f"{cloud_media_id}{ext}"
 
-            UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-            (UPLOAD_DIR / filename).write_bytes(data)
+            stored_url = await store_media_bytes(
+                data, sha256=sha, ext=ext, filename=filename, mime_type=mime_type
+            )
 
             async with async_session_factory() as db:
                 await mark_media_downloaded(
@@ -69,7 +91,7 @@ async def _download_and_store(media_row_id: int, cloud_media_id: str) -> None:
                     sha256=sha,
                     filename=filename,
                     file_size=len(data),
-                    media_url=f"/uploads/whatsapp/{filename}",
+                    media_url=stored_url,
                     mime_type=mime_type,
                 )
                 await db.commit()
