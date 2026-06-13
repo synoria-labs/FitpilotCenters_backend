@@ -187,6 +187,41 @@ async def send_text(to: str, text: str) -> Dict[str, Any]:
     return {"wa_message_id": wa_message_id}
 
 
+async def send_reaction(to: str, message_id: str, emoji: str) -> Dict[str, Any]:
+    """React to a message with an emoji. Returns {"wa_message_id": ...}.
+
+    ``emoji=""`` removes a previously sent reaction. ``message_id`` is the
+    wa_message_id of the target message. Raises WhatsAppError on failure.
+    """
+    if not whatsapp_config.is_send_configured():
+        raise WhatsAppError("WhatsApp Cloud API is not configured (missing phone id/token).")
+
+    url = whatsapp_config.graph_url(f"{whatsapp_config.PHONE_NUMBER_ID}/messages")
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "reaction",
+        "reaction": {"message_id": message_id, "emoji": emoji},
+    }
+    headers = {**_auth_headers(), "Content-Type": "application/json"}
+
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        resp = await client.post(url, json=payload, headers=headers)
+
+    if resp.status_code >= 400:
+        error = _parse_api_error(resp)
+        logger.warning("WhatsApp reaction send failed (%s): %s", error.code, error.message)
+        raise error
+
+    data = resp.json()
+    try:
+        wa_message_id = data["messages"][0]["id"]
+    except (KeyError, IndexError):
+        raise WhatsAppError(f"Unexpected send response: {data}")
+    return {"wa_message_id": wa_message_id}
+
+
 async def send_template(
     to: str,
     template_name: str,

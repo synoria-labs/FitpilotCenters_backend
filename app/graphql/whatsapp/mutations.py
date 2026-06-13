@@ -13,6 +13,7 @@ from strawberry.types import Info
 from app.crud import whatsappCrud as crud
 from app.graphql.whatsapp.types import (
     SendMediaMessageInput,
+    SendReactionInput,
     SendTextMessageInput,
     SendMessageResult,
     ChatMessage,
@@ -102,6 +103,57 @@ class WhatsAppChatMutation:
             contact_id=contact.id,
             text=text,
             wa_message_id=result.get("wa_message_id"),
+        )
+        await db.commit()
+
+        return SendMessageResult(
+            success=True,
+            message=ChatMessage.from_data(crud.ChatMessageData.from_model(message)),
+        )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated])
+    async def send_reaction(
+        self, info: Info, input: SendReactionInput
+    ) -> SendMessageResult:
+        """React to a message via the Cloud API and persist the outbound reaction.
+
+        ``input.emoji == ""`` removes a previously sent reaction. ``input.message_id``
+        is the wa_message_id of the target message.
+        """
+        db: AsyncSession = info.context.db
+
+        target_wa_id = (input.message_id or "").strip()
+        if not target_wa_id:
+            return SendMessageResult(success=False, error="Falta el mensaje a reaccionar.")
+
+        contact, conversation, error = await _resolve_target(
+            db, input.conversation_id, input.wa_id
+        )
+        if error:
+            return SendMessageResult(success=False, error=error)
+
+        emoji = input.emoji or ""
+        try:
+            result = await cloud.send_reaction(
+                to=contact.wa_id, message_id=target_wa_id, emoji=emoji
+            )
+        except cloud.WhatsAppError as e:
+            await db.rollback()
+            return SendMessageResult(success=False, error=e.message)
+        except Exception as e:  # noqa: BLE001
+            await db.rollback()
+            logger.exception("Unexpected error sending WhatsApp reaction")
+            return SendMessageResult(success=False, error=str(e))
+
+        # Persist the outbound reaction (the DB trigger fans it out to subscribers).
+        message = await crud.insert_outbound_message(
+            db,
+            conversation_id=conversation.id,
+            contact_id=contact.id,
+            text=emoji,
+            wa_message_id=result.get("wa_message_id"),
+            message_type="reaction",
+            context_message_id=target_wa_id,
         )
         await db.commit()
 

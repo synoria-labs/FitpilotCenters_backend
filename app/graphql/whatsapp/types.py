@@ -79,6 +79,7 @@ class ChatMessage:
     text_content: Optional[str]
     timestamp: datetime
     wa_message_id: Optional[str]
+    context_message_id: Optional[str]  # reacted-to / referenced message wa id
     media_url: Optional[str]  # deprecated: kept for older clients, use ``media``
     media: Optional[ChatMessageMedia]
 
@@ -93,6 +94,7 @@ class ChatMessage:
             text_content=d.text_content,
             timestamp=d.timestamp,
             wa_message_id=d.wa_message_id,
+            context_message_id=d.context_message_id,
             media_url=d.media_url,
             media=ChatMessageMedia.from_data(d.media) if d.media else None,
         )
@@ -131,6 +133,14 @@ class SendMediaMessageInput:
     conversation_id: Optional[int] = None
     wa_id: Optional[str] = None
     caption: Optional[str] = None
+
+
+@strawberry.input
+class SendReactionInput:
+    message_id: str  # wa_message_id of the target message
+    emoji: str = ""  # empty string removes the reaction
+    conversation_id: Optional[int] = None
+    wa_id: Optional[str] = None
 
 
 @strawberry.type
