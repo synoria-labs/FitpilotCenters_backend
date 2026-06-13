@@ -17,6 +17,7 @@ from app.models.whatsappModel import (
     WhatsAppTemplate, WhatsAppMediaAsset
 )
 from app.models.notificationModel import NotificationSetting, NotificationLog
+from app.models.chatbotModel import ChatbotConfig, ChatbotPendingAction
 
 __all__ = [
     "People", "Role", "PersonRole", "Account",
@@ -28,5 +29,6 @@ __all__ = [
     "LeadAttribution", "CommunicationOptIn", "WhatsAppThread",
     "Contact", "Conversation", "Message", "MessageStatus", "Media", "WebhookLog",
     "WhatsAppTemplate", "WhatsAppMediaAsset",
-    "NotificationSetting", "NotificationLog"
+    "NotificationSetting", "NotificationLog",
+    "ChatbotConfig", "ChatbotPendingAction"
 ]

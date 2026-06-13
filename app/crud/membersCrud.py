@@ -316,6 +316,62 @@ async def get_member_by_id(db: AsyncSession, member_id: int) -> Optional[MemberD
     return _build_member_data(person)
 
 
+async def get_member_id_by_wa_id(db: AsyncSession, wa_id: Optional[str]) -> Optional[int]:
+    """Resolve a WhatsApp ``wa_id`` to a member's ``People.id``.
+
+    Tries an exact ``wa_id`` digits match first, then a ``phone_number`` match using the
+    52/521-aware normalization shared with the chat matching (``_phone_match_keys``). Scoped
+    to people with the ``member`` role and not soft-deleted, so the chatbot can only act on a
+    real member's own account. Returns the member id, or ``None`` if no member matches.
+
+    The wa_id resolution is security-critical: every member-specific chatbot tool must use the
+    id this returns, never an id supplied by the conversation.
+    """
+    # Local import avoids a module-load cycle with whatsappCrud.
+    from app.crud.whatsappCrud import _phone_match_keys, _digits_only
+
+    if not wa_id:
+        return None
+
+    member_subq = (
+        select(PersonRole.person_id)
+        .join(Role, Role.id == PersonRole.role_id)
+        .where(Role.code == "member")
+    )
+
+    # Postgres: strip non-digits from the stored columns so formatting never blocks a match.
+    wa_digits = func.regexp_replace(func.coalesce(People.wa_id, ""), r"\D", "", "g")
+    phone_digits = func.regexp_replace(func.coalesce(People.phone_number, ""), r"\D", "", "g")
+
+    digits = _digits_only(wa_id)
+    if digits:
+        stmt = (
+            select(People.id)
+            .where(People.deleted_at.is_(None))
+            .where(People.id.in_(member_subq))
+            .where(wa_digits == digits)
+            .limit(1)
+        )
+        row = (await db.execute(stmt)).scalars().first()
+        if row is not None:
+            return row
+
+    keys = list(_phone_match_keys(wa_id))
+    if keys:
+        stmt = (
+            select(People.id)
+            .where(People.deleted_at.is_(None))
+            .where(People.id.in_(member_subq))
+            .where(or_(phone_digits.in_(keys), wa_digits.in_(keys)))
+            .limit(1)
+        )
+        row = (await db.execute(stmt)).scalars().first()
+        if row is not None:
+            return row
+
+    return None
+
+
 async def create_member(
     db: AsyncSession,
     full_name: str,

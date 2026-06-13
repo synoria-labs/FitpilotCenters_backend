@@ -40,6 +40,11 @@ python-dateutil>=2.9.0
 # Optional: Better JSON serialization
 pydantic>=2.5.0
 
+# LangChain / LangGraph customer-facing WhatsApp chatbot agent (Anthropic Claude)
+langchain-core>=0.3.0
+langchain-anthropic>=0.3.0     # pulls the official `anthropic` SDK; ChatAnthropic(model="claude-sonnet-4-6")
+langgraph>=0.2.50              # langgraph.prebuilt.create_react_agent
+
 # Testing (dev only)
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
