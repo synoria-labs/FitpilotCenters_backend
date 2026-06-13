@@ -87,13 +87,19 @@ async def _process_message(
 
     text_content: Optional[str] = None
     media_obj: Dict[str, Any] = {}
+    context_message_id = (msg.get("context") or {}).get("id")
     if msg_type == "text":
         text_content = (msg.get("text") or {}).get("body")
     elif msg_type in MEDIA_TYPES:
         media_obj = msg.get(msg_type) or {}
         text_content = media_obj.get("caption")
-
-    context_message_id = (msg.get("context") or {}).get("id")
+    elif msg_type == "reaction":
+        # Reactions carry a ``reaction`` object (not a ``context``): store the emoji
+        # in text_content and the reacted-to message id in context_message_id. An
+        # empty emoji means the reaction was removed (kept verbatim).
+        reaction = msg.get("reaction") or {}
+        text_content = reaction.get("emoji")
+        context_message_id = reaction.get("message_id")
 
     message = await crud.insert_inbound_message(
         db,

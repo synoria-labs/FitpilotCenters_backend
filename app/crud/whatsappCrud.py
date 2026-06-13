@@ -97,6 +97,7 @@ class ChatMessageData:
     text_content: Optional[str]
     timestamp: datetime
     wa_message_id: Optional[str]
+    context_message_id: Optional[str] = None
     media_url: Optional[str] = None
     media: Optional[ChatMediaData] = None
 
@@ -121,6 +122,7 @@ class ChatMessageData:
             text_content=m.text_content,
             timestamp=m.timestamp,
             wa_message_id=m.wa_message_id,
+            context_message_id=m.context_message_id,
             media_url=media.media_url if media else None,
             media=media,
         )
@@ -393,6 +395,7 @@ def _last_activity_subquery():
             Message.conversation_id.label("cid"),
             func.max(Message.timestamp).label("last_activity"),
         )
+        .where(Message.message_type != "reaction")  # reactions don't reorder the list
         .group_by(Message.conversation_id)
         .subquery()
     )
@@ -516,6 +519,7 @@ async def _latest_message_per_conversation(
         select(Message)
         .options(selectinload(Message.media))
         .where(Message.conversation_id.in_(conv_ids))
+        .where(Message.message_type != "reaction")  # reactions never become the preview
         .distinct(Message.conversation_id)
         .order_by(
             Message.conversation_id,
@@ -764,6 +768,7 @@ async def insert_outbound_message(
     wa_message_id: Optional[str] = None,
     message_type: str = "text",
     template_id: Optional[int] = None,
+    context_message_id: Optional[str] = None,
 ) -> Message:
     """Insert an outbound message after a successful Cloud API send. Caller commits."""
     now = datetime.utcnow()
@@ -775,6 +780,7 @@ async def insert_outbound_message(
         message_type=message_type,
         text_content=text,
         template_id=template_id,
+        context_message_id=context_message_id,
         timestamp=now,
         created_at=now,
         is_processed=1,
