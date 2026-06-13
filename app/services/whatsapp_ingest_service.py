@@ -116,6 +116,7 @@ async def _process_message(
             media_type=msg_type,
             mime_type=media_obj.get("mime_type"),
             caption=media_obj.get("caption"),
+            cloud_media_id=media_obj["id"],
         )
         pending_media.append((media_row.id, media_obj["id"]))
 

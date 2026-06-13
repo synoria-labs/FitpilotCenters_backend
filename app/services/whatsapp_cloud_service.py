@@ -246,6 +246,83 @@ async def send_template(
     return {"wa_message_id": wa_message_id}
 
 
+async def upload_media(content: bytes, mime_type: str, filename: str) -> str:
+    """Upload binary media to Meta and return its media id.
+
+    The id is then referenced in a media message send; Meta keeps the binary
+    ~30 days. Raises WhatsAppError on failure.
+    """
+    if not whatsapp_config.is_send_configured():
+        raise WhatsAppError("WhatsApp Cloud API is not configured (missing phone id/token).")
+
+    url = whatsapp_config.graph_url(f"{whatsapp_config.PHONE_NUMBER_ID}/media")
+    files = {"file": (filename, content, mime_type)}
+    data = {"messaging_product": "whatsapp"}
+
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        resp = await client.post(url, data=data, files=files, headers=_auth_headers())
+
+    if resp.status_code >= 400:
+        error = _parse_api_error(resp)
+        logger.warning("WhatsApp media upload failed (%s): %s", error.code, error.message)
+        raise error
+
+    media_id = resp.json().get("id")
+    if not media_id:
+        raise WhatsAppError(f"Unexpected media upload response: {resp.text}")
+    return str(media_id)
+
+
+async def send_media(
+    to: str,
+    media_type: str,
+    media_id: str,
+    caption: Optional[str] = None,
+    filename: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Send a previously uploaded media object. Returns {"wa_message_id": ...}.
+
+    ``media_type`` must be one of image/audio/video/document. The Cloud API
+    accepts ``caption`` only for image/video/document (audio rejects it) and
+    ``filename`` only for document.
+    """
+    if not whatsapp_config.is_send_configured():
+        raise WhatsAppError("WhatsApp Cloud API is not configured (missing phone id/token).")
+    if media_type not in {"image", "audio", "video", "document"}:
+        raise WhatsAppError(f"Tipo de media no soportado para envío: {media_type}")
+
+    media_obj: Dict[str, Any] = {"id": media_id}
+    if caption and media_type != "audio":
+        media_obj["caption"] = caption
+    if filename and media_type == "document":
+        media_obj["filename"] = filename
+
+    url = whatsapp_config.graph_url(f"{whatsapp_config.PHONE_NUMBER_ID}/messages")
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": media_type,
+        media_type: media_obj,
+    }
+    headers = {**_auth_headers(), "Content-Type": "application/json"}
+
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        resp = await client.post(url, json=payload, headers=headers)
+
+    if resp.status_code >= 400:
+        error = _parse_api_error(resp)
+        logger.warning("WhatsApp media send failed (%s): %s", error.code, error.message)
+        raise error
+
+    data = resp.json()
+    try:
+        wa_message_id = data["messages"][0]["id"]
+    except (KeyError, IndexError):
+        raise WhatsAppError(f"Unexpected send response: {data}")
+    return {"wa_message_id": wa_message_id}
+
+
 async def get_media_metadata(media_id: str) -> Dict[str, Any]:
     """Resolve a media id to its temporary download URL and metadata."""
     url = whatsapp_config.graph_url(media_id)

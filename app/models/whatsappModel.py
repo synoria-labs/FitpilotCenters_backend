@@ -112,6 +112,9 @@ class Media(Base):
     file_size: Mapped[Optional[int]] = mapped_column(BigInteger)
     media_url: Mapped[Optional[str]] = mapped_column(String(255))
     caption: Mapped[Optional[str]] = mapped_column(Text)
+    # Meta Cloud API media id; kept so failed downloads can be retried later
+    # (the temporary URL expires in minutes, the id stays valid ~30 days).
+    cloud_media_id: Mapped[Optional[str]] = mapped_column(String(100))
     created_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, default=datetime.utcnow)
     downloaded: Mapped[Optional[int]] = mapped_column(SmallInteger, default=0)
     download_time: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP)
