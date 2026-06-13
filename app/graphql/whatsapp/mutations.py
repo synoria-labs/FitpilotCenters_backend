@@ -158,18 +158,23 @@ class WhatsAppChatMutation:
             logger.exception("Unexpected error sending WhatsApp media")
             return SendMessageResult(success=False, error=str(e))
 
-        # Local copy, same naming convention as inbound downloads.
+        # Persist a copy so the bubble renders immediately. Prefers object
+        # storage (MinIO/R2 — survives redeploys), falls back to local /uploads.
+        sha = hashlib.sha256(raw).hexdigest()
         ext = Path(original_filename).suffix.lower() or (
             mimetypes.guess_extension(mime_type) or ""
         )
-        stored_filename = f"{media_id}{ext}"
         try:
-            media_service.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-            (media_service.UPLOAD_DIR / stored_filename).write_bytes(raw)
-            local_url = f"/uploads/whatsapp/{stored_filename}"
-        except OSError:
-            logger.exception("Could not store local copy of sent media %s", media_id)
-            local_url = None
+            stored_url = await media_service.store_media_bytes(
+                raw,
+                sha256=sha,
+                ext=ext,
+                filename=f"{media_id}{ext}",
+                mime_type=mime_type,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Could not store sent media %s", media_id)
+            stored_url = None
 
         message = await crud.insert_outbound_message(
             db,
@@ -186,8 +191,8 @@ class WhatsAppChatMutation:
             mime_type=mime_type,
             filename=original_filename,
             file_size=len(raw),
-            sha256=hashlib.sha256(raw).hexdigest(),
-            media_url=local_url,
+            sha256=sha,
+            media_url=stored_url,
             caption=caption,
             cloud_media_id=media_id,
         )
