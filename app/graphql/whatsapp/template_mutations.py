@@ -352,9 +352,25 @@ class WhatsAppTemplateMutation:
             message_type="template",
             template_id=tpl.id,
         )
+        # Persist the header media so the chat bubble can render it (same public
+        # asset URL sent to Meta). Only when there is a fetchable URL.
+        if resolved_media.media_url and resolved_media.media_format:
+            await chat_crud.insert_outbound_media(
+                db,
+                message_id=message.id,
+                media_type=resolved_media.media_format.lower(),
+                mime_type=None,
+                filename=None,
+                file_size=None,
+                sha256=None,
+                media_url=resolved_media.media_url,
+                cloud_media_id=resolved_media.media_id,
+            )
         await db.commit()
 
+        # Re-fetch with the media relation eager-loaded so the result carries it.
+        data = await chat_crud.get_message_by_id(db, message.id)
         return SendMessageResult(
             success=True,
-            message=ChatMessage.from_data(chat_crud.ChatMessageData.from_model(message)),
+            message=ChatMessage.from_data(data) if data else None,
         )

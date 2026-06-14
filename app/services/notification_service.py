@@ -305,7 +305,7 @@ async def dispatch(
             pass
         return "failed"
 
-    await chat_crud.insert_outbound_message(
+    message = await chat_crud.insert_outbound_message(
         db,
         conversation_id=conversation.id,
         contact_id=contact.id,
@@ -314,6 +314,20 @@ async def dispatch(
         message_type="template",
         template_id=tpl.id,
     )
+    # Persist the header media so the chat bubble can render it (the same public
+    # asset URL sent to Meta). Only when there is a fetchable URL (asset/legacy).
+    if resolved_media.media_url and resolved_media.media_format:
+        await chat_crud.insert_outbound_media(
+            db,
+            message_id=message.id,
+            media_type=resolved_media.media_format.lower(),
+            mime_type=None,
+            filename=None,
+            file_size=None,
+            sha256=None,
+            media_url=resolved_media.media_url,
+            cloud_media_id=resolved_media.media_id,
+        )
     await crud.mark_log(
         db, log, status="sent", wa_message_id=result.get("wa_message_id"), commit=True
     )
