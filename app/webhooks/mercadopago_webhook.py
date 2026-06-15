@@ -99,6 +99,9 @@ async def _process_approved_payment(payment_id: str) -> None:
             # Idempotent: already confirmed/canceled/expired.
             logger.info("MercadoPago: pending %s already %s; skipping", pending.id, pending.status)
             return
+        # Capture before any rollback (rolled-back ORM attributes lazy-load -> MissingGreenlet).
+        pending_id = pending.id
+        conversation_id = pending.conversation_id
         try:
             result = await _execute_pending(
                 db,
@@ -110,15 +113,15 @@ async def _process_approved_payment(payment_id: str) -> None:
             )
         except Exception:  # noqa: BLE001
             await db.rollback()
-            logger.exception("MercadoPago: executing pending %s failed", pending.id)
+            logger.exception("MercadoPago: executing pending %s failed", pending_id)
             await _notify(
-                db, pending.conversation_id,
+                db, conversation_id,
                 "Recibimos tu pago, pero hubo un problema al confirmar tu lugar. "
                 "Un asesor te contactará en breve.",
             )
             return
-        await chatbotPendingCrud.mark_status(db, pending.id, PENDING_STATUS_CONFIRMED, commit=True)
-        await _notify(db, pending.conversation_id, f"¡Pago acreditado! {result}")
+        await chatbotPendingCrud.mark_status(db, pending_id, PENDING_STATUS_CONFIRMED, commit=True)
+        await _notify(db, conversation_id, f"¡Pago acreditado! {result}")
 
 
 async def _notify(db, conversation_id: int, text: str) -> None:

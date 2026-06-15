@@ -387,15 +387,19 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         pending = await pending_crud.get_pending(db, ctx.conversation_id)
         if pending is None:
             return "No hay ninguna acción pendiente por confirmar."
+        # Capture before any rollback: rolled-back ORM attributes lazy-load (sync IO -> MissingGreenlet).
+        pending_id = pending.id
+        action_type = pending.action_type
         try:
             result = await _execute_pending(db, pending)
         except ValueError as e:
+            await db.rollback()
             return f"No se pudo completar: {e}"
         except Exception:  # noqa: BLE001
             await db.rollback()
-            logger.exception("Chatbot confirm_action failed (type=%s)", pending.action_type)
+            logger.exception("Chatbot confirm_action failed (type=%s)", action_type)
             return "Ocurrió un error al ejecutar la acción. Intenta de nuevo o contacta al staff."
-        await pending_crud.mark_status(db, pending.id, PENDING_STATUS_CONFIRMED, commit=True)
+        await pending_crud.mark_status(db, pending_id, PENDING_STATUS_CONFIRMED, commit=True)
         return result
 
     async def cancel_action() -> str:
@@ -518,7 +522,7 @@ async def _execute_pending(
             )
             reservation = await reservationsCrud.create_reservation(
                 db, session_id=session_id, person_id=int(pending.member_id),
-                seat_id=seat_id, source="whatsapp_bot", commit=False,
+                seat_id=seat_id, source="manual", commit=False,
             )
             await db.commit()
             return f"¡Listo! Pase diario activado y reserva #{reservation.id} confirmada."
@@ -538,7 +542,7 @@ async def _execute_pending(
         )
         reservation = await reservationsCrud.create_reservation(
             db, session_id=session_id, person_id=person.id,
-            seat_id=seat_id, source="whatsapp_bot", commit=False,
+            seat_id=seat_id, source="manual", commit=False,
         )
         await db.commit()
         return (f"¡Bienvenido/a {person.full_name}! Pase diario {plan.name} activado y "
