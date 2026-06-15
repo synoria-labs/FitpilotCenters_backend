@@ -28,9 +28,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.crud import chatbotPendingCrud as pending_crud
 from app.crud import membersCrud
 from app.crud import reservationsCrud
+from app.crud import usersCrud
+from app.crud import venuesCrud
 from app.crud.memberships import payments as payments_crud
 from app.crud.memberships import plans as plans_crud
 from app.crud.memberships import enrollment as enrollment_crud
+from app.crud.standing_bookings import catalog as class_catalog
 from app.models import Venue
 from app.models.chatbotModel import (
     ACTION_CREATE_ENROLLMENT,
@@ -43,6 +46,9 @@ from app.models.chatbotModel import (
 logger = logging.getLogger(__name__)
 
 _NEEDS_MEMBER = "Para esta acción necesito identificarte como socio. Aún no encuentro tu membresía con este número."
+
+# ClassTemplate.weekday is encoded 0=Sunday .. 6=Saturday (see classModel.py).
+_WEEKDAYS_ES = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"]
 
 
 @dataclass
@@ -170,6 +176,46 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
             seat = f" asiento {r.seat_label}" if r.seat_label else ""
             out.append(f"Reserva #{r.id}: {name} — {_fmt_dt(r.session_start)}{seat} ({r.status})")
         return "\n".join(out)
+
+    async def get_weekly_schedule() -> str:
+        """Horario semanal recurrente de clases (día, hora, tipo de clase, sede e instructor)."""
+        templates = await class_catalog.get_class_templates(db, active_only=True)
+        if not templates:
+            return "Aún no hay un horario de clases configurado."
+        by_day: dict = {}
+        for t in templates:
+            by_day.setdefault(t.weekday, []).append(t)
+        lines: List[str] = []
+        for wd in sorted(by_day.keys()):
+            day = _WEEKDAYS_ES[wd] if 0 <= wd < 7 else f"Día {wd}"
+            lines.append(f"*{day}*")
+            for t in sorted(by_day[wd], key=lambda x: x.start_time_local or ""):
+                hhmm = (t.start_time_local or "")[:5]
+                cls = t.class_type_name or t.name or "Clase"
+                venue = f" en {t.venue_name}" if t.venue_name else ""
+                instr = f" (con {t.instructor_name})" if t.instructor_name else ""
+                lines.append(f"  {hhmm} — {cls}{venue}{instr}")
+        return "\n".join(lines)
+
+    async def get_venues() -> str:
+        """Sedes del estudio: nombre, dirección y capacidad."""
+        venues = await venuesCrud.list_venues(db)
+        if not venues:
+            return "No hay sedes configuradas."
+        out = []
+        for v in venues:
+            addr = f" — {v.address}" if v.address else ""
+            desc = f" ({v.description})" if v.description else ""
+            out.append(f"{v.name}{addr} — capacidad {v.capacity}{desc}")
+        return "\n".join(out)
+
+    async def list_instructors() -> str:
+        """Nombres de los instructores del estudio."""
+        people = await usersCrud.list_people(db, role_code="instructor")
+        names = sorted({p.full_name for p in people if p.full_name})
+        if not names:
+            return "No hay instructores registrados."
+        return "Instructores: " + ", ".join(names)
 
     # --------------------------- propose tools -----------------------------
     async def propose_reservation(session_id: int, seat_id: Optional[int] = None) -> str:
@@ -303,6 +349,9 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         (check_class_availability, "check_class_availability", "Asientos disponibles para una clase (session_id)."),
         (get_my_membership, "get_my_membership", "Estado de la membresía del cliente identificado."),
         (list_my_reservations, "list_my_reservations", "Próximas reservas del cliente identificado."),
+        (get_weekly_schedule, "get_weekly_schedule", "Horario semanal recurrente de clases (día, hora, clase, sede, instructor)."),
+        (get_venues, "get_venues", "Sedes del estudio: nombre, dirección y capacidad."),
+        (list_instructors, "list_instructors", "Nombres de los instructores del estudio."),
         (propose_reservation, "propose_reservation", "Propone una reserva de clase (requiere confirmación)."),
         (propose_payment, "propose_payment", "Propone registrar un pago (requiere confirmación)."),
         (propose_renewal, "propose_renewal", "Propone renovar la membresía con un plan (requiere confirmación)."),

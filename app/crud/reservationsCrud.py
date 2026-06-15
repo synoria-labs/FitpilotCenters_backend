@@ -394,20 +394,29 @@ async def get_available_sessions(
     if not end_date:
         end_date = start_date + timedelta(days=7)
 
-    # Base query with reservation count
+    # Reservation count per session via a correlated scalar subquery. This avoids a
+    # GROUP BY which, combined with joinedload of class_type/venue/instructor, fails on
+    # PostgreSQL ("column class_types_1.id must appear in the GROUP BY clause"): once the
+    # joined tables' columns are SELECTed, Postgres requires them in GROUP BY. The subquery
+    # keeps the count out of the outer SELECT, so no GROUP BY is needed.
+    reserved_count_sq = (
+        select(func.count(Reservation.id))
+        .where(
+            Reservation.session_id == ClassSession.id,
+            Reservation.status.in_(['reserved', 'checked_in']),
+        )
+        .correlate(ClassSession)
+        .scalar_subquery()
+    )
+
     query = select(
         ClassSession,
-        func.count(
-            case(
-                (Reservation.status.in_(['reserved', 'checked_in']), Reservation.id),
-                else_=None
-            )
-        ).label('reserved_count')
+        reserved_count_sq.label('reserved_count')
     ).options(
         joinedload(ClassSession.class_type),
         joinedload(ClassSession.venue),
         joinedload(ClassSession.instructor)
-    ).outerjoin(Reservation).where(
+    ).where(
         and_(
             ClassSession.start_at >= start_date,
             ClassSession.start_at <= end_date,
@@ -421,7 +430,7 @@ async def get_available_sessions(
     if venue_id:
         query = query.where(ClassSession.venue_id == venue_id)
 
-    query = query.group_by(ClassSession.id).order_by(ClassSession.start_at)
+    query = query.order_by(ClassSession.start_at)
 
     result = await db.execute(query)
     sessions_data = result.all()

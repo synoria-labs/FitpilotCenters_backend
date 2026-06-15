@@ -38,6 +38,7 @@ async def get_class_templates(
     stmt = select(ClassTemplate).options(
         joinedload(ClassTemplate.class_type),
         joinedload(ClassTemplate.venue),
+        joinedload(ClassTemplate.instructor),
     )
 
     if active_only:
@@ -68,6 +69,7 @@ async def get_class_templates(
             is_active=tmpl.is_active,
             class_type_name=tmpl.class_type.name if tmpl.class_type else None,
             venue_name=tmpl.venue.name if tmpl.venue else None,
+            instructor_name=tmpl.instructor.full_name if tmpl.instructor else None,
         )
         for tmpl in templates
     ]

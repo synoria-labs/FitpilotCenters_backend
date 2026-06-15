@@ -22,8 +22,11 @@ logger = logging.getLogger(__name__)
 _RECURSION_LIMIT = 12
 
 _TOOL_RULES = (
-    "Usa siempre las herramientas para obtener datos reales (precios, horarios, clases, "
-    "disponibilidad, estado de membresía). Nunca inventes esa información."
+    "Usa siempre las herramientas para obtener datos reales y nunca inventes esa información. "
+    "En particular: para el horario de clases usa get_weekly_schedule; para la ubicación o "
+    "dirección usa get_venues; para los instructores usa list_instructors; para precios "
+    "get_membership_plans; para cupo y disponibilidad list_available_classes y "
+    "check_class_availability. Prefiere estos datos en vivo sobre cualquier texto fijo."
 )
 
 _CONFIRM_RULES_STRICT = (
