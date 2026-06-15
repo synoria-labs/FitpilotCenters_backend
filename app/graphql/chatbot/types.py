@@ -15,6 +15,7 @@ class ChatbotConfigType:
     id: Optional[int]
     enabled: bool
     require_confirmation: bool
+    require_mp_payment: bool
     model: str
     system_prompt: Optional[str]
     business_name: Optional[str]
@@ -31,6 +32,7 @@ class ChatbotConfigType:
             id=data.id,
             enabled=bool(data.enabled),
             require_confirmation=bool(data.require_confirmation),
+            require_mp_payment=bool(data.require_mp_payment),
             model=data.model,
             system_prompt=data.system_prompt,
             business_name=data.business_name,
@@ -47,6 +49,7 @@ class ChatbotConfigType:
 class SaveChatbotConfigInput:
     enabled: Optional[bool] = None
     require_confirmation: Optional[bool] = None
+    require_mp_payment: Optional[bool] = None
     model: Optional[str] = None
     system_prompt: Optional[str] = None
     business_name: Optional[str] = None

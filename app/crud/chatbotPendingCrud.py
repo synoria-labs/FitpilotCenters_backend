@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import ChatbotPendingAction
 from app.models.chatbotModel import (
+    PENDING_STATUS_AWAITING_PAYMENT,
     PENDING_STATUS_CANCELED,
     PENDING_STATUS_EXPIRED,
     PENDING_STATUS_PENDING,
@@ -47,6 +48,43 @@ async def get_pending(
     return row
 
 
+async def get_active_pending(
+    db: AsyncSession, conversation_id: int
+) -> Optional[ChatbotPendingAction]:
+    """Return the active action (status ``pending`` or ``awaiting_payment``), or None.
+
+    Used to inject the pending state into the agent context so it confirms / reminds-to-pay
+    instead of re-proposing. Expired rows are flagged and not returned.
+    """
+    stmt = select(ChatbotPendingAction).where(
+        ChatbotPendingAction.conversation_id == conversation_id,
+        ChatbotPendingAction.status.in_(
+            [PENDING_STATUS_PENDING, PENDING_STATUS_AWAITING_PAYMENT]
+        ),
+    )
+    row = (await db.execute(stmt)).scalars().first()
+    if row is None:
+        return None
+    if row.expires_at is not None and row.expires_at < _utcnow():
+        row.status = PENDING_STATUS_EXPIRED
+        row.updated_at = _utcnow()
+        await db.flush()
+        return None
+    return row
+
+
+async def get_by_external_reference(
+    db: AsyncSession, external_reference: str
+) -> Optional[ChatbotPendingAction]:
+    """Look up a pending action by its MercadoPago ``external_reference`` (webhook matching)."""
+    if not external_reference:
+        return None
+    stmt = select(ChatbotPendingAction).where(
+        ChatbotPendingAction.external_reference == external_reference
+    )
+    return (await db.execute(stmt)).scalars().first()
+
+
 async def upsert_pending(
     db: AsyncSession,
     *,
@@ -55,13 +93,18 @@ async def upsert_pending(
     payload: dict,
     member_id: Optional[int] = None,
     summary: Optional[str] = None,
+    status: str = PENDING_STATUS_PENDING,
+    external_reference: Optional[str] = None,
+    mp_preference_id: Optional[str] = None,
+    mp_init_point: Optional[str] = None,
     ttl_minutes: int = DEFAULT_TTL_MINUTES,
     commit: bool = False,
 ) -> ChatbotPendingAction:
     """Create-or-replace the pending action for a conversation.
 
-    Any prior pending row for the conversation is cancelled first (the unique index allows
-    only one row per conversation, but cancelling preserves an audit trail of supersession).
+    Any prior row for the conversation is replaced (the unique index allows only one row per
+    conversation). ``status`` is ``pending`` (await "Sí") or ``awaiting_payment`` (await the
+    MercadoPago webhook); the MP fields carry the generated link/preference.
     """
     now = _utcnow()
     existing_stmt = select(ChatbotPendingAction).where(
@@ -75,7 +118,10 @@ async def upsert_pending(
         existing.payload = payload
         existing.member_id = member_id
         existing.summary = summary
-        existing.status = PENDING_STATUS_PENDING
+        existing.status = status
+        existing.external_reference = external_reference
+        existing.mp_preference_id = mp_preference_id
+        existing.mp_init_point = mp_init_point
         existing.expires_at = expires_at
         existing.updated_at = now
         row = existing
@@ -86,7 +132,10 @@ async def upsert_pending(
             payload=payload,
             member_id=member_id,
             summary=summary,
-            status=PENDING_STATUS_PENDING,
+            status=status,
+            external_reference=external_reference,
+            mp_preference_id=mp_preference_id,
+            mp_init_point=mp_init_point,
             expires_at=expires_at,
             created_at=now,
             updated_at=now,
@@ -121,8 +170,8 @@ async def mark_status(
 async def cancel_pending(
     db: AsyncSession, conversation_id: int, *, commit: bool = False
 ) -> bool:
-    """Cancel the active pending action for a conversation, if any."""
-    row = await get_pending(db, conversation_id)
+    """Cancel the active pending action for a conversation (pending or awaiting payment)."""
+    row = await get_active_pending(db, conversation_id)
     if row is None:
         return False
     row.status = PENDING_STATUS_CANCELED

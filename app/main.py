@@ -13,6 +13,7 @@ from strawberry.subscriptions import (
 from app.graphql.schema import schema
 from app.graphql.context import build_context
 from app.webhooks.whatsapp_webhook import router as whatsapp_webhook_router
+from app.webhooks.mercadopago_webhook import router as mercadopago_webhook_router
 from app.services.whatsapp_listener import listener as whatsapp_listener
 from app.services.notification_scheduler import scheduler as notification_scheduler
 
@@ -86,4 +87,7 @@ app.include_router(graphql_app, prefix="/graphql")
 
 # Inbound WhatsApp Cloud API webhook (FitPilot owns ingestion)
 app.include_router(whatsapp_webhook_router)
+
+# Inbound MercadoPago payment webhook (chatbot Checkout Pro purchases)
+app.include_router(mercadopago_webhook_router)
 

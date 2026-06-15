@@ -30,19 +30,27 @@ _TOOL_RULES = (
     "check_class_availability. Prefiere estos datos en vivo sobre cualquier texto fijo."
 )
 
-_CONFIRM_RULES_STRICT = (
-    "Para reservar una clase, registrar un pago, renovar una membresía o inscribir a alguien: "
-    "primero llama a la herramienta propose_* correspondiente, luego repite el resumen al "
-    "cliente y pídele que confirme respondiendo 'sí'. SOLO cuando el cliente confirme, llama a "
-    "confirm_action. Si el cliente dice que no o cambia de idea, llama a cancel_action. Nunca "
-    "confirmes una acción sin que el cliente lo haya pedido explícitamente."
+_PURCHASE_RULES = (
+    "Para que un cliente asista hay que COMPRAR un plan (no existe reserva gratis):\n"
+    "- PAQUETE (plan de horario fijo): usa propose_membership(plan_id, template_id, full_name si es "
+    "cliente nuevo). Muestra los planes con get_membership_plans y los horarios con "
+    "get_weekly_schedule (cada horario tiene un id=template). Reserva automáticamente todo el periodo. "
+    "Si el cliente ya es socio, propose_membership renueva.\n"
+    "- PASE DIARIO (1 día): usa propose_day_pass(plan_id, session_id, full_name si es nuevo). Muestra "
+    "el plan diario con get_membership_plans y las clases con list_available_classes (cada clase tiene "
+    "un id=session). Reserva ese día.\n"
+    "El asiento/bici se asigna automáticamente; no le pidas el número al cliente."
 )
 
-_CONFIRM_RULES_RELAXED = (
-    "Para reservar, pagar, renovar o inscribir: llama primero a la herramienta propose_* "
-    "correspondiente para validar, y luego a confirm_action para ejecutarla. Aun así, deja "
-    "claro al cliente qué acción realizaste."
+_CONFIRM_RULES_STRICT = (
+    "Flujo de compra: primero llama a la tool propose_* correspondiente, repite el resumen y pide "
+    "confirmación. Si la tool devuelve un LINK de pago de MercadoPago, reenvíaselo al cliente y NO "
+    "confirmes por texto (se confirma solo al acreditarse el pago). Si NO hay link, cuando el cliente "
+    "diga 'sí' llama a confirm_action. Si rechaza, cancel_action. IMPORTANTE: si ya existe una acción "
+    "pendiente, NO la vuelvas a proponer; confírmala o cancélala según el cliente."
 )
+
+_CONFIRM_RULES_RELAXED = _CONFIRM_RULES_STRICT
 
 
 def build_llm(config: ChatbotConfigData) -> ChatAnthropic:
@@ -56,7 +64,10 @@ def build_llm(config: ChatbotConfigData) -> ChatAnthropic:
 
 
 def build_system_prompt(
-    config: ChatbotConfigData, business_info: str, member_id: Optional[int]
+    config: ChatbotConfigData,
+    business_info: str,
+    member_id: Optional[int],
+    pending_note: Optional[str] = None,
 ) -> str:
     parts: List[str] = []
     if config.system_prompt:
@@ -69,17 +80,20 @@ def build_system_prompt(
         "otra fecha. Las fechas que devuelven las herramientas ya vienen en hora de México con su "
         "día de la semana — repítelas tal cual, no recalcules el día."
     )
+    if pending_note:
+        parts.append(pending_note)
     parts.append(_TOOL_RULES)
+    parts.append(_PURCHASE_RULES)
     parts.append(_CONFIRM_RULES_STRICT if config.require_confirmation else _CONFIRM_RULES_RELAXED)
     if member_id is not None:
         parts.append(
-            "El cliente está identificado como socio. Usa get_my_membership y "
-            "list_my_reservations para sus datos; las herramientas ya operan sobre su cuenta."
+            "El cliente está identificado como socio. get_my_membership, list_my_reservations, "
+            "renovación (propose_membership) y pase diario ya operan sobre su cuenta."
         )
     else:
         parts.append(
-            "El cliente NO está registrado como socio. Puedes darle información y, si quiere "
-            "inscribirse, pídele su nombre completo y usa propose_enrollment."
+            "El cliente NO está registrado como socio. Para comprar un plan pídele su nombre "
+            "completo y úsalo como full_name en propose_membership / propose_day_pass."
         )
     if business_info:
         parts.append("Información del negocio:\n" + business_info)
@@ -109,10 +123,11 @@ async def run_agent(
     member_id: Optional[int],
     history: List[BaseMessage],
     user_text: str,
+    pending_note: Optional[str] = None,
 ) -> Optional[str]:
     """Run one agent turn and return the reply text (or None if nothing to say)."""
     llm = build_llm(config)
-    system_prompt = build_system_prompt(config, business_info, member_id)
+    system_prompt = build_system_prompt(config, business_info, member_id, pending_note)
     agent = create_react_agent(llm, tools, prompt=system_prompt)
 
     messages: List[BaseMessage] = list(history) + [HumanMessage(content=user_text)]

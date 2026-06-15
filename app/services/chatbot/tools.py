@@ -16,6 +16,7 @@ Tools never raise into the agent loop — on error they return a short Spanish s
 can relay or react to.
 """
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -25,6 +26,7 @@ from langchain_core.tools import StructuredTool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.mercadopago_config import mercadopago_config
 from app.crud import chatbotPendingCrud as pending_crud
 from app.crud import membersCrud
 from app.crud import reservationsCrud
@@ -33,15 +35,17 @@ from app.crud import venuesCrud
 from app.crud.memberships import payments as payments_crud
 from app.crud.memberships import plans as plans_crud
 from app.crud.memberships import enrollment as enrollment_crud
+from app.crud.memberships import subscriptions as subscriptions_crud
 from app.crud.standing_bookings import catalog as class_catalog
 from app.models import Venue
+from app.services import mercadopago_service
 from app.services.chatbot.timefmt import fmt_dt as _fmt_dt
 from app.models.chatbotModel import (
-    ACTION_CREATE_ENROLLMENT,
-    ACTION_CREATE_PAYMENT,
-    ACTION_CREATE_RESERVATION,
-    ACTION_RENEW_SUBSCRIPTION,
+    ACTION_BUY_DAY_PASS,
+    ACTION_BUY_PACKAGE,
+    PENDING_STATUS_AWAITING_PAYMENT,
     PENDING_STATUS_CONFIRMED,
+    PENDING_STATUS_PENDING,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,6 +64,7 @@ class ChatbotContext:
     conversation_id: int
     member_id: Optional[int]
     wa_id: Optional[str]
+    require_mp_payment: bool = False
 
 
 def _to_decimal(value) -> Optional[Decimal]:
@@ -67,6 +72,24 @@ def _to_decimal(value) -> Optional[Decimal]:
         return Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError):
         return None
+
+
+async def _first_available_template_seat(db: AsyncSession, template_id: int) -> Optional[int]:
+    """First available seat for a template's next occurrence (None if the class has no seats)."""
+    try:
+        seats = await class_catalog.get_available_seats_for_template(db, int(template_id))
+    except Exception:  # noqa: BLE001
+        return None
+    return next((s.id for s in seats if s.is_available), None)
+
+
+async def _first_available_session_seat(db: AsyncSession, session_id: int) -> Optional[int]:
+    """First available seat for a specific session (None if the class has no seats)."""
+    try:
+        seats = await reservationsCrud.get_available_seats(db, int(session_id))
+    except Exception:  # noqa: BLE001
+        return None
+    return next((s.id for s in seats if s.is_available), None)
 
 
 def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
@@ -98,15 +121,21 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         return "\n".join(lines) if lines else "No hay información de negocio configurada todavía."
 
     async def get_membership_plans() -> str:
-        """Lista los planes de membresía disponibles con su precio y duración."""
+        """Lista los planes disponibles con precio, duración y TIPO (paquete con horario fijo / pase diario / membresía)."""
         plans = await plans_crud.get_membership_plans(db)
         if not plans:
             return "No hay planes de membresía configurados."
         out = []
         for p in plans:
+            if p.duration_unit == "day":
+                tipo = "pase diario"
+            elif p.fixed_time_slot:
+                tipo = "paquete con horario fijo"
+            else:
+                tipo = "membresía"
             desc = f" — {p.description}" if p.description else ""
             out.append(
-                f"#{p.id} {p.name}: ${p.price:.2f} por {p.duration_value} {p.duration_unit}(s){desc}"
+                f"#{p.id} {p.name} ({tipo}): ${p.price:.2f} por {p.duration_value} {p.duration_unit}(s){desc}"
             )
         return "\n".join(out)
 
@@ -212,108 +241,145 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
             return "No hay instructores registrados."
         return "Instructores: " + ", ".join(names)
 
-    # --------------------------- propose tools -----------------------------
-    async def propose_reservation(session_id: int, seat_id: Optional[int] = None) -> str:
-        """Propone reservar una clase para el socio (requiere confirmación). seat_id es opcional."""
-        if ctx.member_id is None:
-            return _NEEDS_MEMBER
+    # --------------------------- propose (purchase) tools ------------------
+    async def _finalize_proposal(
+        *, action_type: str, payload: dict, summary: str, amount, description: str, payer_name=None
+    ) -> str:
+        """Store the pending action. If MercadoPago is required (and amount>0), create a payment
+        link (status awaiting_payment) and return it; otherwise leave it pending for a 'Sí'."""
+        if ctx.require_mp_payment and amount and float(amount) > 0:
+            external_reference = f"chatbot-{uuid.uuid4().hex}"
+            try:
+                mp = await mercadopago_service.create_preference(
+                    amount=amount,
+                    description=description,
+                    external_reference=external_reference,
+                    payer_name=payer_name,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("MercadoPago preference failed")
+                return ("No pude generar el link de pago en este momento. "
+                        "Intenta más tarde o contacta al staff.")
+            await pending_crud.upsert_pending(
+                db,
+                conversation_id=ctx.conversation_id,
+                action_type=action_type,
+                payload=payload,
+                member_id=ctx.member_id,
+                summary=summary,
+                status=PENDING_STATUS_AWAITING_PAYMENT,
+                external_reference=external_reference,
+                mp_preference_id=mp.get("preference_id"),
+                mp_init_point=mp.get("init_point"),
+                ttl_minutes=120,
+                commit=True,
+            )
+            return (f"{summary}.\nPara confirmar, realiza el pago aquí: {mp['init_point']}\n"
+                    "En cuanto se acredite el pago te confirmo automáticamente. (No confirmes por texto.)")
+        await pending_crud.upsert_pending(
+            db,
+            conversation_id=ctx.conversation_id,
+            action_type=action_type,
+            payload=payload,
+            member_id=ctx.member_id,
+            summary=summary,
+            status=PENDING_STATUS_PENDING,
+            commit=True,
+        )
+        return f"Propuesta lista: {summary}. Pide al cliente que confirme respondiendo *Sí*."
+
+    async def propose_membership(plan_id: int, template_id: int, full_name: Optional[str] = None) -> str:
+        """Propone comprar un PAQUETE: un plan con horario fijo que reserva automáticamente el
+        horario elegido para todo el periodo. Para socio existente es renovación; para cliente nuevo
+        es inscripción (requiere full_name). Requiere plan_id (plan de horario fijo) y template_id
+        (un horario de get_weekly_schedule)."""
+        plan = await plans_crud.get_membership_plan_by_id(db, int(plan_id))
+        if plan is None:
+            return f"No encontré el plan #{plan_id}."
+        if not plan.fixed_time_slot:
+            return (f"El plan {plan.name} no es de horario fijo. Para asistir un solo día usa el "
+                    "pase diario (propose_day_pass).")
+        templates = await class_catalog.get_class_templates(db, active_only=True)
+        tinfo = next((t for t in templates if t.id == int(template_id)), None)
+        if tinfo is None:
+            return ("No encontré ese horario. Muéstrale los horarios con get_weekly_schedule y pide "
+                    "que elija uno.")
+        name = (full_name or "").strip()
+        if ctx.member_id is None and not name:
+            return "Necesito el nombre completo del cliente para inscribirlo. Pídeselo."
+        seat = await _first_available_template_seat(db, int(template_id))
+        # If the class uses seats and none is free for the next occurrence, warn.
+        try:
+            tseats = await class_catalog.get_available_seats_for_template(db, int(template_id))
+        except Exception:  # noqa: BLE001
+            tseats = []
+        if tseats and seat is None:
+            day0 = _WEEKDAYS_ES[tinfo.weekday] if 0 <= tinfo.weekday < 7 else ""
+            return (f"El horario {day0} {(tinfo.start_time_local or '')[:5]} está lleno por ahora. "
+                    "Ofrécele otro horario.")
+        day = _WEEKDAYS_ES[tinfo.weekday] if 0 <= tinfo.weekday < 7 else ""
+        hhmm = (tinfo.start_time_local or "")[:5]
+        cls = tinfo.class_type_name or tinfo.name or "clase"
+        action_word = "Renovar" if ctx.member_id is not None else f"Inscribir a {name}"
+        summary = (f"{action_word} con el plan {plan.name} (${plan.price:.2f}), horario {day} {hhmm} "
+                   f"de {cls} — se reservan todas las clases del periodo")
+        payload = {
+            "plan_id": int(plan_id),
+            "template_id": int(template_id),
+            "full_name": name or None,
+            "phone_number": ctx.wa_id,
+            "amount": str(plan.price),
+        }
+        return await _finalize_proposal(
+            action_type=ACTION_BUY_PACKAGE, payload=payload, summary=summary,
+            amount=plan.price, description=f"{plan.name} - FitPilot", payer_name=name or None,
+        )
+
+    async def propose_day_pass(plan_id: int, session_id: int, full_name: Optional[str] = None) -> str:
+        """Propone un PASE DIARIO (1 día): el cliente paga un plan diario y reserva UNA clase
+        específica. Requiere plan_id (plan con duración en días) y session_id (de list_available_classes).
+        Para cliente nuevo requiere full_name."""
+        plan = await plans_crud.get_membership_plan_by_id(db, int(plan_id))
+        if plan is None:
+            return f"No encontré el plan #{plan_id}."
+        if plan.duration_unit != "day":
+            return (f"El plan {plan.name} no es un pase diario. Para asistir varios días con horario "
+                    "fijo usa propose_membership.")
         try:
             seats = await reservationsCrud.get_available_seats(db, int(session_id))
         except ValueError:
-            return f"No encontré la clase #{session_id}."
-        if seat_id is not None:
-            match = next((s for s in seats if s.id == int(seat_id)), None)
-            if match is None:
-                return f"El asiento {seat_id} no existe en esa clase."
-            if not match.is_available:
-                return f"El asiento {seat_id} ya está ocupado."
-        # Summary for the confirmation message.
+            return ("No encontré esa clase. Muéstrale las clases con list_available_classes y pide "
+                    "que elija una.")
         start = datetime.now(timezone.utc)
         sessions = await reservationsCrud.get_available_sessions(
             db, start_date=start, end_date=start + timedelta(days=60)
         )
-        info = next((s for s in sessions if s.id == int(session_id)), None)
-        when = _fmt_dt(info.start_at) if info else "la fecha programada"
-        cls_name = (info.name or info.class_type_name) if info else f"clase #{session_id}"
-        seat_txt = f", asiento {seat_id}" if seat_id is not None else ""
-        summary = f"Reservar {cls_name} el {when}{seat_txt}"
-        await pending_crud.upsert_pending(
-            db,
-            conversation_id=ctx.conversation_id,
-            action_type=ACTION_CREATE_RESERVATION,
-            payload={"session_id": int(session_id), "seat_id": int(seat_id) if seat_id is not None else None},
-            member_id=ctx.member_id,
-            summary=summary,
-            commit=True,
-        )
-        return f"Propuesta lista: {summary}. Pide al cliente que confirme."
-
-    async def propose_payment(amount: float, method: str = "efectivo", subscription_id: Optional[int] = None) -> str:
-        """Propone registrar un pago del socio (requiere confirmación)."""
-        if ctx.member_id is None:
-            return _NEEDS_MEMBER
-        dec = _to_decimal(amount)
-        if dec is None or dec <= 0:
-            return "El monto del pago no es válido."
-        summary = f"Registrar pago de ${dec:.2f} ({method})"
-        await pending_crud.upsert_pending(
-            db,
-            conversation_id=ctx.conversation_id,
-            action_type=ACTION_CREATE_PAYMENT,
-            payload={
-                "amount": str(dec),
-                "method": method or "efectivo",
-                "subscription_id": int(subscription_id) if subscription_id is not None else None,
-            },
-            member_id=ctx.member_id,
-            summary=summary,
-            commit=True,
-        )
-        return f"Propuesta lista: {summary}. Pide al cliente que confirme."
-
-    async def propose_renewal(plan_id: int) -> str:
-        """Propone renovar la membresía del socio con un plan (requiere confirmación)."""
-        if ctx.member_id is None:
-            return _NEEDS_MEMBER
-        plan = await plans_crud.get_membership_plan_by_id(db, int(plan_id))
-        if plan is None:
-            return f"No encontré el plan #{plan_id}."
-        if plan.fixed_time_slot:
-            return (
-                f"El plan {plan.name} tiene horario fijo y requiere asignar un cupo recurrente; "
-                "por favor pide al cliente que lo gestione con el staff del gimnasio."
-            )
-        summary = f"Renovar membresía con el plan {plan.name} (${plan.price:.2f})"
-        await pending_crud.upsert_pending(
-            db,
-            conversation_id=ctx.conversation_id,
-            action_type=ACTION_RENEW_SUBSCRIPTION,
-            payload={"plan_id": int(plan_id)},
-            member_id=ctx.member_id,
-            summary=summary,
-            commit=True,
-        )
-        return f"Propuesta lista: {summary}. Pide al cliente que confirme."
-
-    async def propose_enrollment(full_name: str, plan_id: int) -> str:
-        """Propone inscribir a un cliente nuevo (no socio) con un plan (requiere confirmación)."""
+        sinfo = next((s for s in sessions if s.id == int(session_id)), None)
+        if sinfo is None:
+            return "Esa clase no está disponible para reservar. Ofrécele otra."
+        if (sinfo.available_spots is not None and sinfo.available_spots <= 0) or (
+            seats and not any(s.is_available for s in seats)
+        ):
+            return f"La clase {_fmt_dt(sinfo.start_at)} ya no tiene cupo. Ofrécele otra."
         name = (full_name or "").strip()
-        if not name:
-            return "Necesito el nombre completo del cliente para inscribirlo."
-        plan = await plans_crud.get_membership_plan_by_id(db, int(plan_id))
-        if plan is None:
-            return f"No encontré el plan #{plan_id}."
-        summary = f"Inscribir a {name} con el plan {plan.name} (${plan.price:.2f})"
-        await pending_crud.upsert_pending(
-            db,
-            conversation_id=ctx.conversation_id,
-            action_type=ACTION_CREATE_ENROLLMENT,
-            payload={"full_name": name, "plan_id": int(plan_id), "phone_number": ctx.wa_id},
-            member_id=ctx.member_id,
-            summary=summary,
-            commit=True,
+        if ctx.member_id is None and not name:
+            return "Necesito el nombre completo del cliente para el pase diario. Pídeselo."
+        when = _fmt_dt(sinfo.start_at)
+        cls = sinfo.name or sinfo.class_type_name or "clase"
+        action_word = "Comprar" if ctx.member_id is not None else f"Inscribir a {name} con"
+        summary = (f"{action_word} pase diario {plan.name} (${plan.price:.2f}) y reservar {cls} "
+                   f"el {when}")
+        payload = {
+            "plan_id": int(plan_id),
+            "session_id": int(session_id),
+            "full_name": name or None,
+            "phone_number": ctx.wa_id,
+            "amount": str(plan.price),
+        }
+        return await _finalize_proposal(
+            action_type=ACTION_BUY_DAY_PASS, payload=payload, summary=summary,
+            amount=plan.price, description=f"Pase diario {plan.name} - FitPilot", payer_name=name or None,
         )
-        return f"Propuesta lista: {summary}. Pide al cliente que confirme."
 
     # --------------------------- confirm / cancel --------------------------
     async def confirm_action() -> str:
@@ -344,14 +410,12 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         (check_class_availability, "check_class_availability", "Asientos disponibles para una clase (session_id)."),
         (get_my_membership, "get_my_membership", "Estado de la membresía del cliente identificado."),
         (list_my_reservations, "list_my_reservations", "Próximas reservas del cliente identificado."),
-        (get_weekly_schedule, "get_weekly_schedule", "Horario semanal recurrente de clases (día, hora, clase, sede, instructor)."),
+        (get_weekly_schedule, "get_weekly_schedule", "Horario semanal recurrente de clases (día, hora, clase, sede, instructor). Da el id de cada horario (template) para propose_membership."),
         (get_venues, "get_venues", "Sedes del estudio: nombre, dirección y capacidad."),
         (list_instructors, "list_instructors", "Nombres de los instructores del estudio."),
-        (propose_reservation, "propose_reservation", "Propone una reserva de clase (requiere confirmación)."),
-        (propose_payment, "propose_payment", "Propone registrar un pago (requiere confirmación)."),
-        (propose_renewal, "propose_renewal", "Propone renovar la membresía con un plan (requiere confirmación)."),
-        (propose_enrollment, "propose_enrollment", "Propone inscribir a un cliente nuevo (requiere confirmación)."),
-        (confirm_action, "confirm_action", "Ejecuta la acción pendiente tras la confirmación del cliente."),
+        (propose_membership, "propose_membership", "Propone comprar un PAQUETE (plan de horario fijo): inscribe/renueva y auto-reserva el horario elegido todo el periodo. Args: plan_id, template_id, full_name (si es cliente nuevo)."),
+        (propose_day_pass, "propose_day_pass", "Propone un PASE DIARIO (1 día): paga un plan diario y reserva una clase específica. Args: plan_id, session_id, full_name (si es cliente nuevo)."),
+        (confirm_action, "confirm_action", "Ejecuta la compra pendiente tras la confirmación del cliente (solo cuando el pago no es por MercadoPago)."),
         (cancel_action, "cancel_action", "Cancela la acción pendiente."),
     ]
     return [
@@ -360,66 +424,124 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
     ]
 
 
-async def _execute_pending(db: AsyncSession, pending) -> str:
-    """Run the real CRUD write for a confirmed pending action. Caller marks status."""
+def _materialized_count(stats) -> str:
+    created = stats.get("created_reservations") if isinstance(stats, dict) else None
+    return f" Reservé {created} clase(s) de tu horario." if created else ""
+
+
+async def _execute_pending(
+    db: AsyncSession,
+    pending,
+    *,
+    payment_method: str = "efectivo",
+    payment_provider: Optional[str] = None,
+    provider_payment_id: Optional[str] = None,
+    external_reference: Optional[str] = None,
+) -> str:
+    """Run the real CRUD for a confirmed/paid purchase. Caller marks the status.
+
+    For a MercadoPago confirmation the caller passes ``payment_method="mercadopago"`` + the
+    provider id + external_reference so the Payment row records the gateway transaction.
+    """
     payload = pending.payload or {}
     action = pending.action_type
+    amount = payload.get("amount")
+    amount_dec = Decimal(str(amount)) if amount is not None else None
+    full_name = (payload.get("full_name") or "Cliente").strip() or "Cliente"
+    phone_number = payload.get("phone_number")
 
-    if action == ACTION_CREATE_RESERVATION:
-        reservation = await reservationsCrud.create_reservation(
-            db,
-            session_id=int(payload["session_id"]),
-            person_id=int(pending.member_id),
-            seat_id=payload.get("seat_id"),
-            source="whatsapp_bot",
-            commit=True,
-        )
-        return f"¡Listo! Reserva #{reservation.id} confirmada."
-
-    if action == ACTION_CREATE_PAYMENT:
-        payment = await payments_crud.create_payment(
-            db,
-            person_id=int(pending.member_id),
-            amount=Decimal(str(payload["amount"])),
-            method=payload.get("method") or "efectivo",
-            subscription_id=payload.get("subscription_id"),
-            comment="WhatsApp bot",
-            recorded_by=None,
-            commit=True,
-        )
-        return f"¡Listo! Pago de ${float(payment.amount):.2f} registrado (folio #{payment.id})."
-
-    if action == ACTION_RENEW_SUBSCRIPTION:
-        # renew_subscription_with_standing_booking commits internally.
-        subscription, payment, plan, _sb_id, _stats = (
-            await enrollment_crud.renew_subscription_with_standing_booking(
+    if action == ACTION_BUY_PACKAGE:
+        plan_id = int(payload["plan_id"])
+        template_id = int(payload["template_id"])
+        seat_id = await _first_available_template_seat(db, template_id)
+        if pending.member_id is not None:
+            # renew_subscription_with_standing_booking commits internally.
+            subscription, _payment, plan, _sb, stats = (
+                await enrollment_crud.renew_subscription_with_standing_booking(
+                    db,
+                    member_id=int(pending.member_id),
+                    plan_id=plan_id,
+                    template_id=template_id,
+                    seat_id=seat_id,
+                    payment_method=payment_method,
+                    payment_amount=amount_dec,
+                    payment_comment="WhatsApp bot",
+                    payment_provider=payment_provider,
+                    provider_payment_id=provider_payment_id,
+                    external_reference=external_reference,
+                    recorded_by=None,
+                )
+            )
+            return (f"¡Listo! Membresía {plan.name} activada. Vence {_fmt_dt(subscription.end_at)}."
+                    f"{_materialized_count(stats)}")
+        # New customer -> enrollment with standing booking (commits internally).
+        person, subscription, _payment, plan, _sb, stats = (
+            await enrollment_crud.create_member_enrollment_with_standing_booking(
                 db,
-                member_id=int(pending.member_id),
-                plan_id=int(payload["plan_id"]),
-                payment_method="efectivo",
+                full_name=full_name,
+                plan_id=plan_id,
+                template_id=template_id,
+                seat_id=seat_id,
+                phone_number=phone_number,
+                payment_method=payment_method,
+                payment_amount=amount_dec,
                 payment_comment="WhatsApp bot",
+                payment_provider=payment_provider,
+                provider_payment_id=provider_payment_id,
+                external_reference=external_reference,
                 recorded_by=None,
             )
         )
-        return (
-            f"¡Listo! Membresía renovada con el plan {plan.name}. "
-            f"Vence {_fmt_dt(subscription.end_at)}."
-        )
+        return (f"¡Bienvenido/a {person.full_name}! Inscripción lista con {plan.name}. "
+                f"Vence {_fmt_dt(subscription.end_at)}.{_materialized_count(stats)}")
 
-    if action == ACTION_CREATE_ENROLLMENT:
-        person, subscription, payment, plan = await enrollment_crud.create_member_enrollment(
+    if action == ACTION_BUY_DAY_PASS:
+        plan_id = int(payload["plan_id"])
+        session_id = int(payload["session_id"])
+        seat_id = await _first_available_session_seat(db, session_id)
+        if pending.member_id is not None:
+            subscription = await subscriptions_crud.create_membership_subscription(
+                db, person_id=int(pending.member_id), plan_id=plan_id, commit=False
+            )
+            await payments_crud.create_payment(
+                db,
+                person_id=int(pending.member_id),
+                amount=amount_dec if amount_dec is not None else Decimal("0"),
+                method=payment_method,
+                subscription_id=subscription.id,
+                provider=payment_provider,
+                provider_payment_id=provider_payment_id,
+                external_reference=external_reference,
+                comment="WhatsApp bot pase diario",
+                recorded_by=None,
+                commit=False,
+            )
+            reservation = await reservationsCrud.create_reservation(
+                db, session_id=session_id, person_id=int(pending.member_id),
+                seat_id=seat_id, source="whatsapp_bot", commit=False,
+            )
+            await db.commit()
+            return f"¡Listo! Pase diario activado y reserva #{reservation.id} confirmada."
+        # New customer day pass -> 1-day enrollment + single reservation.
+        person, _subscription, _payment, plan = await enrollment_crud.create_member_enrollment(
             db,
-            full_name=payload["full_name"],
-            phone_number=payload.get("phone_number"),
-            plan_id=int(payload["plan_id"]),
-            payment_method="efectivo",
-            payment_comment="WhatsApp bot",
+            full_name=full_name,
+            phone_number=phone_number,
+            plan_id=plan_id,
+            payment_method=payment_method,
+            payment_amount=amount_dec,
+            payment_comment="WhatsApp bot pase diario",
+            payment_provider=payment_provider,
+            provider_payment_id=provider_payment_id,
+            external_reference=external_reference,
             recorded_by=None,
         )
-        await db.commit()
-        return (
-            f"¡Bienvenido/a {person.full_name}! Inscripción lista con el plan {plan.name}. "
-            f"Vence {_fmt_dt(subscription.end_at)}."
+        reservation = await reservationsCrud.create_reservation(
+            db, session_id=session_id, person_id=person.id,
+            seat_id=seat_id, source="whatsapp_bot", commit=False,
         )
+        await db.commit()
+        return (f"¡Bienvenido/a {person.full_name}! Pase diario {plan.name} activado y "
+                f"reserva #{reservation.id} confirmada.")
 
     raise ValueError(f"Tipo de acción desconocido: {action}")

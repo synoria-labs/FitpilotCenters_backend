@@ -19,6 +19,7 @@ class ChatbotConfigData:
     id: Optional[int]
     enabled: bool
     require_confirmation: bool
+    require_mp_payment: bool
     model: str
     system_prompt: Optional[str]
     business_name: Optional[str]
@@ -37,6 +38,7 @@ class ChatbotConfigData:
             id=m.id,
             enabled=bool(m.enabled),
             require_confirmation=bool(m.require_confirmation),
+            require_mp_payment=bool(m.require_mp_payment),
             model=m.model,
             system_prompt=m.system_prompt,
             business_name=m.business_name,
@@ -66,6 +68,7 @@ async def get_config(db: AsyncSession) -> Optional[ChatbotConfigData]:
 _EDITABLE_FIELDS = (
     "enabled",
     "require_confirmation",
+    "require_mp_payment",
     "model",
     "system_prompt",
     "business_name",

@@ -29,11 +29,16 @@ from app.db.postgresql import Base
 
 # Pending action lifecycle.
 PENDING_STATUS_PENDING = "pending"
+PENDING_STATUS_AWAITING_PAYMENT = "awaiting_payment"  # MercadoPago link sent, awaiting webhook
 PENDING_STATUS_CONFIRMED = "confirmed"
 PENDING_STATUS_CANCELED = "canceled"
 PENDING_STATUS_EXPIRED = "expired"
 
 # Supported propose/confirm action types (payload shape documented in chatbot/tools.py).
+# Current purchase model: buying a plan creates the attendance.
+ACTION_BUY_PACKAGE = "buy_package"      # fixed-time-slot plan -> enrollment/renewal + standing booking
+ACTION_BUY_DAY_PASS = "buy_day_pass"    # daily plan -> 1-day subscription + single reservation
+# Legacy (kept for backward compat with any in-flight rows; no tool creates these anymore).
 ACTION_CREATE_RESERVATION = "create_reservation"
 ACTION_CREATE_PAYMENT = "create_payment"
 ACTION_RENEW_SUBSCRIPTION = "renew_subscription"
@@ -54,6 +59,9 @@ class ChatbotConfig(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # When true, the agent must never execute a write without an explicit confirmation turn.
     require_confirmation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # When true, purchases (inscripción/renovación/day pass) require a MercadoPago payment link
+    # before executing; off => confirmed by "Sí" (manual flow). Editable from the frontend.
+    require_mp_payment: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Anthropic model id (defaults to the latest Sonnet).
     model: Mapped[str] = mapped_column(String(80), nullable=False, default="claude-sonnet-4-6")
     # The configurable system prompt (initial context + behaviour for the business).
@@ -92,6 +100,10 @@ class ChatbotPendingAction(Base):
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default=PENDING_STATUS_PENDING
     )
+    # MercadoPago flow: unique token to match the webhook + the generated link/preference.
+    external_reference: Mapped[Optional[str]] = mapped_column(String(120))
+    mp_preference_id: Mapped[Optional[str]] = mapped_column(String(120))
+    mp_init_point: Mapped[Optional[str]] = mapped_column(Text)
     expires_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, default=_utcnow

@@ -18,12 +18,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.chatbot_env import chatbot_env
+from app.core.mercadopago_config import mercadopago_config
 from app.crud import chatbotConfigCrud
+from app.crud import chatbotPendingCrud
 from app.crud import membersCrud
 from app.crud import whatsappCrud as crud
 from app.crud.chatbotConfigCrud import ChatbotConfigData
 from app.db.postgresql import async_session_factory
 from app.models import Venue
+from app.models.chatbotModel import PENDING_STATUS_AWAITING_PAYMENT
 from app.services import whatsapp_cloud_service as cloud
 from app.services.chatbot.agent import run_agent
 from app.services.chatbot.tools import ChatbotContext, build_tools
@@ -103,6 +106,26 @@ async def _build_business_info(db: AsyncSession, config: ChatbotConfigData) -> s
     return "\n".join(lines)
 
 
+async def _build_pending_note(db: AsyncSession, conversation_id: int) -> Optional[str]:
+    """Tell the agent there's a pending action so it confirms/reminds-to-pay instead of re-proposing."""
+    pending = await chatbotPendingCrud.get_active_pending(db, conversation_id)
+    if pending is None:
+        return None
+    summary = pending.summary or "una compra"
+    if pending.status == PENDING_STATUS_AWAITING_PAYMENT:
+        link = pending.mp_init_point or "(link no disponible)"
+        return (
+            f"⚠️ Hay una compra pendiente de PAGO: «{summary}». El cliente debe pagar en el link ya "
+            f"enviado: {link}. Si pregunta o no lo encuentra, reenvíaselo. NO la confirmes por texto; "
+            "se confirma sola al acreditarse el pago. Si quiere cancelar, usa cancel_action."
+        )
+    return (
+        f"⚠️ Hay una acción PENDIENTE de confirmación: «{summary}». Si el cliente confirma "
+        "(sí/ok/dale), llama a confirm_action AHORA; NO vuelvas a proponer ni a pedir más datos. "
+        "Si rechaza o cambia de idea, usa cancel_action."
+    )
+
+
 async def _run_agent_reply(
     conversation_id: int,
     contact_id: int,
@@ -125,15 +148,20 @@ async def _run_agent_reply(
             member_id = await membersCrud.get_member_id_by_wa_id(db, contact_wa_id)
             business_info = await _build_business_info(db, config)
             history = await _load_history(db, conversation_id, exclude_message_id=message_id)
+            require_mp = bool(config.require_mp_payment) and mercadopago_config.is_configured()
+            pending_note = await _build_pending_note(db, conversation_id)
 
             ctx = ChatbotContext(
                 db=db,
                 conversation_id=conversation_id,
                 member_id=member_id,
                 wa_id=contact_wa_id,
+                require_mp_payment=require_mp,
             )
             tools = build_tools(ctx)
-            reply = await run_agent(config, tools, business_info, member_id, history, text)
+            reply = await run_agent(
+                config, tools, business_info, member_id, history, text, pending_note=pending_note
+            )
             if not reply:
                 return
 

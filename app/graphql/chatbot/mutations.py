@@ -35,6 +35,7 @@ class ChatbotConfigMutation:
                 db,
                 enabled=input.enabled,
                 require_confirmation=input.require_confirmation,
+                require_mp_payment=input.require_mp_payment,
                 model=model,
                 system_prompt=input.system_prompt,
                 business_name=input.business_name,
