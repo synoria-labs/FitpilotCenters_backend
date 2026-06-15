@@ -113,11 +113,9 @@ def upgrade() -> None:
             "updated_at", sa.TIMESTAMP(timezone=True), nullable=False,
             server_default=sa.text("now()"),
         ),
-        sa.ForeignKeyConstraint(
-            ["conversation_id"],
-            [f"{SCHEMA}.conversations.id"],
-            ondelete="CASCADE",
-        ),
+        # No FK to app.conversations: that table is externally-created and lacks a
+        # unique constraint on `id` in some deployments, so a FK can't reference it.
+        # The unique index below still enforces one pending action per conversation.
         schema=SCHEMA,
     )
     op.create_index(

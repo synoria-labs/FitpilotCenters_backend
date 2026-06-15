@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import (
-    BigInteger, Boolean, ForeignKey, String, Text, TIMESTAMP, Index, JSON
+    BigInteger, Boolean, String, Text, TIMESTAMP, Index, JSON
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -80,9 +80,9 @@ class ChatbotPendingAction(Base):
     __tablename__ = "chatbot_pending_action"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    conversation_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
-    )
+    # No DB-level FK: app.conversations is externally-created and may lack a unique
+    # constraint on `id`. The unique index on conversation_id enforces one-per-conversation.
+    conversation_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     action_type: Mapped[str] = mapped_column(String(40), nullable=False)
     payload: Mapped[Optional[dict]] = mapped_column(JSON)
     # Resolved member id this action acts on (None for prospect enrollment).
