@@ -35,6 +35,7 @@ from app.crud.memberships import plans as plans_crud
 from app.crud.memberships import enrollment as enrollment_crud
 from app.crud.standing_bookings import catalog as class_catalog
 from app.models import Venue
+from app.services.chatbot.timefmt import fmt_dt as _fmt_dt
 from app.models.chatbotModel import (
     ACTION_CREATE_ENROLLMENT,
     ACTION_CREATE_PAYMENT,
@@ -59,12 +60,6 @@ class ChatbotContext:
     conversation_id: int
     member_id: Optional[int]
     wa_id: Optional[str]
-
-
-def _fmt_dt(dt: Optional[datetime]) -> str:
-    if not dt:
-        return "?"
-    return dt.strftime("%d/%m/%Y %H:%M")
 
 
 def _to_decimal(value) -> Optional[Decimal]:

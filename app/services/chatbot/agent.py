@@ -15,6 +15,7 @@ from langgraph.prebuilt import create_react_agent
 
 from app.core.chatbot_env import chatbot_env
 from app.crud.chatbotConfigCrud import ChatbotConfigData
+from app.services.chatbot.timefmt import fmt_now_es
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,12 @@ def build_system_prompt(
         parts.append(config.system_prompt.strip())
     if config.tone:
         parts.append(f"Tono: {config.tone}.")
+    parts.append(
+        f"Fecha y hora actual: {fmt_now_es()} (hora de México, America/Mexico_City). "
+        "Úsala para interpretar 'hoy', 'mañana', 'esta semana' y los días de la semana; no asumas "
+        "otra fecha. Las fechas que devuelven las herramientas ya vienen en hora de México con su "
+        "día de la semana — repítelas tal cual, no recalcules el día."
+    )
     parts.append(_TOOL_RULES)
     parts.append(_CONFIRM_RULES_STRICT if config.require_confirmation else _CONFIRM_RULES_RELAXED)
     if member_id is not None:
