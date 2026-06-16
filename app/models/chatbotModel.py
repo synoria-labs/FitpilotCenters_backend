@@ -30,6 +30,7 @@ from app.db.postgresql import Base
 # Pending action lifecycle.
 PENDING_STATUS_PENDING = "pending"
 PENDING_STATUS_AWAITING_PAYMENT = "awaiting_payment"  # MercadoPago link sent, awaiting webhook
+PENDING_STATUS_PROCESSING = "processing"  # claimed by the payment webhook; executing the purchase
 PENDING_STATUS_CONFIRMED = "confirmed"
 PENDING_STATUS_CANCELED = "canceled"
 PENDING_STATUS_EXPIRED = "expired"
