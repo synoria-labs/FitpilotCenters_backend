@@ -305,6 +305,7 @@ async def send_media(
     media_id: str,
     caption: Optional[str] = None,
     filename: Optional[str] = None,
+    voice: bool = False,
 ) -> OutboundResult:
     """Send media. ``persist=False``: the caller persists the message + media row (it owns the
     richer media bookkeeping); the gateway only serializes + sends."""
@@ -312,7 +313,12 @@ async def send_media(
         db, kind=kind, message_class=CLASS_TRANSACTIONAL,
         conversation_id=conversation_id, contact_id=contact_id, wa_id=wa_id,
         cloud_send=lambda: cloud.send_media(
-            to=wa_id, media_type=media_type, media_id=media_id, caption=caption, filename=filename,
+            to=wa_id,
+            media_type=media_type,
+            media_id=media_id,
+            caption=caption,
+            filename=filename,
+            voice=voice,
         ),
         persist=False,
     )

@@ -314,19 +314,25 @@ async def send_media(
     media_id: str,
     caption: Optional[str] = None,
     filename: Optional[str] = None,
+    voice: bool = False,
 ) -> Dict[str, Any]:
     """Send a previously uploaded media object. Returns {"wa_message_id": ...}.
 
     ``media_type`` must be one of image/audio/video/document. The Cloud API
     accepts ``caption`` only for image/video/document (audio rejects it) and
-    ``filename`` only for document.
+    ``filename`` only for document. ``voice=True`` marks an audio payload as a
+    WhatsApp voice message; Meta expects OGG/Opus media for that mode.
     """
     if not whatsapp_config.is_send_configured():
         raise WhatsAppError("WhatsApp Cloud API is not configured (missing phone id/token).")
     if media_type not in {"image", "audio", "video", "document"}:
         raise WhatsAppError(f"Tipo de media no soportado para envío: {media_type}")
+    if voice and media_type != "audio":
+        raise WhatsAppError("Las notas de voz solo pueden enviarse como audio.")
 
     media_obj: Dict[str, Any] = {"id": media_id}
+    if voice:
+        media_obj["voice"] = True
     if caption and media_type != "audio":
         media_obj["caption"] = caption
     if filename and media_type == "document":

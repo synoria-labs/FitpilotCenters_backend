@@ -182,8 +182,17 @@ class WhatsAppChatMutation:
         raw = await file.read()
         mime_type = _detect_mime_type(file, original_filename)
         media_kind = _media_kind_for_mime(mime_type)
+        voice_note = bool(getattr(input, "voice_note", False))
         caption = (input.caption or "").strip() or None
-        if media_kind == "audio":
+        if voice_note:
+            if media_kind != "audio" or Path(original_filename).suffix.lower() != ".ogg":
+                return SendMessageResult(
+                    success=False,
+                    error="La nota de voz debe ser un archivo de audio OGG/Opus.",
+                )
+            mime_type = "audio/ogg; codecs=opus"
+            caption = None
+        elif media_kind == "audio":
             caption = None  # the Cloud API rejects captions on audio
 
         try:
@@ -212,6 +221,7 @@ class WhatsAppChatMutation:
             media_id=media_id,
             caption=caption,
             filename=original_filename if media_kind == "document" else None,
+            voice=voice_note,
         )
         if not gw.ok:
             await db.rollback()

@@ -38,7 +38,14 @@ MAX_BYTES = {
 ALLOWED_MIME_PREFIXES = {
     "image": ("image/jpeg", "image/png"),
     "video": ("video/mp4", "video/3gpp"),
-    "audio": ("audio/aac", "audio/amr", "audio/mpeg", "audio/mp4", "audio/ogg"),
+    "audio": (
+        "audio/aac",
+        "audio/amr",
+        "audio/mpeg",
+        "audio/mp4",
+        "audio/ogg",
+        "audio/ogg; codecs=opus",
+    ),
     "document": (
         "application/pdf",
         "application/msword",

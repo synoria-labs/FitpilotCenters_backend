@@ -155,6 +155,7 @@ class SendMediaMessageInput:
     conversation_id: Optional[int] = None
     wa_id: Optional[str] = None
     caption: Optional[str] = None
+    voice_note: bool = False
 
 
 @strawberry.input
