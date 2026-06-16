@@ -36,6 +36,13 @@ async def on_inbound_message(
     if not text:
         return None
 
+    # STOP/BAJA/ALTA keywords consume the turn (consent + bot pause/resume + confirmation); the bot
+    # must NOT also reply.
+    from app.services import whatsapp_optout
+
+    if await whatsapp_optout.handle_keyword(db, message, contact, conversation):
+        return None
+
     # Bot coexistence: don't auto-reply if the bot is disabled (robot button off) or temporarily
     # paused for this conversation (a human is handling it / STOP). bot_paused_until is naive-UTC.
     from datetime import datetime
