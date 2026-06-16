@@ -17,6 +17,7 @@ from app.models.chatbotModel import (
     PENDING_STATUS_CANCELED,
     PENDING_STATUS_EXPIRED,
     PENDING_STATUS_PENDING,
+    PENDING_STATUS_PROCESSING,
 )
 
 DEFAULT_TTL_MINUTES = 30
@@ -51,15 +52,16 @@ async def get_pending(
 async def get_active_pending(
     db: AsyncSession, conversation_id: int
 ) -> Optional[ChatbotPendingAction]:
-    """Return the active action (status ``pending`` or ``awaiting_payment``), or None.
+    """Return the active action (``pending``, ``awaiting_payment`` or ``processing``), or None.
 
-    Used to inject the pending state into the agent context so it confirms / reminds-to-pay
-    instead of re-proposing. Expired rows are flagged and not returned.
+    Used to inject the pending state into the agent context so it confirms / reminds-to-pay /
+    waits-while-processing instead of re-proposing (a re-propose mid-``processing`` would clobber
+    the row the payment webhook is executing on). Expired rows are flagged and not returned.
     """
     stmt = select(ChatbotPendingAction).where(
         ChatbotPendingAction.conversation_id == conversation_id,
         ChatbotPendingAction.status.in_(
-            [PENDING_STATUS_PENDING, PENDING_STATUS_AWAITING_PAYMENT]
+            [PENDING_STATUS_PENDING, PENDING_STATUS_AWAITING_PAYMENT, PENDING_STATUS_PROCESSING]
         ),
     )
     row = (await db.execute(stmt)).scalars().first()
@@ -74,14 +76,21 @@ async def get_active_pending(
 
 
 async def get_by_external_reference(
-    db: AsyncSession, external_reference: str
+    db: AsyncSession, external_reference: str, *, for_update: bool = False
 ) -> Optional[ChatbotPendingAction]:
-    """Look up a pending action by its MercadoPago ``external_reference`` (webhook matching)."""
+    """Look up a pending action by its MercadoPago ``external_reference`` (webhook matching).
+
+    With ``for_update=True`` the row is locked (``SELECT ... FOR UPDATE``) so concurrent duplicate
+    webhooks for the same payment serialize: the second blocks until the first commits its claim.
+    Must be called inside a transaction.
+    """
     if not external_reference:
         return None
     stmt = select(ChatbotPendingAction).where(
         ChatbotPendingAction.external_reference == external_reference
     )
+    if for_update:
+        stmt = stmt.with_for_update()
     return (await db.execute(stmt)).scalars().first()
 
 

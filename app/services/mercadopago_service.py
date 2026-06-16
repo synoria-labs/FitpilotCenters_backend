@@ -87,6 +87,30 @@ async def get_payment(payment_id) -> Dict[str, Any]:
     return resp.json()
 
 
+async def refund_payment(
+    payment_id, amount=None, *, idempotency_key: Optional[str] = None
+) -> Dict[str, Any]:
+    """Refund a payment (full if ``amount`` is None, otherwise partial).
+
+    Used when a purchase is paid but the booking can no longer be honored (e.g. the class filled
+    up between the payment link being sent and the webhook arriving). ``idempotency_key`` is sent
+    as ``X-Idempotency-Key`` so retried webhooks never double-refund.
+    """
+    if not cfg.is_configured():
+        raise MercadoPagoError("MercadoPago no está configurado (falta MP_ACCESS_TOKEN).")
+    url = f"{cfg.API_BASE}/v1/payments/{payment_id}/refunds"
+    headers = {**_auth_headers(), "Content-Type": "application/json"}
+    if idempotency_key:
+        headers["X-Idempotency-Key"] = idempotency_key
+    body: Dict[str, Any] = {} if amount is None else {"amount": float(amount)}
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        resp = await client.post(url, json=body, headers=headers)
+    if resp.status_code >= 400:
+        logger.warning("MercadoPago refund failed (%s): %s", resp.status_code, resp.text[:300])
+        raise MercadoPagoError(f"No se pudo reembolsar el pago (HTTP {resp.status_code}).")
+    return resp.json()
+
+
 def verify_webhook_signature(
     *, x_signature: Optional[str], x_request_id: Optional[str], data_id: Optional[str]
 ) -> bool:

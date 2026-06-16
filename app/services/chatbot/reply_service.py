@@ -23,7 +23,10 @@ from app.crud import chatbotPendingCrud
 from app.crud import membersCrud
 from app.crud import whatsappCrud as crud
 from app.db.postgresql import async_session_factory
-from app.models.chatbotModel import PENDING_STATUS_AWAITING_PAYMENT
+from app.models.chatbotModel import (
+    PENDING_STATUS_AWAITING_PAYMENT,
+    PENDING_STATUS_PROCESSING,
+)
 from app.services import whatsapp_cloud_service as cloud
 from app.services.chatbot.agent import run_agent
 from app.services.chatbot.business_context import build_business_info
@@ -88,6 +91,12 @@ async def _build_pending_note(db: AsyncSession, conversation_id: int) -> Optiona
     if pending is None:
         return None
     summary = pending.summary or "una compra"
+    if pending.status == PENDING_STATUS_PROCESSING:
+        return (
+            f"⏳ La compra «{summary}» tiene un pago que se está acreditando justo ahora. Pídele al "
+            "cliente que espere unos segundos; le confirmas en cuanto se procese. NO propongas una "
+            "compra nueva ni generes otro link (interrumpirías la compra en curso)."
+        )
     if pending.status == PENDING_STATUS_AWAITING_PAYMENT:
         link = pending.mp_init_point or "(link no disponible)"
         return (

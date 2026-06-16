@@ -107,9 +107,17 @@ async def generate_sessions_from_template(
     db: AsyncSession,
     template_id: int,
     start_date: date,
-    end_date: date
+    end_date: date,
+    *,
+    commit: bool = True,
 ) -> List[ClassSession]:
-    """Generate class sessions from a template for the given date range"""
+    """Generate class sessions from a template for the given date range.
+
+    ``commit=True`` (default) persists the new sessions and is what standalone callers
+    (admin session generation, rolling-window maintenance) expect. ``commit=False`` only
+    flushes, so a caller that owns the transaction (atomic enrollment) can include session
+    generation in a single outer commit and roll it back on failure.
+    """
 
     # Get the template
     template_query = select(ClassTemplate).options(
@@ -166,10 +174,15 @@ async def generate_sessions_from_template(
     if sessions_to_create:
         db.add_all(sessions_to_create)
         try:
-            await db.commit()
-            # Refresh all created sessions
-            for session in sessions_to_create:
-                await db.refresh(session)
+            if commit:
+                await db.commit()
+                # Refresh all created sessions
+                for session in sessions_to_create:
+                    await db.refresh(session)
+            else:
+                # Caller owns the transaction: only flush so the new sessions are visible
+                # in-transaction (for materialization) without committing them.
+                await db.flush()
         except SQLAlchemyError:
             await db.rollback()
             raise

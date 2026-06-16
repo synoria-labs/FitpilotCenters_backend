@@ -277,6 +277,7 @@ async def renew_subscription_with_standing_booking(
             template_id=template_id,
             seat_id=seat_id,
             auto_materialize=auto_materialize,
+            commit_sessions=False,  # defer to the single outer commit -> atomic enrollment
         )
         _assert_materialization_success(materialization_stats)
 
@@ -354,6 +355,7 @@ async def create_member_enrollment_with_standing_booking(
             template_id=template_id,
             seat_id=seat_id,
             auto_materialize=auto_materialize,
+            commit_sessions=False,  # defer to the single outer commit -> atomic enrollment
         )
         _assert_materialization_success(materialization_stats)
     elif plan.fixed_time_slot:
