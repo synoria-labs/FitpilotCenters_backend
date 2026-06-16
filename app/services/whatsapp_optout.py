@@ -60,21 +60,11 @@ async def handle_keyword(db: AsyncSession, message, contact, conversation) -> bo
         conversation.bot_paused_until = None
         reply = _OPTIN_REPLY
 
-    # Confirmation: transactional reply (kind=chatbot_reply does NOT pause the bot, unlike a manual
-    # human send). The inbound just refreshed the 24h window, so the free-form text is allowed.
-    from app.services import whatsapp_outbound as outbound
+    # Confirmation: send in the BACKGROUND (its own session) so the ingest session commits the
+    # consent + bot pause immediately and the per-contact advisory lock is NOT held across the Meta
+    # HTTP call on the webhook path. kind=chatbot_reply is transactional and does NOT pause the bot.
+    from app.services.chatbot import reply_service
 
-    try:
-        await outbound.send_text(
-            db,
-            kind=outbound.KIND_CHATBOT_REPLY,
-            conversation_id=conversation.id,
-            contact_id=contact.id,
-            wa_id=contact.wa_id,
-            text=reply,
-            persist=True,
-        )
-    except Exception:  # noqa: BLE001
-        logger.exception("opt-out: failed to send confirmation to %s", contact.wa_id)
-    # The ingest pipeline commits the session right after on_inbound_message returns.
+    reply_service.schedule_text_send(conversation.id, contact.id, contact.wa_id, reply)
+    # The ingest pipeline commits the session (consent + bot_paused_until) right after this returns.
     return True

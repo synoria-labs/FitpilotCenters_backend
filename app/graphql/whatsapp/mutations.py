@@ -236,28 +236,37 @@ class WhatsAppChatMutation:
             logger.exception("Could not store sent media %s", media_id)
             stored_url = None
 
-        message = await crud.insert_outbound_message(
-            db,
-            conversation_id=conversation.id,
-            contact_id=contact.id,
-            text=caption,
-            wa_message_id=result.get("wa_message_id"),
-            message_type=media_kind,
-            message_class=outbound.CLASS_TRANSACTIONAL,
-        )
-        await crud.insert_outbound_media(
-            db,
-            message_id=message.id,
-            media_type=media_kind,
-            mime_type=mime_type,
-            filename=original_filename,
-            file_size=len(raw),
-            sha256=sha,
-            media_url=stored_url,
-            caption=caption,
-            cloud_media_id=media_id,
-        )
-        await db.commit()
+        try:
+            message = await crud.insert_outbound_message(
+                db,
+                conversation_id=conversation.id,
+                contact_id=contact.id,
+                text=caption,
+                wa_message_id=result.get("wa_message_id"),
+                message_type=media_kind,
+                message_class=outbound.CLASS_TRANSACTIONAL,
+            )
+            await crud.insert_outbound_media(
+                db,
+                message_id=message.id,
+                media_type=media_kind,
+                mime_type=mime_type,
+                filename=original_filename,
+                file_size=len(raw),
+                sha256=sha,
+                media_url=stored_url,
+                caption=caption,
+                cloud_media_id=media_id,
+            )
+            await db.commit()
+        except Exception:  # noqa: BLE001
+            # Already delivered at Meta -> surface a 'sent but not recorded' state, never silently lose it.
+            await db.rollback()
+            logger.exception("Media sent at Meta but failed to persist (conversation %s)", conversation.id)
+            return SendMessageResult(
+                success=False,
+                error="El archivo se envió pero no se pudo registrar en el chat. Recarga la conversación.",
+            )
 
         # Re-fetch with the media relation eager-loaded so the result (and the
         # realtime fan-out) carries the attachment metadata.

@@ -164,6 +164,22 @@ async def _run_agent_reply(
             if not reply:
                 return
 
+            # The agent took time to run; re-check the bot wasn't disabled/paused meanwhile (STOP,
+            # human takeover, or robot button off) so it doesn't talk over a human or reply right
+            # after the customer asked to stop.
+            from datetime import datetime
+
+            conv = await crud.get_conversation(db, conversation_id)
+            if conv is not None and (
+                conv.bot_enabled is False
+                or (conv.bot_paused_until is not None and conv.bot_paused_until > datetime.utcnow())
+            ):
+                logger.info(
+                    "Chatbot reply suppressed: bot disabled/paused for conversation %s",
+                    conversation_id,
+                )
+                return
+
             await send_and_persist_reply(
                 db,
                 conversation_id=conversation_id,
@@ -193,6 +209,43 @@ def schedule_agent_reply(
     except RuntimeError:
         # No running loop (e.g. called from a sync context outside the app) — skip.
         logger.warning("schedule_agent_reply called without a running event loop; skipped")
+        return
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+async def _run_text_send(
+    conversation_id: int, contact_id: int, to_wa_id: str, text: str, kind: str
+) -> None:
+    """Background a single transactional text send in its own session (e.g. opt-out confirmation)."""
+    try:
+        async with async_session_factory() as db:
+            await send_and_persist_reply(
+                db,
+                conversation_id=conversation_id,
+                contact_id=contact_id,
+                to_wa_id=to_wa_id,
+                text=text,
+                kind=kind,
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("background text send failed for conversation %s", conversation_id)
+
+
+def schedule_text_send(
+    conversation_id: int,
+    contact_id: int,
+    to_wa_id: str,
+    text: str,
+    kind: str = outbound.KIND_CHATBOT_REPLY,
+) -> None:
+    """Fire-and-forget a transactional text send so the webhook/ingest path stays non-blocking."""
+    try:
+        task = asyncio.create_task(
+            _run_text_send(conversation_id, contact_id, to_wa_id, text, kind)
+        )
+    except RuntimeError:
+        logger.warning("schedule_text_send called without a running event loop; skipped")
         return
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)

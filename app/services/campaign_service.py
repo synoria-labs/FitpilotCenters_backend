@@ -397,6 +397,7 @@ async def run_campaign(campaign_id: int, *, dry_run: bool = False) -> Dict[str, 
         stats = {"sent": 0, "failed": 0, "skipped": 0}
         ids = await crud.list_sendable_recipient_ids(db, campaign_id)
         paused = False
+        deferred = False  # a recipient was deferred (quiet hours / mid-purchase) -> retry later
 
         for index, rid in enumerate(ids):
             status_now = await _current_status(db, campaign_id)
@@ -425,19 +426,28 @@ async def run_campaign(campaign_id: int, *, dry_run: bool = False) -> Dict[str, 
                 stats["failed"] += 1
             else:
                 stats["skipped"] += 1
+                if outcome == "deferred":
+                    deferred = True
 
             if index < len(ids) - 1:
                 await asyncio.sleep(interval)
 
         fresh = await crud.get_campaign_model(db, campaign_id)
         if fresh is not None and fresh.status == STATUS_SENDING:
-            await crud.set_campaign_status(
-                db,
-                fresh,
-                status=STATUS_PAUSED if paused else STATUS_COMPLETED,
-                finished_at=None if paused else _now(),
-            )
-        return {"ok": True, "paused": paused, **stats}
+            if deferred and not paused:
+                # Recipients deferred (quiet hours / mid-purchase). Re-schedule (due now) so a later
+                # sweep retries them, instead of completing and silently dropping the audience.
+                await crud.set_campaign_status(
+                    db, fresh, status=STATUS_SCHEDULED, scheduled_at=_now()
+                )
+            else:
+                await crud.set_campaign_status(
+                    db,
+                    fresh,
+                    status=STATUS_PAUSED if paused else STATUS_COMPLETED,
+                    finished_at=None if paused else _now(),
+                )
+        return {"ok": True, "paused": paused, "deferred": deferred, **stats}
 
 
 async def _dry_run_preview(
