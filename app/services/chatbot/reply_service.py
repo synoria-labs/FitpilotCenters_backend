@@ -91,6 +91,10 @@ async def _load_history(
         if r.direction == "inbound":
             messages.append(HumanMessage(content=text))
         else:
+            # Label automated/campaign context so the bot can close a sale the customer is
+            # responding to (and not mistake a campaign/notification for its own prior turn).
+            if getattr(r, "message_class", None) == "marketing" or r.message_type == "template":
+                text = f"[mensaje automático/campaña] {text}"
             messages.append(AIMessage(content=text))
     return messages
 

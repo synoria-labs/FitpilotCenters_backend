@@ -36,6 +36,16 @@ async def on_inbound_message(
     if not text:
         return None
 
+    # Bot coexistence: don't auto-reply if the bot is disabled (robot button off) or temporarily
+    # paused for this conversation (a human is handling it / STOP). bot_paused_until is naive-UTC.
+    from datetime import datetime
+
+    if getattr(conversation, "bot_enabled", True) is False:
+        return None
+    paused_until = getattr(conversation, "bot_paused_until", None)
+    if paused_until is not None and paused_until > datetime.utcnow():
+        return None
+
     logger.debug(
         "on_inbound_message: scheduling chatbot reply msg=%s contact=%s",
         message.id, contact.wa_id,

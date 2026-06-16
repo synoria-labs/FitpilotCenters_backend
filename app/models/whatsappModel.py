@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Optional, List
 
 from sqlalchemy import (
-    BigInteger, SmallInteger, String, Text, ForeignKey, TIMESTAMP, JSON, Index
+    BigInteger, Boolean, SmallInteger, String, Text, ForeignKey, TIMESTAMP, JSON, Index
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -48,6 +48,10 @@ class Conversation(Base):
     contact_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("contacts.id"), nullable=False)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
     expiration_timestamp: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP)
+    # Bot coexistence: manual master switch (robot button) + temporary human-takeover pause
+    # (naive TIMESTAMP like expiration_timestamp; the bot auto-resumes when it elapses).
+    bot_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    bot_paused_until: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP)
     created_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, default=datetime.utcnow)
     updated_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, default=datetime.utcnow)
 

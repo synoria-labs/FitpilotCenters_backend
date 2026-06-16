@@ -117,6 +117,23 @@ async def _marketing_gates(
     return None
 
 
+async def _pause_bot_for_takeover(db: AsyncSession, conversation_id: int) -> None:
+    """A human replied in Chats -> pause the bot for this conversation (auto-resumes on expiry)."""
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import update
+
+    from app.core.outbound_config import outbound_config
+    from app.models.whatsappModel import Conversation
+
+    until = datetime.utcnow() + timedelta(hours=outbound_config.HUMAN_TAKEOVER_HOURS)
+    await db.execute(
+        update(Conversation)
+        .where(Conversation.id == conversation_id)
+        .values(bot_paused_until=until)
+    )
+
+
 async def _handle_outside_window(
     db: AsyncSession, *, kind: str, wa_id: str, ref: Optional[str], error_message: str
 ) -> OutboundResult:
@@ -194,6 +211,9 @@ async def _deliver(
             context_message_id=persist_context_message_id,
             message_class=message_class,
         )
+    if kind == KIND_MANUAL_HUMAN and persist_message_type != "reaction":
+        # Human takeover (a real reply, not a reaction): pause the bot so it doesn't talk over staff.
+        await _pause_bot_for_takeover(db, conversation_id)
     return OutboundResult(
         SendStatus.SENT, wa_message_id=wa_message_id,
         message_id=(message.id if message else None), message=message,
