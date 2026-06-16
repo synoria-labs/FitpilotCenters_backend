@@ -14,7 +14,6 @@ import logging
 from typing import List, Optional, Set
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.chatbot_env import chatbot_env
@@ -23,15 +22,14 @@ from app.crud import chatbotConfigCrud
 from app.crud import chatbotPendingCrud
 from app.crud import membersCrud
 from app.crud import whatsappCrud as crud
-from app.crud.chatbotConfigCrud import ChatbotConfigData
 from app.db.postgresql import async_session_factory
-from app.models import Venue
 from app.models.chatbotModel import (
     PENDING_STATUS_AWAITING_PAYMENT,
     PENDING_STATUS_PROCESSING,
 )
 from app.services import whatsapp_cloud_service as cloud
 from app.services.chatbot.agent import run_agent
+from app.services.chatbot.business_context import build_business_info
 from app.services.chatbot.tools import ChatbotContext, build_tools
 
 logger = logging.getLogger(__name__)
@@ -87,28 +85,6 @@ async def _load_history(
     return messages
 
 
-async def _build_business_info(db: AsyncSession, config: ChatbotConfigData) -> str:
-    """Render the configured business info (address falls back to the first Venue)."""
-    lines: List[str] = []
-    if config.business_name:
-        lines.append(f"Nombre: {config.business_name}")
-    address = config.address
-    if not address:
-        venue = (await db.execute(select(Venue).order_by(Venue.id).limit(1))).scalars().first()
-        address = venue.address if venue else None
-    if address:
-        lines.append(f"Dirección: {address}")
-    if config.operating_hours:
-        lines.append(f"Horarios: {config.operating_hours}")
-    if config.phone:
-        lines.append(f"Teléfono: {config.phone}")
-    if config.policies:
-        lines.append(f"Políticas: {config.policies}")
-    if config.extra_info:
-        lines.append(config.extra_info)
-    return "\n".join(lines)
-
-
 async def _build_pending_note(db: AsyncSession, conversation_id: int) -> Optional[str]:
     """Tell the agent there's a pending action so it confirms/reminds-to-pay instead of re-proposing."""
     pending = await chatbotPendingCrud.get_active_pending(db, conversation_id)
@@ -155,7 +131,7 @@ async def _run_agent_reply(
                 return
 
             member_id = await membersCrud.get_member_id_by_wa_id(db, contact_wa_id)
-            business_info = await _build_business_info(db, config)
+            business_info = await build_business_info(db, config)
             history = await _load_history(db, conversation_id, exclude_message_id=message_id)
             require_mp = bool(config.require_mp_payment) and mercadopago_config.is_configured()
             pending_note = await _build_pending_note(db, conversation_id)

@@ -20,9 +20,12 @@ from app.crud import whatsappMediaAssetsCrud as media_crud
 from app.crud import whatsappTemplatesCrud as crud
 from app.graphql.auth.permissions import IsAuthenticated
 from app.graphql.whatsapp.template_types import (
+    AssistWhatsappTemplateInput,
+    AssistWhatsappTemplateResult,
     CreateTemplateInput,
     SendTemplateTestInput,
     TemplateResult,
+    TemplateAiSuggestion,
     UpdateTemplateInput,
     WhatsAppMediaAsset,
     WhatsAppMediaKind,
@@ -32,6 +35,7 @@ from app.graphql.whatsapp.types import ChatMessage, SendMessageResult
 from app.services import whatsapp_cloud_service as cloud
 from app.services import whatsapp_template_service as mgmt
 from app.services import whatsapp_media_assets_service as media_service
+from app.services import whatsapp_template_ai_service as template_ai
 from app.services.whatsapp_template_components import (
     build_components,
     header_handle_from_components,
@@ -73,6 +77,41 @@ async def _ensure_sample_handle(db: AsyncSession, asset) -> str:
 
 @strawberry.type
 class WhatsAppTemplateMutation:
+    @strawberry.mutation(permission_classes=[IsAuthenticated])
+    async def assist_whatsapp_template(
+        self,
+        info: Info,
+        input: AssistWhatsappTemplateInput,
+    ) -> AssistWhatsappTemplateResult:
+        """Generate an AI writing suggestion for the template editor.
+
+        This is read-only: it does not persist local rows and does not call Meta.
+        """
+        db: AsyncSession = info.context.db
+        try:
+            suggestion = await template_ai.assist_whatsapp_template(
+                db,
+                template_ai.TemplateAiRequestData(
+                    action=input.action.value,
+                    body_text=input.body_text or "",
+                    body_examples=input.body_examples or [],
+                    footer_text=input.footer_text,
+                    template_name=input.template_name,
+                    category=input.category,
+                    language=input.language,
+                    instruction=input.instruction,
+                ),
+            )
+        except ValueError as exc:
+            return AssistWhatsappTemplateResult(success=False, error=str(exc))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Error generating WhatsApp template AI suggestion")
+            return AssistWhatsappTemplateResult(success=False, error=str(exc))
+        return AssistWhatsappTemplateResult(
+            success=True,
+            suggestion=TemplateAiSuggestion.from_data(suggestion),
+        )
+
     @strawberry.mutation(permission_classes=[IsAuthenticated])
     async def upload_whatsapp_media_asset(
         self,

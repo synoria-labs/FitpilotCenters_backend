@@ -23,6 +23,13 @@ class WhatsAppMediaKind(Enum):
     DOCUMENT = "document"
 
 
+@strawberry.enum
+class TemplateAiAction(Enum):
+    DRAFT = "DRAFT"
+    OPTIMIZE = "OPTIMIZE"
+    CORRECT = "CORRECT"
+
+
 @strawberry.type
 class WhatsAppMediaAsset:
     id: int
@@ -126,8 +133,50 @@ class SendTemplateTestInput:
     header_media_asset_id: Optional[int] = None
 
 
+@strawberry.input
+class AssistWhatsappTemplateInput:
+    action: TemplateAiAction
+    body_text: str = ""
+    body_examples: Optional[List[str]] = None
+    footer_text: Optional[str] = None
+    template_name: Optional[str] = None
+    category: Optional[str] = None
+    language: Optional[str] = None
+    instruction: Optional[str] = None
+
+
+@strawberry.type
+class TemplateAiSuggestion:
+    body_text: str
+    body_examples: List[str]
+    footer_text: Optional[str]
+    suggested_name: Optional[str]
+    suggested_category: Optional[str]
+    notes: List[str]
+    warnings: List[str]
+
+    @classmethod
+    def from_data(cls, data) -> "TemplateAiSuggestion":
+        return cls(
+            body_text=data.body_text,
+            body_examples=list(data.body_examples or []),
+            footer_text=data.footer_text,
+            suggested_name=data.suggested_name,
+            suggested_category=data.suggested_category,
+            notes=list(data.notes or []),
+            warnings=list(data.warnings or []),
+        )
+
+
 @strawberry.type
 class TemplateResult:
     success: bool = False
     template: Optional[WhatsAppTemplate] = None
+    error: Optional[str] = None
+
+
+@strawberry.type
+class AssistWhatsappTemplateResult:
+    success: bool = False
+    suggestion: Optional[TemplateAiSuggestion] = None
     error: Optional[str] = None
