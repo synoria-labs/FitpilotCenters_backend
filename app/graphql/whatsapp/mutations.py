@@ -17,6 +17,7 @@ from app.graphql.whatsapp.types import (
     SendTextMessageInput,
     SendMessageResult,
     ChatMessage,
+    ChatConversation,
 )
 from app.graphql.auth.permissions import IsAuthenticated
 from app.models import Contact, Conversation
@@ -290,3 +291,18 @@ class WhatsAppChatMutation:
             success=True,
             message=ChatMessage.from_data(data) if data else None,
         )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated])
+    async def set_conversation_bot_enabled(
+        self, info: Info, conversation_id: int, enabled: bool
+    ) -> ChatConversation:
+        """Enable/disable the WhatsApp bot for one conversation (the robot button in Chats).
+
+        Enabling also clears any temporary human-takeover pause so the bot resumes immediately.
+        """
+        db: AsyncSession = info.context.db
+        conv = await crud.set_conversation_bot_enabled(db, conversation_id, enabled)
+        if conv is None:
+            raise Exception("Conversación no encontrada.")
+        data = await crud.get_conversation_data(db, conversation_id)
+        return ChatConversation.from_data(data)

@@ -144,6 +144,7 @@ class ConversationData:
     last_message: Optional[ChatMessageData]
     last_activity: Optional[datetime]
     unread_count: int = 0
+    bot_enabled: bool = True
 
 
 def _digits_only(value: Optional[str]) -> str:
@@ -546,6 +547,7 @@ async def get_conversations(
                 last_message=last,
                 last_activity=last_activity,
                 unread_count=0,  # reserved for a later phase
+                bot_enabled=bool(getattr(conv, "bot_enabled", True)),
             )
         )
     return result
@@ -582,6 +584,7 @@ async def get_conversation_data(
         last_message=last_messages.get(conv.id),
         last_activity=last_activity,
         unread_count=0,  # reserved for a later phase
+        bot_enabled=bool(getattr(conv, "bot_enabled", True)),
     )
 
 
@@ -697,6 +700,24 @@ async def find_contact_by_number(db: AsyncSession, raw_number: Optional[str]) ->
         return None
     stmt = select(Contact).where(cond).order_by(Contact.id.asc())
     return (await db.execute(stmt)).scalars().first()
+
+
+async def set_conversation_bot_enabled(
+    db: AsyncSession, conversation_id: int, enabled: bool
+) -> Optional[Conversation]:
+    """Toggle the bot master switch for a conversation (the robot button in Chats).
+
+    Enabling also clears any temporary human-takeover pause so the bot resumes immediately. Commits.
+    """
+    conv = await db.get(Conversation, conversation_id)
+    if conv is None:
+        return None
+    conv.bot_enabled = bool(enabled)
+    if enabled:
+        conv.bot_paused_until = None
+    conv.updated_at = datetime.utcnow()
+    await db.commit()
+    return conv
 
 
 async def get_conversation(db: AsyncSession, conversation_id: int) -> Optional[Conversation]:
