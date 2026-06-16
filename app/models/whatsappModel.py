@@ -75,6 +75,9 @@ class Message(Base):
     is_processed: Mapped[Optional[int]] = mapped_column(SmallInteger, default=0)
     processed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP)
     is_temp: Mapped[Optional[int]] = mapped_column(SmallInteger, default=0)
+    # Outbound coordination: 'transactional' | 'marketing' (NULL on legacy/inbound rows).
+    # The marketing frequency cap counts outbound rows with message_class='marketing'.
+    message_class: Mapped[Optional[str]] = mapped_column(String(30))
 
     # Relationships
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")

@@ -851,8 +851,13 @@ async def insert_outbound_message(
     message_type: str = "text",
     template_id: Optional[int] = None,
     context_message_id: Optional[str] = None,
+    message_class: Optional[str] = None,
 ) -> Message:
-    """Insert an outbound message after a successful Cloud API send. Caller commits."""
+    """Insert an outbound message after a successful Cloud API send. Caller commits.
+
+    ``message_class`` ('transactional'|'marketing') is set by the outbound gateway; direct callers
+    leave it None (counted as non-marketing → uncapped).
+    """
     now = datetime.utcnow()
     msg = Message(
         wa_message_id=wa_message_id,
@@ -863,6 +868,7 @@ async def insert_outbound_message(
         text_content=text,
         template_id=template_id,
         context_message_id=context_message_id,
+        message_class=message_class,
         timestamp=now,
         created_at=now,
         is_processed=1,

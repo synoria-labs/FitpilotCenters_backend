@@ -313,6 +313,7 @@ async def dispatch(
         wa_message_id=result.get("wa_message_id"),
         message_type="template",
         template_id=tpl.id,
+        message_class="transactional",  # utility templates: NOT subject to the marketing cap
     )
     # Persist the header media so the chat bubble can render it (the same public
     # asset URL sent to Meta). Only when there is a fetchable URL (asset/legacy).

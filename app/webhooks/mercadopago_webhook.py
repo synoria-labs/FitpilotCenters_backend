@@ -283,6 +283,7 @@ async def _record_unmatched_payment(
 
 async def _notify(db, conversation_id: int, text: str) -> None:
     from app.services.chatbot.reply_service import send_and_persist_reply
+    from app.services.whatsapp_outbound import KIND_PAYMENT_CONFIRM
 
     conversation = await whatsappCrud.get_conversation(db, conversation_id)
     contact = getattr(conversation, "contact", None) if conversation else None
@@ -296,6 +297,7 @@ async def _notify(db, conversation_id: int, text: str) -> None:
             contact_id=contact.id,
             to_wa_id=contact.wa_id,
             text=text,
+            kind=KIND_PAYMENT_CONFIRM,
         )
     except Exception:  # noqa: BLE001
         logger.exception("MercadoPago: failed to notify customer (conversation %s)", conversation_id)

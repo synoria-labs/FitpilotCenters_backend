@@ -28,6 +28,7 @@ from app.models.chatbotModel import (
     PENDING_STATUS_PROCESSING,
 )
 from app.services import whatsapp_cloud_service as cloud
+from app.services import whatsapp_outbound as outbound
 from app.services.chatbot.agent import run_agent
 from app.services.chatbot.business_context import build_business_info
 from app.services.chatbot.tools import ChatbotContext, build_tools
@@ -45,17 +46,26 @@ async def send_and_persist_reply(
     contact_id: int,
     to_wa_id: str,
     text: str,
-) -> None:
-    """Send a text reply via the Cloud API and persist the outbound Message row."""
-    result = await cloud.send_text(to=to_wa_id, text=text)
-    await crud.insert_outbound_message(
+    kind: str = outbound.KIND_CHATBOT_REPLY,
+) -> "outbound.OutboundResult":
+    """Send a text reply through the unified outbound gateway and persist it.
+
+    ``kind`` distinguishes a normal chatbot reply from a payment confirmation: the gateway never
+    silently drops a payment confirm outside the 24h window (it records it for reconciliation).
+    Returns the gateway result; existing callers may ignore it.
+    """
+    result = await outbound.send_text(
         db,
+        kind=kind,
         conversation_id=conversation_id,
         contact_id=contact_id,
+        wa_id=to_wa_id,
         text=text,
-        wa_message_id=result.get("wa_message_id"),
+        persist=True,
+        message_class=outbound.CLASS_TRANSACTIONAL,
     )
     await db.commit()
+    return result
 
 
 async def _load_history(

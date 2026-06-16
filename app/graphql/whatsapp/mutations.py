@@ -22,6 +22,7 @@ from app.graphql.auth.permissions import IsAuthenticated
 from app.models import Contact, Conversation
 from app.services import whatsapp_cloud_service as cloud
 from app.services import whatsapp_media_service as media_service
+from app.services import whatsapp_outbound as outbound
 from app.services.whatsapp_media_assets_service import (
     MediaAssetError,
     _detect_mime_type,
@@ -85,30 +86,30 @@ class WhatsAppChatMutation:
         if error:
             return SendMessageResult(success=False, error=error)
 
-        # Send via the Cloud API.
+        # Route through the unified outbound gateway (per-contact serialization + class record).
         try:
-            result = await cloud.send_text(to=contact.wa_id, text=text)
-        except cloud.WhatsAppError as e:
-            await db.rollback()
-            return SendMessageResult(success=False, error=e.message)
+            result = await outbound.send_text(
+                db,
+                kind=outbound.KIND_MANUAL_HUMAN,
+                conversation_id=conversation.id,
+                contact_id=contact.id,
+                wa_id=contact.wa_id,
+                text=text,
+                persist=True,
+            )
         except Exception as e:  # noqa: BLE001
             await db.rollback()
             logger.exception("Unexpected error sending WhatsApp message")
             return SendMessageResult(success=False, error=str(e))
 
-        # Persist the outbound message (the DB trigger fans it out to subscribers).
-        message = await crud.insert_outbound_message(
-            db,
-            conversation_id=conversation.id,
-            contact_id=contact.id,
-            text=text,
-            wa_message_id=result.get("wa_message_id"),
-        )
+        if not result.ok:
+            await db.rollback()
+            return SendMessageResult(success=False, error=result.reason or "No se pudo enviar el mensaje.")
         await db.commit()
 
         return SendMessageResult(
             success=True,
-            message=ChatMessage.from_data(crud.ChatMessageData.from_model(message)),
+            message=ChatMessage.from_data(crud.ChatMessageData.from_model(result.message)),
         )
 
     @strawberry.mutation(permission_classes=[IsAuthenticated])
@@ -134,32 +135,28 @@ class WhatsAppChatMutation:
 
         emoji = input.emoji or ""
         try:
-            result = await cloud.send_reaction(
-                to=contact.wa_id, message_id=target_wa_id, emoji=emoji
+            result = await outbound.send_reaction(
+                db,
+                conversation_id=conversation.id,
+                contact_id=contact.id,
+                wa_id=contact.wa_id,
+                target_wa_id=target_wa_id,
+                emoji=emoji,
+                persist=True,
             )
-        except cloud.WhatsAppError as e:
-            await db.rollback()
-            return SendMessageResult(success=False, error=e.message)
         except Exception as e:  # noqa: BLE001
             await db.rollback()
             logger.exception("Unexpected error sending WhatsApp reaction")
             return SendMessageResult(success=False, error=str(e))
 
-        # Persist the outbound reaction (the DB trigger fans it out to subscribers).
-        message = await crud.insert_outbound_message(
-            db,
-            conversation_id=conversation.id,
-            contact_id=contact.id,
-            text=emoji,
-            wa_message_id=result.get("wa_message_id"),
-            message_type="reaction",
-            context_message_id=target_wa_id,
-        )
+        if not result.ok:
+            await db.rollback()
+            return SendMessageResult(success=False, error=result.reason or "No se pudo enviar la reacción.")
         await db.commit()
 
         return SendMessageResult(
             success=True,
-            message=ChatMessage.from_data(crud.ChatMessageData.from_model(message)),
+            message=ChatMessage.from_data(crud.ChatMessageData.from_model(result.message)),
         )
 
     @strawberry.mutation(permission_classes=[IsAuthenticated])
@@ -195,20 +192,30 @@ class WhatsAppChatMutation:
 
         try:
             media_id = await cloud.upload_media(raw, mime_type, original_filename)
-            result = await cloud.send_media(
-                to=contact.wa_id,
-                media_type=media_kind,
-                media_id=media_id,
-                caption=caption,
-                filename=original_filename if media_kind == "document" else None,
-            )
         except cloud.WhatsAppError as e:
             await db.rollback()
             return SendMessageResult(success=False, error=e.message)
         except Exception as e:  # noqa: BLE001
             await db.rollback()
-            logger.exception("Unexpected error sending WhatsApp media")
+            logger.exception("Unexpected error uploading WhatsApp media")
             return SendMessageResult(success=False, error=str(e))
+
+        # Route the send through the unified outbound gateway (per-contact serialization).
+        gw = await outbound.send_media(
+            db,
+            kind=outbound.KIND_MANUAL_HUMAN,
+            conversation_id=conversation.id,
+            contact_id=contact.id,
+            wa_id=contact.wa_id,
+            media_type=media_kind,
+            media_id=media_id,
+            caption=caption,
+            filename=original_filename if media_kind == "document" else None,
+        )
+        if not gw.ok:
+            await db.rollback()
+            return SendMessageResult(success=False, error=gw.reason or "No se pudo enviar el archivo.")
+        result = {"wa_message_id": gw.wa_message_id}
 
         # Persist a copy so the bubble renders immediately. Prefers object
         # storage (MinIO/R2 — survives redeploys), falls back to local /uploads.
@@ -235,6 +242,7 @@ class WhatsAppChatMutation:
             text=caption,
             wa_message_id=result.get("wa_message_id"),
             message_type=media_kind,
+            message_class=outbound.CLASS_TRANSACTIONAL,
         )
         await crud.insert_outbound_media(
             db,

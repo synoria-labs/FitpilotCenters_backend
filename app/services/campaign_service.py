@@ -314,6 +314,7 @@ async def _send_to_recipient(
         wa_message_id=result.get("wa_message_id"),
         message_type="template",
         template_id=tpl.id,
+        message_class="marketing",  # counted by the marketing frequency cap (Phase 2)
     )
     if resolved_media.media_url and resolved_media.media_format:
         await chat_crud.insert_outbound_media(
