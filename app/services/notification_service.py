@@ -178,6 +178,14 @@ def _resolve_body_params(
     return [str(context.get(key, "")) for key in param_mapping]
 
 
+def _resolve_param_key(key: Optional[str], context: Dict[str, str]) -> Optional[str]:
+    """Resolve a single variable key (TEXT header / dynamic URL button) against the context."""
+    if not key:
+        return None
+    value = str(context.get(key, "")).strip()
+    return value or None
+
+
 # ---------------------------------------------------------------------------
 # Opt-out
 # ---------------------------------------------------------------------------
@@ -255,6 +263,8 @@ async def dispatch(
 
     context = build_variable_context(person, subscription, plan)
     body_params = _resolve_body_params(setting.param_mapping, context)
+    header_text_param = _resolve_param_key(getattr(setting, "header_text_param_key", None), context)
+    button_url_param = _resolve_param_key(getattr(setting, "button_url_param_key", None), context)
     try:
         resolved_media = await resolve_template_send_header_media(
             db,
@@ -280,6 +290,9 @@ async def dispatch(
             components=tpl.components,
             header_media_url=resolved_media.media_url,
             header_media_id=resolved_media.media_id,
+            header_text_param=header_text_param,
+            location=getattr(setting, "location_param", None),
+            button_url_param=button_url_param,
         )
     except cloud.WhatsAppError as e:
         await crud.mark_log(db, log, status="failed", error=e.message, commit=True)

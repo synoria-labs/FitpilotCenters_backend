@@ -7,12 +7,29 @@ from app.graphql.whatsapp.template_mutations import WhatsAppTemplateMutation
 from app.services.notification_service import dispatch
 
 
+class _FakeResult:
+    def scalars(self):
+        return self
+
+    def first(self):
+        return None
+
+
 class _FakeDb:
+    def add(self, _obj):
+        return None
+
     async def commit(self):
+        return None
+
+    async def flush(self):
         return None
 
     async def rollback(self):
         return None
+
+    async def execute(self, *_args, **_kwargs):
+        return _FakeResult()
 
 
 def _template(*, default_asset_id=77):
@@ -111,6 +128,10 @@ async def test_send_template_test_uses_default_media_when_no_override(monkeypatc
         header_media_url=None,
         header_media_id=None,
         header_media_asset_id=None,
+        header_text_param=None,
+        button_url_param=None,
+        location=None,
+        carousel_card_overrides=None,
     )
 
     result = await WhatsAppTemplateMutation().send_template_test(info, input_data)

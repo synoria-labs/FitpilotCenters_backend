@@ -103,6 +103,41 @@ class WhatsAppTemplate:
 
 
 @strawberry.input
+class TemplateButtonInput:
+    type: str  # QUICK_REPLY | URL | PHONE_NUMBER
+    text: str
+    url: Optional[str] = None
+    phone_number: Optional[str] = None
+    example: Optional[str] = None  # sample suffix for a dynamic URL ({{1}}) button
+
+
+@strawberry.input
+class TemplateCarouselCardInput:
+    header_format: str  # IMAGE | VIDEO
+    header_media_asset_id: int
+    body_text: str
+    body_examples: Optional[List[str]] = None
+    buttons: Optional[List[TemplateButtonInput]] = None
+
+
+@strawberry.input
+class LocationInput:
+    latitude: str
+    longitude: str
+    name: Optional[str] = None
+    address: Optional[str] = None
+
+
+@strawberry.input
+class CarouselCardSendInput:
+    media_asset_id: Optional[int] = None
+    media_url: Optional[str] = None
+    media_id: Optional[str] = None
+    body_params: Optional[List[str]] = None
+    button_url_param: Optional[str] = None
+
+
+@strawberry.input
 class CreateTemplateInput:
     name: str
     language: str
@@ -110,8 +145,12 @@ class CreateTemplateInput:
     body_text: str
     body_examples: Optional[List[str]] = None
     footer_text: Optional[str] = None
-    header_format: Optional[str] = None
+    header_format: Optional[str] = None  # IMAGE | VIDEO | DOCUMENT | TEXT | LOCATION
     header_media_asset_id: Optional[int] = None
+    header_text: Optional[str] = None
+    header_text_example: Optional[str] = None
+    buttons: Optional[List[TemplateButtonInput]] = None
+    carousel_cards: Optional[List[TemplateCarouselCardInput]] = None
 
 
 @strawberry.input
@@ -121,6 +160,9 @@ class UpdateTemplateInput:
     body_examples: Optional[List[str]] = None
     footer_text: Optional[str] = None
     header_media_asset_id: Optional[int] = None
+    header_text: Optional[str] = None
+    header_text_example: Optional[str] = None
+    buttons: Optional[List[TemplateButtonInput]] = None
 
 
 @strawberry.input
@@ -131,6 +173,10 @@ class SendTemplateTestInput:
     header_media_url: Optional[str] = None
     header_media_id: Optional[str] = None
     header_media_asset_id: Optional[int] = None
+    header_text_param: Optional[str] = None
+    button_url_param: Optional[str] = None
+    location: Optional[LocationInput] = None
+    carousel_card_overrides: Optional[List[CarouselCardSendInput]] = None
 
 
 @strawberry.input
