@@ -133,6 +133,8 @@ async def _generate_sessions_for_templates(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     weeks_ahead: Optional[int] = None,
+    *,
+    commit: bool = True,
 ) -> dict:
     """
     Generate class sessions for multiple templates.
@@ -185,6 +187,7 @@ async def _generate_sessions_for_templates(
                 template_id=template_id,
                 start_date=start_date,
                 end_date=end_date,
+                commit=commit,
             )
 
             stats["templates_processed"] += 1
@@ -312,6 +315,7 @@ async def _handle_fixed_timeslot_effects(
     seat_id: Optional[int] = None,
     *,
     auto_materialize: bool = True,
+    commit_sessions: bool = True,
 ) -> tuple[Optional[int], dict]:
     """Common helper for fixed time-slot effects (group bookings + sessions + materialization).
 
@@ -354,6 +358,7 @@ async def _handle_fixed_timeslot_effects(
                 template_ids=[tid],
                 start_date=template_start,
                 end_date=window_end,
+                commit=commit_sessions,
             )
             created_total += int(gen_stats.get("sessions_created", 0))
         generation_stats["sessions_created"] = created_total
