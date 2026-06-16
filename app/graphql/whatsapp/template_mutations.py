@@ -38,11 +38,19 @@ from app.services import whatsapp_media_assets_service as media_service
 from app.services import whatsapp_template_ai_service as template_ai
 from app.services.whatsapp_template_components import (
     build_components,
+    buttons_from_components,
+    carousel_cards_from_components,
+    embed_carousel_card_assets,
     header_handle_from_components,
+    header_text_example_value,
+    header_text_value,
     render_template_text,
-    required_header_media_format,
+    required_header_kind,
 )
-from app.services.whatsapp_template_send_media import resolve_template_send_header_media
+from app.services.whatsapp_template_send_media import (
+    resolve_carousel_card_media,
+    resolve_template_send_header_media,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +81,69 @@ async def _ensure_sample_handle(db: AsyncSession, asset) -> str:
     )
     await media_crud.store_sample_handle(db, asset, handle, commit=False)
     return handle
+
+
+def _buttons_to_dicts(buttons) -> list:
+    """Convert TemplateButtonInput list -> plain dicts for ``build_components``."""
+    result = []
+    for button in buttons or []:
+        result.append(
+            {
+                "type": button.type,
+                "text": button.text,
+                "url": button.url,
+                "phone_number": button.phone_number,
+                "example": button.example,
+            }
+        )
+    return result
+
+
+def _location_to_dict(location) -> Optional[dict]:
+    if location is None:
+        return None
+    return {
+        "latitude": location.latitude,
+        "longitude": location.longitude,
+        "name": location.name,
+        "address": location.address,
+    }
+
+
+def _card_overrides_to_dicts(overrides) -> list:
+    result = []
+    for override in overrides or []:
+        result.append(
+            {
+                "media_asset_id": override.media_asset_id,
+                "media_url": override.media_url,
+                "media_id": override.media_id,
+                "body_params": override.body_params,
+                "button_url_param": override.button_url_param,
+            }
+        )
+    return result
+
+
+async def _prepare_carousel_cards(db: AsyncSession, cards) -> tuple:
+    """Upload a sample handle per card and return (card defs for build_components, asset ids)."""
+    card_defs = []
+    card_asset_ids = []
+    for card in cards or []:
+        card_format = (card.header_format or "").strip().upper()
+        asset = await _ensure_header_asset(db, card.header_media_asset_id, card_format)
+        handle = await _ensure_sample_handle(db, asset)
+        card_defs.append(
+            {
+                "header_format": card_format,
+                "header_handle": handle,
+                "body_text": card.body_text,
+                "body_examples": card.body_examples,
+                "buttons": _buttons_to_dicts(card.buttons),
+            }
+        )
+        card_asset_ids.append(asset.id)
+    return card_defs, card_asset_ids
 
 
 @strawberry.type
@@ -198,25 +269,39 @@ class WhatsAppTemplateMutation:
         header_format = (input.header_format or "").strip().upper() or None
         header_handle = None
         header_asset_id = None
-        if header_format:
-            try:
-                asset = await _ensure_header_asset(db, input.header_media_asset_id, header_format)
-                header_handle = await _ensure_sample_handle(db, asset)
-                header_asset_id = asset.id
-            except (media_service.MediaAssetError, cloud.WhatsAppError, ValueError) as exc:
-                await db.rollback()
-                return TemplateResult(success=False, error=str(getattr(exc, "message", exc)))
-
+        # ``components`` is the clean Meta payload; ``local_components`` may carry FitPilot-only
+        # keys (per-card asset ids for carousel sends).
         try:
-            components = build_components(
-                input.body_text,
-                input.body_examples,
-                input.footer_text,
-                header_format=header_format,
-                header_handle=header_handle,
-            )
-        except ValueError as exc:
-            return TemplateResult(success=False, error=str(exc))
+            if input.carousel_cards:
+                card_defs, card_asset_ids = await _prepare_carousel_cards(db, input.carousel_cards)
+                components = build_components(
+                    input.body_text,
+                    input.body_examples,
+                    input.footer_text,
+                    carousel_cards=card_defs,
+                )
+                local_components = embed_carousel_card_assets(components, card_asset_ids)
+            else:
+                if header_format in {"IMAGE", "VIDEO", "DOCUMENT"}:
+                    asset = await _ensure_header_asset(
+                        db, input.header_media_asset_id, header_format
+                    )
+                    header_handle = await _ensure_sample_handle(db, asset)
+                    header_asset_id = asset.id
+                components = build_components(
+                    input.body_text,
+                    input.body_examples,
+                    input.footer_text,
+                    header_format=header_format,
+                    header_handle=header_handle,
+                    header_text=input.header_text,
+                    header_text_example=input.header_text_example,
+                    buttons=_buttons_to_dicts(input.buttons),
+                )
+                local_components = components
+        except (media_service.MediaAssetError, cloud.WhatsAppError, ValueError) as exc:
+            await db.rollback()
+            return TemplateResult(success=False, error=str(getattr(exc, "message", exc)))
 
         try:
             namespace = await mgmt.fetch_namespace() or ""
@@ -241,7 +326,7 @@ class WhatsAppTemplateMutation:
                 language=input.language,
                 status=created.get("status") or "PENDING",
                 category=created.get("category") or input.category,
-                components=components,
+                components=local_components,
                 meta_template_id=str(meta_id) if meta_id is not None else None,
                 default_header_media_asset_id=header_asset_id,
             )
@@ -267,28 +352,51 @@ class WhatsAppTemplateMutation:
                 error="La plantilla no tiene id de Meta; sincroniza primero.",
             )
 
-        header_format = required_header_media_format(tpl.components)
+        if carousel_cards_from_components(tpl.components):
+            return TemplateResult(
+                success=False,
+                error="Las plantillas de carrusel no se editan aquí; elimínala y vuelve a crearla.",
+            )
+
+        header_kind = required_header_kind(tpl.components)
         header_handle = header_handle_from_components(tpl.components)
         header_asset_id = input.header_media_asset_id or tpl.default_header_media_asset_id
-        if header_format and input.header_media_asset_id:
-            try:
-                asset = await _ensure_header_asset(db, input.header_media_asset_id, header_format)
+        header_text = None
+        header_text_example = None
+        try:
+            if header_kind in {"IMAGE", "VIDEO", "DOCUMENT"} and input.header_media_asset_id:
+                asset = await _ensure_header_asset(db, input.header_media_asset_id, header_kind)
                 header_handle = await _ensure_sample_handle(db, asset)
                 header_asset_id = asset.id
-            except (media_service.MediaAssetError, cloud.WhatsAppError, ValueError) as exc:
-                await db.rollback()
-                return TemplateResult(success=False, error=str(getattr(exc, "message", exc)))
-
-        try:
+            elif header_kind == "TEXT":
+                header_text = (
+                    input.header_text
+                    if input.header_text is not None
+                    else header_text_value(tpl.components)
+                )
+                header_text_example = (
+                    input.header_text_example
+                    if input.header_text_example is not None
+                    else header_text_example_value(tpl.components)
+                )
+            buttons = (
+                _buttons_to_dicts(input.buttons)
+                if input.buttons is not None
+                else buttons_from_components(tpl.components)
+            )
             components = build_components(
                 input.body_text,
                 input.body_examples,
                 input.footer_text,
-                header_format=header_format,
+                header_format=header_kind,
                 header_handle=header_handle,
+                header_text=header_text,
+                header_text_example=header_text_example,
+                buttons=buttons,
             )
-        except ValueError as exc:
-            return TemplateResult(success=False, error=str(exc))
+        except (media_service.MediaAssetError, cloud.WhatsAppError, ValueError) as exc:
+            await db.rollback()
+            return TemplateResult(success=False, error=str(getattr(exc, "message", exc)))
         try:
             await mgmt.edit_template(tpl.meta_template_id, components)
         except cloud.WhatsAppError as e:
@@ -347,14 +455,24 @@ class WhatsAppTemplateMutation:
         if not wa_id:
             return SendMessageResult(success=False, error="Número de teléfono inválido.")
 
+        is_carousel = bool(carousel_cards_from_components(tpl.components))
         try:
-            resolved_media = await resolve_template_send_header_media(
-                db,
-                template=tpl,
-                override_media_asset_id=input.header_media_asset_id,
-                legacy_header_media_url=input.header_media_url,
-                header_media_id=input.header_media_id,
-            )
+            if is_carousel:
+                resolved_media = None
+                carousel_runtime = await resolve_carousel_card_media(
+                    db,
+                    template=tpl,
+                    card_overrides=_card_overrides_to_dicts(input.carousel_card_overrides),
+                )
+            else:
+                resolved_media = await resolve_template_send_header_media(
+                    db,
+                    template=tpl,
+                    override_media_asset_id=input.header_media_asset_id,
+                    legacy_header_media_url=input.header_media_url,
+                    header_media_id=input.header_media_id,
+                )
+                carousel_runtime = None
         except media_service.MediaAssetError as exc:
             return SendMessageResult(success=False, error=str(exc))
 
@@ -371,8 +489,12 @@ class WhatsAppTemplateMutation:
                 language_code=tpl.template_language,
                 body_params=input.body_params,
                 components=tpl.components,
-                header_media_url=resolved_media.media_url,
-                header_media_id=resolved_media.media_id,
+                header_media_url=resolved_media.media_url if resolved_media else None,
+                header_media_id=resolved_media.media_id if resolved_media else None,
+                header_text_param=input.header_text_param,
+                location=_location_to_dict(input.location),
+                button_url_param=input.button_url_param,
+                carousel_cards=carousel_runtime,
             )
         except cloud.WhatsAppError as e:
             await db.rollback()
@@ -393,7 +515,7 @@ class WhatsAppTemplateMutation:
         )
         # Persist the header media so the chat bubble can render it (same public
         # asset URL sent to Meta). Only when there is a fetchable URL.
-        if resolved_media.media_url and resolved_media.media_format:
+        if resolved_media and resolved_media.media_url and resolved_media.media_format:
             await chat_crud.insert_outbound_media(
                 db,
                 message_id=message.id,

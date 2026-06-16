@@ -61,6 +61,12 @@ class NotificationSetting(Base):
     header_media_asset_id: Mapped[Optional[int]] = mapped_column(
         BigInteger, ForeignKey("whatsapp_media_assets.id", ondelete="SET NULL")
     )
+    # Variable key resolved for a TEXT header's {{1}} (same context dict as param_mapping).
+    header_text_param_key: Mapped[Optional[str]] = mapped_column(String(60))
+    # Variable key resolved for a dynamic URL button's {{1}}.
+    button_url_param_key: Mapped[Optional[str]] = mapped_column(String(60))
+    # Fixed location for a LOCATION-header template: {latitude, longitude, name, address}.
+    location_param: Mapped[Optional[dict]] = mapped_column(JSON)
     # Reminder day offsets before end_at, e.g. [7, 1]. Only used by renewal_reminder.
     offsets_days: Mapped[Optional[list]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(

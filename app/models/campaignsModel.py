@@ -87,6 +87,11 @@ class Campaign(Base):
     header_media_asset_id: Mapped[Optional[int]] = mapped_column(
         BigInteger, ForeignKey("whatsapp_media_assets.id", ondelete="SET NULL")
     )
+    # Runtime values for the newer template components (resolved like param_mapping):
+    # TEXT-header {{1}} key, dynamic URL-button {{1}} key, and a fixed LOCATION-header value.
+    header_text_param_key: Mapped[Optional[str]] = mapped_column(String(60))
+    button_url_param_key: Mapped[Optional[str]] = mapped_column(String(60))
+    location_param: Mapped[Optional[dict]] = mapped_column(JSON)
 
     # Optional link to an ad-attribution campaign (leadsModel.MarketingCampaign) for ROAS
     # roll-up. The campaign config is NOT stored there — that table has no template/recipient.
@@ -149,6 +154,9 @@ class CampaignVariant(Base):
     header_media_asset_id: Mapped[Optional[int]] = mapped_column(
         BigInteger, ForeignKey("whatsapp_media_assets.id", ondelete="SET NULL")
     )
+    header_text_param_key: Mapped[Optional[str]] = mapped_column(String(60))
+    button_url_param_key: Mapped[Optional[str]] = mapped_column(String(60))
+    location_param: Mapped[Optional[dict]] = mapped_column(JSON)
     weight: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     is_control: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(

@@ -59,6 +59,7 @@ from app.services.notification_service import (
     VARIABLES,
     _is_opted_out,
     _resolve_body_params,
+    _resolve_param_key,
     build_variable_context,
 )
 from app.services.whatsapp_template_components import render_template_text
@@ -168,6 +169,17 @@ def _variant_media(campaign: Campaign, variant: Optional[CampaignVariant]):
     return campaign.header_media_asset_id, campaign.header_media_url
 
 
+def _variant_extra_params(campaign: Campaign, variant: Optional[CampaignVariant]):
+    """(header_text_param_key, button_url_param_key, location_param) with variant fallback."""
+
+    def pick(attr: str):
+        if variant is not None and getattr(variant, attr, None) is not None:
+            return getattr(variant, attr)
+        return getattr(campaign, attr, None)
+
+    return pick("header_text_param_key"), pick("button_url_param_key"), pick("location_param")
+
+
 # ---------------------------------------------------------------------------
 # Build phase — materialize the audience snapshot
 # ---------------------------------------------------------------------------
@@ -272,6 +284,9 @@ async def _send_to_recipient(
     plan = subscription.plan if subscription is not None else None
     context = build_variable_context(person, subscription, plan)
     body_params = _resolve_body_params(_variant_param_mapping(campaign, variant), context)
+    header_text_key, button_url_key, location_param = _variant_extra_params(campaign, variant)
+    header_text_param = _resolve_param_key(header_text_key, context)
+    button_url_param = _resolve_param_key(button_url_key, context)
 
     media_asset_id, media_url = _variant_media(campaign, variant)
     try:
@@ -306,6 +321,9 @@ async def _send_to_recipient(
         components=tpl.components,
         header_media_url=resolved_media.media_url,
         header_media_id=resolved_media.media_id,
+        header_text_param=header_text_param,
+        location=location_param,
+        button_url_param=button_url_param,
         persist=False,
         person_id=person.id,
     )

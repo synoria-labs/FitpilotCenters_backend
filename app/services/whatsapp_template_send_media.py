@@ -14,7 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.crud import whatsappMediaAssetsCrud as media_crud
 from app.models import WhatsAppTemplate
 from app.services import whatsapp_media_assets_service as media_service
-from app.services.whatsapp_template_components import required_header_media_format
+from app.services.whatsapp_template_components import (
+    card_default_asset_id,
+    card_header_media_format,
+    carousel_cards_from_components,
+    required_header_media_format,
+)
 
 
 @dataclass(frozen=True)
@@ -107,3 +112,47 @@ async def resolve_template_send_header_media(
         f"La plantilla requiere media de encabezado ({media_format}); "
         "selecciona un asset, usa el default de la plantilla o agrega una URL HTTPS."
     )
+
+
+async def resolve_carousel_card_media(
+    db: AsyncSession,
+    *,
+    template: WhatsAppTemplate,
+    card_overrides: Optional[list] = None,
+) -> list:
+    """Resolve per-card runtime media for a CAROUSEL template send.
+
+    Returns a list (one dict per card) shaped for ``cloud._template_send_components`` carousel
+    cards: ``{media_format, media_url, media_id, body_params, button_url_param}``. Media is taken
+    from the override (asset id / media id / HTTPS url) or the per-card default asset embedded in
+    the components JSON (``fitpilot_asset_id``)."""
+    cards = carousel_cards_from_components(template.components)
+    overrides = card_overrides or []
+    resolved: list = []
+    for index, card in enumerate(cards):
+        media_format = card_header_media_format(card)
+        override = (
+            overrides[index]
+            if index < len(overrides) and isinstance(overrides[index], dict)
+            else {}
+        )
+        media_id = (override.get("media_id") or "").strip() or None
+        media_url: Optional[str] = None
+        if not media_id:
+            asset_id = override.get("media_asset_id") or card_default_asset_id(card)
+            if asset_id:
+                asset = await media_crud.get_asset_model(db, int(asset_id))
+                media_service.assert_asset_matches_header(asset, media_format)
+                media_url = asset.public_url
+            else:
+                media_url = _clean_https_url(override.get("media_url"))
+        resolved.append(
+            {
+                "media_format": media_format,
+                "media_url": media_url,
+                "media_id": media_id,
+                "body_params": override.get("body_params"),
+                "button_url_param": override.get("button_url_param"),
+            }
+        )
+    return resolved
