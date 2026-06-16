@@ -54,6 +54,7 @@ from app.models.campaignsModel import (
 from app.services import segmentation_service
 from app.services import whatsapp_cloud_service as cloud
 from app.services import whatsapp_media_assets_service as media_service
+from app.services import whatsapp_outbound as outbound
 from app.services.notification_service import (
     VARIABLES,
     _is_opted_out,
@@ -285,26 +286,51 @@ async def _send_to_recipient(
         return "failed"
 
     to = recipient.wa_id or re.sub(r"\D", "", (person.phone_number or person.wa_id or ""))
-    try:
-        contact = await chat_crud.upsert_contact(
-            db, wa_id=to, phone_number=recipient.phone_e164 or to, authoritative=False
+    contact = await chat_crud.upsert_contact(
+        db, wa_id=to, phone_number=recipient.phone_e164 or to, authoritative=False
+    )
+    conversation = await chat_crud.get_or_open_conversation(db, contact.id)
+    # Route through the unified outbound gateway: per-contact serialization + marketing gates
+    # (consent / mid-purchase defer / quiet hours / daily cap). persist=False -> we keep the
+    # richer campaign persistence (message + media + recipient ledger) below.
+    gw = await outbound.send_template(
+        db,
+        kind=outbound.KIND_CAMPAIGN,
+        message_class=outbound.CLASS_MARKETING,
+        conversation_id=conversation.id,
+        contact_id=contact.id,
+        wa_id=contact.wa_id,
+        template_name=tpl.template_name,
+        language_code=tpl.template_language,
+        body_params=body_params,
+        components=tpl.components,
+        header_media_url=resolved_media.media_url,
+        header_media_id=resolved_media.media_id,
+        persist=False,
+        person_id=person.id,
+    )
+    if gw.status is outbound.SendStatus.SUPPRESSED:
+        if gw.reason == "no_consent":
+            await crud.mark_recipient_terminal(
+                db, recipient, status="opted_out", skip_reason="no_consent"
+            )
+            return "opted_out"
+        # daily_cap: contact already got a marketing message today -> terminal skip for this run.
+        await crud.mark_recipient_terminal(
+            db, recipient, status="skipped", skip_reason=gw.reason or "suppressed"
         )
-        conversation = await chat_crud.get_or_open_conversation(db, contact.id)
-        result = await cloud.send_template(
-            to=contact.wa_id,
-            template_name=tpl.template_name,
-            language_code=tpl.template_language,
-            body_params=body_params,
-            components=tpl.components,
-            header_media_url=resolved_media.media_url,
-            header_media_id=resolved_media.media_id,
-        )
-    except cloud.WhatsAppError as e:
-        if e.code in _RATE_LIMIT_CODES:
+        return "skipped"
+    if gw.status is outbound.SendStatus.DEFERRED:
+        if gw.reason == "rate_limited":
             await db.rollback()
-            raise _RateLimited(e.message)
-        await crud.mark_recipient_failed(db, recipient, error=e.message)
+            raise _RateLimited("rate limited")
+        # quiet_hours / pending_action: retry on a later sweep (failed is the retryable state).
+        await crud.mark_recipient_failed(db, recipient, error=f"deferred:{gw.reason}")
+        return "deferred"
+    if gw.status is outbound.SendStatus.FAILED:
+        await crud.mark_recipient_failed(db, recipient, error=gw.reason or "Error al enviar.")
         return "failed"
+    result = {"wa_message_id": gw.wa_message_id}
 
     message = await chat_crud.insert_outbound_message(
         db,
@@ -314,6 +340,7 @@ async def _send_to_recipient(
         wa_message_id=result.get("wa_message_id"),
         message_type="template",
         template_id=tpl.id,
+        message_class="marketing",  # counted by the marketing frequency cap (Phase 2)
     )
     if resolved_media.media_url and resolved_media.media_format:
         await chat_crud.insert_outbound_media(
@@ -370,6 +397,7 @@ async def run_campaign(campaign_id: int, *, dry_run: bool = False) -> Dict[str, 
         stats = {"sent": 0, "failed": 0, "skipped": 0}
         ids = await crud.list_sendable_recipient_ids(db, campaign_id)
         paused = False
+        deferred = False  # a recipient was deferred (quiet hours / mid-purchase) -> retry later
 
         for index, rid in enumerate(ids):
             status_now = await _current_status(db, campaign_id)
@@ -398,19 +426,28 @@ async def run_campaign(campaign_id: int, *, dry_run: bool = False) -> Dict[str, 
                 stats["failed"] += 1
             else:
                 stats["skipped"] += 1
+                if outcome == "deferred":
+                    deferred = True
 
             if index < len(ids) - 1:
                 await asyncio.sleep(interval)
 
         fresh = await crud.get_campaign_model(db, campaign_id)
         if fresh is not None and fresh.status == STATUS_SENDING:
-            await crud.set_campaign_status(
-                db,
-                fresh,
-                status=STATUS_PAUSED if paused else STATUS_COMPLETED,
-                finished_at=None if paused else _now(),
-            )
-        return {"ok": True, "paused": paused, **stats}
+            if deferred and not paused:
+                # Recipients deferred (quiet hours / mid-purchase). Re-schedule (due now) so a later
+                # sweep retries them, instead of completing and silently dropping the audience.
+                await crud.set_campaign_status(
+                    db, fresh, status=STATUS_SCHEDULED, scheduled_at=_now()
+                )
+            else:
+                await crud.set_campaign_status(
+                    db,
+                    fresh,
+                    status=STATUS_PAUSED if paused else STATUS_COMPLETED,
+                    finished_at=None if paused else _now(),
+                )
+        return {"ok": True, "paused": paused, "deferred": deferred, **stats}
 
 
 async def _dry_run_preview(

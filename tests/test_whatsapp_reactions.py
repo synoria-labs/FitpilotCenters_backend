@@ -70,6 +70,10 @@ class _FakeDb:
     async def rollback(self):
         return None
 
+    async def execute(self, *args, **kwargs):
+        # The outbound gateway issues a pg_advisory_xact_lock SELECT; the result is ignored.
+        return None
+
 
 def _reaction_message(emoji: str) -> SimpleNamespace:
     return SimpleNamespace(

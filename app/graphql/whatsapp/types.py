@@ -128,6 +128,7 @@ class ChatConversation:
     last_message: Optional[ChatMessage]
     last_activity: Optional[datetime]
     unread_count: int
+    bot_enabled: bool = True
 
     @classmethod
     def from_data(cls, d: ConversationData) -> "ChatConversation":
@@ -138,6 +139,7 @@ class ChatConversation:
             last_message=ChatMessage.from_data(d.last_message) if d.last_message else None,
             last_activity=d.last_activity,
             unread_count=d.unread_count,
+            bot_enabled=getattr(d, "bot_enabled", True),
         )
 
 

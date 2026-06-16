@@ -144,6 +144,7 @@ class ConversationData:
     last_message: Optional[ChatMessageData]
     last_activity: Optional[datetime]
     unread_count: int = 0
+    bot_enabled: bool = True
 
 
 def _digits_only(value: Optional[str]) -> str:
@@ -546,6 +547,7 @@ async def get_conversations(
                 last_message=last,
                 last_activity=last_activity,
                 unread_count=0,  # reserved for a later phase
+                bot_enabled=bool(getattr(conv, "bot_enabled", True)),
             )
         )
     return result
@@ -582,6 +584,7 @@ async def get_conversation_data(
         last_message=last_messages.get(conv.id),
         last_activity=last_activity,
         unread_count=0,  # reserved for a later phase
+        bot_enabled=bool(getattr(conv, "bot_enabled", True)),
     )
 
 
@@ -697,6 +700,24 @@ async def find_contact_by_number(db: AsyncSession, raw_number: Optional[str]) ->
         return None
     stmt = select(Contact).where(cond).order_by(Contact.id.asc())
     return (await db.execute(stmt)).scalars().first()
+
+
+async def set_conversation_bot_enabled(
+    db: AsyncSession, conversation_id: int, enabled: bool
+) -> Optional[Conversation]:
+    """Toggle the bot master switch for a conversation (the robot button in Chats).
+
+    Enabling also clears any temporary human-takeover pause so the bot resumes immediately. Commits.
+    """
+    conv = await db.get(Conversation, conversation_id)
+    if conv is None:
+        return None
+    conv.bot_enabled = bool(enabled)
+    if enabled:
+        conv.bot_paused_until = None
+    conv.updated_at = datetime.utcnow()
+    await db.commit()
+    return conv
 
 
 async def get_conversation(db: AsyncSession, conversation_id: int) -> Optional[Conversation]:
@@ -851,8 +872,13 @@ async def insert_outbound_message(
     message_type: str = "text",
     template_id: Optional[int] = None,
     context_message_id: Optional[str] = None,
+    message_class: Optional[str] = None,
 ) -> Message:
-    """Insert an outbound message after a successful Cloud API send. Caller commits."""
+    """Insert an outbound message after a successful Cloud API send. Caller commits.
+
+    ``message_class`` ('transactional'|'marketing') is set by the outbound gateway; direct callers
+    leave it None (counted as non-marketing → uncapped).
+    """
     now = datetime.utcnow()
     msg = Message(
         wa_message_id=wa_message_id,
@@ -863,6 +889,7 @@ async def insert_outbound_message(
         text_content=text,
         template_id=template_id,
         context_message_id=context_message_id,
+        message_class=message_class,
         timestamp=now,
         created_at=now,
         is_processed=1,
@@ -871,6 +898,28 @@ async def insert_outbound_message(
     db.add(msg)
     await db.flush()
     return msg
+
+
+async def count_marketing_sends_today(db: AsyncSession, contact_id: int) -> int:
+    """Count MARKETING outbound messages sent to a contact today (local day).
+
+    Backs the per-contact marketing frequency cap. ``app.messages`` stores naive-UTC timestamps
+    (``datetime.utcnow()``), so we compute local-day midnight and convert it to that base.
+    """
+    from zoneinfo import ZoneInfo
+    from app.core.outbound_config import outbound_config
+
+    tz = ZoneInfo(outbound_config.QUIET_HOURS_TZ)
+    now_local = datetime.now(tz)
+    local_midnight = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    start_utc = local_midnight.astimezone(timezone.utc).replace(tzinfo=None)
+    stmt = select(func.count(Message.id)).where(
+        Message.contact_id == contact_id,
+        Message.direction == "outbound",
+        Message.message_class == "marketing",
+        Message.timestamp >= start_utc,
+    )
+    return int((await db.execute(stmt)).scalar() or 0)
 
 
 async def insert_message_status(

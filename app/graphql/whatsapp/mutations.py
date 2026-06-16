@@ -17,11 +17,13 @@ from app.graphql.whatsapp.types import (
     SendTextMessageInput,
     SendMessageResult,
     ChatMessage,
+    ChatConversation,
 )
 from app.graphql.auth.permissions import IsAuthenticated
 from app.models import Contact, Conversation
 from app.services import whatsapp_cloud_service as cloud
 from app.services import whatsapp_media_service as media_service
+from app.services import whatsapp_outbound as outbound
 from app.services.whatsapp_media_assets_service import (
     MediaAssetError,
     _detect_mime_type,
@@ -85,30 +87,30 @@ class WhatsAppChatMutation:
         if error:
             return SendMessageResult(success=False, error=error)
 
-        # Send via the Cloud API.
+        # Route through the unified outbound gateway (per-contact serialization + class record).
         try:
-            result = await cloud.send_text(to=contact.wa_id, text=text)
-        except cloud.WhatsAppError as e:
-            await db.rollback()
-            return SendMessageResult(success=False, error=e.message)
+            result = await outbound.send_text(
+                db,
+                kind=outbound.KIND_MANUAL_HUMAN,
+                conversation_id=conversation.id,
+                contact_id=contact.id,
+                wa_id=contact.wa_id,
+                text=text,
+                persist=True,
+            )
         except Exception as e:  # noqa: BLE001
             await db.rollback()
             logger.exception("Unexpected error sending WhatsApp message")
             return SendMessageResult(success=False, error=str(e))
 
-        # Persist the outbound message (the DB trigger fans it out to subscribers).
-        message = await crud.insert_outbound_message(
-            db,
-            conversation_id=conversation.id,
-            contact_id=contact.id,
-            text=text,
-            wa_message_id=result.get("wa_message_id"),
-        )
+        if not result.ok:
+            await db.rollback()
+            return SendMessageResult(success=False, error=result.reason or "No se pudo enviar el mensaje.")
         await db.commit()
 
         return SendMessageResult(
             success=True,
-            message=ChatMessage.from_data(crud.ChatMessageData.from_model(message)),
+            message=ChatMessage.from_data(crud.ChatMessageData.from_model(result.message)),
         )
 
     @strawberry.mutation(permission_classes=[IsAuthenticated])
@@ -134,32 +136,28 @@ class WhatsAppChatMutation:
 
         emoji = input.emoji or ""
         try:
-            result = await cloud.send_reaction(
-                to=contact.wa_id, message_id=target_wa_id, emoji=emoji
+            result = await outbound.send_reaction(
+                db,
+                conversation_id=conversation.id,
+                contact_id=contact.id,
+                wa_id=contact.wa_id,
+                target_wa_id=target_wa_id,
+                emoji=emoji,
+                persist=True,
             )
-        except cloud.WhatsAppError as e:
-            await db.rollback()
-            return SendMessageResult(success=False, error=e.message)
         except Exception as e:  # noqa: BLE001
             await db.rollback()
             logger.exception("Unexpected error sending WhatsApp reaction")
             return SendMessageResult(success=False, error=str(e))
 
-        # Persist the outbound reaction (the DB trigger fans it out to subscribers).
-        message = await crud.insert_outbound_message(
-            db,
-            conversation_id=conversation.id,
-            contact_id=contact.id,
-            text=emoji,
-            wa_message_id=result.get("wa_message_id"),
-            message_type="reaction",
-            context_message_id=target_wa_id,
-        )
+        if not result.ok:
+            await db.rollback()
+            return SendMessageResult(success=False, error=result.reason or "No se pudo enviar la reacción.")
         await db.commit()
 
         return SendMessageResult(
             success=True,
-            message=ChatMessage.from_data(crud.ChatMessageData.from_model(message)),
+            message=ChatMessage.from_data(crud.ChatMessageData.from_model(result.message)),
         )
 
     @strawberry.mutation(permission_classes=[IsAuthenticated])
@@ -195,20 +193,30 @@ class WhatsAppChatMutation:
 
         try:
             media_id = await cloud.upload_media(raw, mime_type, original_filename)
-            result = await cloud.send_media(
-                to=contact.wa_id,
-                media_type=media_kind,
-                media_id=media_id,
-                caption=caption,
-                filename=original_filename if media_kind == "document" else None,
-            )
         except cloud.WhatsAppError as e:
             await db.rollback()
             return SendMessageResult(success=False, error=e.message)
         except Exception as e:  # noqa: BLE001
             await db.rollback()
-            logger.exception("Unexpected error sending WhatsApp media")
+            logger.exception("Unexpected error uploading WhatsApp media")
             return SendMessageResult(success=False, error=str(e))
+
+        # Route the send through the unified outbound gateway (per-contact serialization).
+        gw = await outbound.send_media(
+            db,
+            kind=outbound.KIND_MANUAL_HUMAN,
+            conversation_id=conversation.id,
+            contact_id=contact.id,
+            wa_id=contact.wa_id,
+            media_type=media_kind,
+            media_id=media_id,
+            caption=caption,
+            filename=original_filename if media_kind == "document" else None,
+        )
+        if not gw.ok:
+            await db.rollback()
+            return SendMessageResult(success=False, error=gw.reason or "No se pudo enviar el archivo.")
+        result = {"wa_message_id": gw.wa_message_id}
 
         # Persist a copy so the bubble renders immediately. Prefers object
         # storage (MinIO/R2 — survives redeploys), falls back to local /uploads.
@@ -228,27 +236,37 @@ class WhatsAppChatMutation:
             logger.exception("Could not store sent media %s", media_id)
             stored_url = None
 
-        message = await crud.insert_outbound_message(
-            db,
-            conversation_id=conversation.id,
-            contact_id=contact.id,
-            text=caption,
-            wa_message_id=result.get("wa_message_id"),
-            message_type=media_kind,
-        )
-        await crud.insert_outbound_media(
-            db,
-            message_id=message.id,
-            media_type=media_kind,
-            mime_type=mime_type,
-            filename=original_filename,
-            file_size=len(raw),
-            sha256=sha,
-            media_url=stored_url,
-            caption=caption,
-            cloud_media_id=media_id,
-        )
-        await db.commit()
+        try:
+            message = await crud.insert_outbound_message(
+                db,
+                conversation_id=conversation.id,
+                contact_id=contact.id,
+                text=caption,
+                wa_message_id=result.get("wa_message_id"),
+                message_type=media_kind,
+                message_class=outbound.CLASS_TRANSACTIONAL,
+            )
+            await crud.insert_outbound_media(
+                db,
+                message_id=message.id,
+                media_type=media_kind,
+                mime_type=mime_type,
+                filename=original_filename,
+                file_size=len(raw),
+                sha256=sha,
+                media_url=stored_url,
+                caption=caption,
+                cloud_media_id=media_id,
+            )
+            await db.commit()
+        except Exception:  # noqa: BLE001
+            # Already delivered at Meta -> surface a 'sent but not recorded' state, never silently lose it.
+            await db.rollback()
+            logger.exception("Media sent at Meta but failed to persist (conversation %s)", conversation.id)
+            return SendMessageResult(
+                success=False,
+                error="El archivo se envió pero no se pudo registrar en el chat. Recarga la conversación.",
+            )
 
         # Re-fetch with the media relation eager-loaded so the result (and the
         # realtime fan-out) carries the attachment metadata.
@@ -282,3 +300,18 @@ class WhatsAppChatMutation:
             success=True,
             message=ChatMessage.from_data(data) if data else None,
         )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated])
+    async def set_conversation_bot_enabled(
+        self, info: Info, conversation_id: int, enabled: bool
+    ) -> ChatConversation:
+        """Enable/disable the WhatsApp bot for one conversation (the robot button in Chats).
+
+        Enabling also clears any temporary human-takeover pause so the bot resumes immediately.
+        """
+        db: AsyncSession = info.context.db
+        conv = await crud.set_conversation_bot_enabled(db, conversation_id, enabled)
+        if conv is None:
+            raise Exception("Conversación no encontrada.")
+        data = await crud.get_conversation_data(db, conversation_id)
+        return ChatConversation.from_data(data)
