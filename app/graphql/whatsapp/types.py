@@ -12,9 +12,23 @@ import strawberry
 from app.crud.whatsappCrud import (
     ChatContactData,
     ChatMediaData,
+    ChatMembershipData,
     ChatMessageData,
     ConversationData,
 )
+
+
+@strawberry.type
+class ChatMembershipSummary:
+    status: str
+    remaining_days: Optional[int]
+
+    @classmethod
+    def from_data(cls, d: ChatMembershipData) -> "ChatMembershipSummary":
+        return cls(
+            status=d.status,
+            remaining_days=d.remaining_days,
+        )
 
 
 @strawberry.type
@@ -26,6 +40,7 @@ class ChatContact:
     profile_name: Optional[str]
     member_id: Optional[int]
     member_name: Optional[str]
+    member_membership: Optional[ChatMembershipSummary]
 
     @classmethod
     def from_data(cls, d: ChatContactData) -> "ChatContact":
@@ -37,6 +52,11 @@ class ChatContact:
             profile_name=d.profile_name,
             member_id=d.member_id,
             member_name=d.member_name,
+            member_membership=(
+                ChatMembershipSummary.from_data(d.member_membership)
+                if d.member_membership
+                else None
+            ),
         )
 
 

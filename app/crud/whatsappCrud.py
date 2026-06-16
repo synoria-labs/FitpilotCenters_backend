@@ -6,7 +6,7 @@ Write/upsert helpers are used by the inbound webhook ingest pipeline and the
 outbound send mutation. Primary keys are assigned by the database (never set ``id``).
 """
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional, List, Dict
 
 import json
@@ -38,6 +38,12 @@ CONVERSATION_WINDOW = timedelta(hours=24)
 # Data transfer objects
 # ---------------------------------------------------------------------------
 @dataclass
+class ChatMembershipData:
+    status: str
+    remaining_days: Optional[int]
+
+
+@dataclass
 class ChatContactData:
     id: int
     wa_id: str
@@ -46,6 +52,7 @@ class ChatContactData:
     profile_name: Optional[str]
     member_id: Optional[int] = None
     member_name: Optional[str] = None
+    member_membership: Optional[ChatMembershipData] = None
 
 
 @dataclass(frozen=True)
@@ -56,6 +63,7 @@ class _MemberCandidate:
     phone_number: Optional[str]
     active_membership_rank: int
     latest_membership_end: Optional[datetime]
+    membership: Optional[ChatMembershipData]
 
 
 @dataclass
@@ -279,6 +287,70 @@ def _latest_membership_end_sq():
     )
 
 
+def _reference_membership_ordering(now: datetime):
+    active_first = case(
+        (
+            and_(
+                MembershipSubscription.status == "active",
+                MembershipSubscription.end_at.isnot(None),
+                MembershipSubscription.end_at > now,
+            ),
+            0,
+        ),
+        else_=1,
+    )
+    return (
+        active_first,
+        MembershipSubscription.end_at.desc().nullslast(),
+        MembershipSubscription.id.desc(),
+    )
+
+
+def _reference_membership_status_sq(now: datetime):
+    return (
+        select(MembershipSubscription.status)
+        .where(MembershipSubscription.person_id == People.id)
+        .order_by(*_reference_membership_ordering(now))
+        .limit(1)
+        .scalar_subquery()
+    )
+
+
+def _reference_membership_end_sq(now: datetime):
+    return (
+        select(MembershipSubscription.end_at)
+        .where(MembershipSubscription.person_id == People.id)
+        .order_by(*_reference_membership_ordering(now))
+        .limit(1)
+        .scalar_subquery()
+    )
+
+
+def _membership_data(
+    raw_status: Optional[str], end_at: Optional[datetime]
+) -> Optional[ChatMembershipData]:
+    status = (raw_status or "").strip().lower()
+    if not status and end_at is None:
+        return None
+
+    remaining_days = None
+    if end_at is not None:
+        end_date = end_at.astimezone().date() if end_at.tzinfo else end_at.date()
+        remaining_days = (end_date - date.today()).days
+
+    if status in {"pending", "canceled"}:
+        effective_status = status
+    elif remaining_days is not None:
+        effective_status = "active" if remaining_days >= 0 else "expired"
+    else:
+        effective_status = status or "unknown"
+
+    return ChatMembershipData(
+        status=effective_status,
+        remaining_days=remaining_days,
+    )
+
+
 async def _resolve_member_contacts(
     db: AsyncSession, contacts: List[Contact]
 ) -> Dict[int, _MemberCandidate]:
@@ -315,8 +387,11 @@ async def _resolve_member_contacts(
     if not candidate_filters:
         return {}
 
+    now = datetime.now(timezone.utc)
     active_rank = _active_membership_rank_sq()
     latest_end = _latest_membership_end_sq()
+    reference_status = _reference_membership_status_sq(now)
+    reference_end = _reference_membership_end_sq(now)
     stmt = (
         select(
             People.id,
@@ -325,6 +400,8 @@ async def _resolve_member_contacts(
             People.phone_number,
             active_rank.label("active_membership_rank"),
             latest_end.label("latest_membership_end"),
+            reference_status.label("reference_membership_status"),
+            reference_end.label("reference_membership_end"),
         )
         .join(PersonRole, PersonRole.person_id == People.id)
         .join(Role, Role.id == PersonRole.role_id)
@@ -343,6 +420,10 @@ async def _resolve_member_contacts(
             phone_number=row.phone_number,
             active_membership_rank=int(row.active_membership_rank or 0),
             latest_membership_end=row.latest_membership_end,
+            membership=_membership_data(
+                row.reference_membership_status,
+                row.reference_membership_end,
+            ),
         )
         for row in rows
         if (row.full_name or "").strip()
@@ -378,6 +459,7 @@ def _contact_data(
         profile_name=contact.profile_name,
         member_id=member.id if member else None,
         member_name=member.full_name if member else None,
+        member_membership=member.membership if member else None,
     )
 
 
