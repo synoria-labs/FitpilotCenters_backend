@@ -83,6 +83,40 @@ async def _acquire_contact_lock(db: AsyncSession, wa_id: str) -> None:
     await db.execute(sa_text("SELECT pg_advisory_xact_lock(:k)"), {"k": _lock_key(wa_id)})
 
 
+def _in_quiet_hours() -> bool:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from app.core.outbound_config import outbound_config
+
+    s, e = outbound_config.QUIET_HOURS_START, outbound_config.QUIET_HOURS_END
+    if s == e:
+        return False
+    hour = datetime.now(ZoneInfo(outbound_config.QUIET_HOURS_TZ)).hour
+    return (s <= hour < e) if s < e else (hour >= s or hour < e)
+
+
+async def _marketing_gates(
+    db: AsyncSession, *, person_id: Optional[int], contact_id: int, conversation_id: int
+) -> Optional[OutboundResult]:
+    """Policy gates that apply ONLY to marketing-class sends. Returns None when allowed."""
+    from app.core.outbound_config import outbound_config
+    from app.crud import chatbotPendingCrud
+    from app.services.notification_service import _is_opted_out
+
+    if person_id is not None and await _is_opted_out(db, person_id):
+        return OutboundResult(SendStatus.SUPPRESSED, reason="no_consent")
+    if conversation_id and await chatbotPendingCrud.get_active_pending(db, conversation_id):
+        # Customer is mid-purchase with the bot — don't interrupt with marketing.
+        return OutboundResult(SendStatus.DEFERRED, reason="pending_action")
+    if _in_quiet_hours():
+        return OutboundResult(SendStatus.DEFERRED, reason="quiet_hours")
+    cap = outbound_config.MARKETING_DAILY_CAP
+    if cap > 0 and await crud.count_marketing_sends_today(db, contact_id) >= cap:
+        return OutboundResult(SendStatus.SUPPRESSED, reason="daily_cap")
+    return None
+
+
 async def _handle_outside_window(
     db: AsyncSession, *, kind: str, wa_id: str, ref: Optional[str], error_message: str
 ) -> OutboundResult:
@@ -127,10 +161,13 @@ async def _deliver(
     """Coordinate + send one outbound message. Caller owns the transaction (no commit here)."""
     await _acquire_contact_lock(db, wa_id)
 
-    # --- POLICY GATES SEAM (marketing-only). Activated in later phases:
-    #   Phase 2: consent (_is_opted_out) -> SUPPRESSED; quiet hours / daily cap.
-    #   Phase 3: active ChatbotPendingAction -> DEFERRED.
-    # Phase 1: no-op (campaigns/notifications already check consent themselves).
+    # Marketing-only policy gates: consent / mid-purchase / quiet hours / daily cap.
+    if message_class == CLASS_MARKETING:
+        gate = await _marketing_gates(
+            db, person_id=person_id, contact_id=contact_id, conversation_id=conversation_id
+        )
+        if gate is not None:
+            return gate
 
     try:
         res = await cloud_send()

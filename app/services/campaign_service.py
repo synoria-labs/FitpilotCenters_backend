@@ -54,6 +54,7 @@ from app.models.campaignsModel import (
 from app.services import segmentation_service
 from app.services import whatsapp_cloud_service as cloud
 from app.services import whatsapp_media_assets_service as media_service
+from app.services import whatsapp_outbound as outbound
 from app.services.notification_service import (
     VARIABLES,
     _is_opted_out,
@@ -285,26 +286,51 @@ async def _send_to_recipient(
         return "failed"
 
     to = recipient.wa_id or re.sub(r"\D", "", (person.phone_number or person.wa_id or ""))
-    try:
-        contact = await chat_crud.upsert_contact(
-            db, wa_id=to, phone_number=recipient.phone_e164 or to, authoritative=False
+    contact = await chat_crud.upsert_contact(
+        db, wa_id=to, phone_number=recipient.phone_e164 or to, authoritative=False
+    )
+    conversation = await chat_crud.get_or_open_conversation(db, contact.id)
+    # Route through the unified outbound gateway: per-contact serialization + marketing gates
+    # (consent / mid-purchase defer / quiet hours / daily cap). persist=False -> we keep the
+    # richer campaign persistence (message + media + recipient ledger) below.
+    gw = await outbound.send_template(
+        db,
+        kind=outbound.KIND_CAMPAIGN,
+        message_class=outbound.CLASS_MARKETING,
+        conversation_id=conversation.id,
+        contact_id=contact.id,
+        wa_id=contact.wa_id,
+        template_name=tpl.template_name,
+        language_code=tpl.template_language,
+        body_params=body_params,
+        components=tpl.components,
+        header_media_url=resolved_media.media_url,
+        header_media_id=resolved_media.media_id,
+        persist=False,
+        person_id=person.id,
+    )
+    if gw.status is outbound.SendStatus.SUPPRESSED:
+        if gw.reason == "no_consent":
+            await crud.mark_recipient_terminal(
+                db, recipient, status="opted_out", skip_reason="no_consent"
+            )
+            return "opted_out"
+        # daily_cap: contact already got a marketing message today -> terminal skip for this run.
+        await crud.mark_recipient_terminal(
+            db, recipient, status="skipped", skip_reason=gw.reason or "suppressed"
         )
-        conversation = await chat_crud.get_or_open_conversation(db, contact.id)
-        result = await cloud.send_template(
-            to=contact.wa_id,
-            template_name=tpl.template_name,
-            language_code=tpl.template_language,
-            body_params=body_params,
-            components=tpl.components,
-            header_media_url=resolved_media.media_url,
-            header_media_id=resolved_media.media_id,
-        )
-    except cloud.WhatsAppError as e:
-        if e.code in _RATE_LIMIT_CODES:
+        return "skipped"
+    if gw.status is outbound.SendStatus.DEFERRED:
+        if gw.reason == "rate_limited":
             await db.rollback()
-            raise _RateLimited(e.message)
-        await crud.mark_recipient_failed(db, recipient, error=e.message)
+            raise _RateLimited("rate limited")
+        # quiet_hours / pending_action: retry on a later sweep (failed is the retryable state).
+        await crud.mark_recipient_failed(db, recipient, error=f"deferred:{gw.reason}")
+        return "deferred"
+    if gw.status is outbound.SendStatus.FAILED:
+        await crud.mark_recipient_failed(db, recipient, error=gw.reason or "Error al enviar.")
         return "failed"
+    result = {"wa_message_id": gw.wa_message_id}
 
     message = await chat_crud.insert_outbound_message(
         db,

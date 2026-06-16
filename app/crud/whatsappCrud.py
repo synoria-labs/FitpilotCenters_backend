@@ -879,6 +879,28 @@ async def insert_outbound_message(
     return msg
 
 
+async def count_marketing_sends_today(db: AsyncSession, contact_id: int) -> int:
+    """Count MARKETING outbound messages sent to a contact today (local day).
+
+    Backs the per-contact marketing frequency cap. ``app.messages`` stores naive-UTC timestamps
+    (``datetime.utcnow()``), so we compute local-day midnight and convert it to that base.
+    """
+    from zoneinfo import ZoneInfo
+    from app.core.outbound_config import outbound_config
+
+    tz = ZoneInfo(outbound_config.QUIET_HOURS_TZ)
+    now_local = datetime.now(tz)
+    local_midnight = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    start_utc = local_midnight.astimezone(timezone.utc).replace(tzinfo=None)
+    stmt = select(func.count(Message.id)).where(
+        Message.contact_id == contact_id,
+        Message.direction == "outbound",
+        Message.message_class == "marketing",
+        Message.timestamp >= start_utc,
+    )
+    return int((await db.execute(stmt)).scalar() or 0)
+
+
 async def insert_message_status(
     db: AsyncSession,
     wa_message_id: str,
