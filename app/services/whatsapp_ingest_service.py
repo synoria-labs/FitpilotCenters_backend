@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from app.db.postgresql import async_session_factory
 from app.crud import whatsappCrud as crud
+from app.crud import campaignsCrud as campaigns_crud
 from app.services import whatsapp_media_service as media_service
 from app.services.whatsapp_hooks import on_inbound_message
 
@@ -139,9 +140,18 @@ async def _process_status(db, st: Dict[str, Any]) -> None:
     status = st.get("status")
     if not wa_message_id or not status:
         return
+    ts = _to_dt(st.get("timestamp"))
     await crud.insert_message_status(
         db,
         wa_message_id=wa_message_id,
         status=status,
-        timestamp=_to_dt(st.get("timestamp")),
+        timestamp=ts,
     )
+    # Mirror the delivery status onto the campaign recipient (if this outbound message
+    # belongs to a campaign). Never let campaign tracking break webhook ingestion.
+    try:
+        await campaigns_crud.apply_delivery_status(
+            db, wa_message_id=wa_message_id, meta_status=status, timestamp=ts
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("campaign delivery-status update failed: %s", e)

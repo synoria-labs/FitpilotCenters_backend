@@ -18,6 +18,7 @@ from app.models.whatsappModel import (
 )
 from app.models.notificationModel import NotificationSetting, NotificationLog
 from app.models.chatbotModel import ChatbotConfig, ChatbotPendingAction
+from app.models.campaignsModel import Campaign, CampaignVariant, CampaignRecipient
 
 __all__ = [
     "People", "Role", "PersonRole", "Account",
@@ -30,5 +31,6 @@ __all__ = [
     "Contact", "Conversation", "Message", "MessageStatus", "Media", "WebhookLog",
     "WhatsAppTemplate", "WhatsAppMediaAsset",
     "NotificationSetting", "NotificationLog",
-    "ChatbotConfig", "ChatbotPendingAction"
+    "ChatbotConfig", "ChatbotPendingAction",
+    "Campaign", "CampaignVariant", "CampaignRecipient"
 ]
