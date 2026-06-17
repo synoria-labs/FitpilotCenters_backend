@@ -65,6 +65,18 @@ async def send_and_persist_reply(
         message_class=outbound.CLASS_TRANSACTIONAL,
     )
     await db.commit()
+
+    # The bot just answered this conversation, so the customer's inbound messages are
+    # handled — mark them read (and send a read receipt) so they don't linger as unread
+    # for staff. Best-effort; never let it break the reply flow.
+    if result.ok:
+        try:
+            _conv, latest_wa_id = await crud.mark_conversation_read(db, conversation_id)
+            if latest_wa_id:
+                await cloud.send_read_receipt(latest_wa_id)
+        except Exception:  # noqa: BLE001
+            logger.debug("post-reply mark-read failed for %s", conversation_id, exc_info=True)
+
     return result
 
 

@@ -323,6 +323,37 @@ async def send_text(to: str, text: str) -> Dict[str, Any]:
     return {"wa_message_id": wa_message_id}
 
 
+async def send_read_receipt(wa_message_id: Optional[str]) -> bool:
+    """Mark an inbound message as read in WhatsApp (blue ticks). Best-effort.
+
+    Reuses the same ``/messages`` endpoint + bearer credentials as ``send_text``. Returns
+    True on success, False on any failure (missing config/id, expired 24h window, etc.) and
+    never raises — a read receipt must never break the UI flow.
+    """
+    if not wa_message_id or not whatsapp_config.is_send_configured():
+        return False
+
+    url = whatsapp_config.graph_url(f"{whatsapp_config.PHONE_NUMBER_ID}/messages")
+    payload = {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": wa_message_id,
+    }
+    headers = {**_auth_headers(), "Content-Type": "application/json"}
+
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+        if resp.status_code >= 400:
+            error = _parse_api_error(resp)
+            logger.info("WhatsApp read receipt skipped (%s): %s", error.code, error.message)
+            return False
+        return True
+    except Exception:  # noqa: BLE001
+        logger.debug("WhatsApp read receipt failed for %s", wa_message_id, exc_info=True)
+        return False
+
+
 async def send_reaction(to: str, message_id: str, emoji: str) -> Dict[str, Any]:
     """React to a message with an emoji. Returns {"wa_message_id": ...}.
 

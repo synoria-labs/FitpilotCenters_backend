@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Optional, List
 
 from sqlalchemy import (
-    BigInteger, Boolean, SmallInteger, String, Text, ForeignKey, TIMESTAMP, JSON, Index
+    BigInteger, Boolean, SmallInteger, String, Text, ForeignKey, TIMESTAMP, JSON, Index, text
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -79,6 +79,12 @@ class Message(Base):
     is_processed: Mapped[Optional[int]] = mapped_column(SmallInteger, default=0)
     processed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP)
     is_temp: Mapped[Optional[int]] = mapped_column(SmallInteger, default=0)
+    # Unread tracking for the Chats UI. Inbound rows default to unread (false); staff/bot
+    # marks them read. The unread count filters direction='inbound' AND is_read=false.
+    is_read: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    read_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP)
     # Outbound coordination: 'transactional' | 'marketing' (NULL on legacy/inbound rows).
     # The marketing frequency cap counts outbound rows with message_class='marketing'.
     message_class: Mapped[Optional[str]] = mapped_column(String(30))
