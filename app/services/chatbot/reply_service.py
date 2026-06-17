@@ -137,6 +137,37 @@ async def _build_pending_note(db: AsyncSession, conversation_id: int) -> Optiona
     )
 
 
+def _build_member_note(member) -> Optional[str]:
+    """Personalization line for the system prompt: greet by name + adapt to membership.
+
+    ``member`` is the MemberData from ``membersCrud.get_member_by_id`` (or None). Returns
+    None when there's no member/name so the prompt keeps its generic non-member branch.
+    """
+    if member is None:
+        return None
+    name = (getattr(member, "full_name", None) or "").strip()
+    if not name:
+        return None
+    m = getattr(member, "active_membership", None)
+    status = (getattr(m, "status", None) or "").strip().lower() if m is not None else ""
+    days = getattr(m, "remaining_days", None) if m is not None else None
+
+    if status == "active":
+        detail = f"membresía ACTIVA, {days} días restantes" if days is not None else "membresía ACTIVA"
+        return (
+            f"Socio identificado: {name}. {detail}. Salúdalo por su nombre y personaliza tu "
+            "respuesta; no insistas en renovar salvo que falten pocos días."
+        )
+    if status == "expired":
+        detail = f"VENCIDA hace {abs(days)} días" if days is not None else "VENCIDA"
+        return (
+            f"Socio identificado: {name}. Su membresía está {detail}. Salúdalo por su nombre y, "
+            "con tacto, invítalo a renovar."
+        )
+    # inactive / desconocido / sin membresía activa
+    return f"Socio identificado: {name}. No tiene una membresía activa. Salúdalo por su nombre."
+
+
 async def _run_agent_reply(
     conversation_id: int,
     contact_id: int,
@@ -157,10 +188,16 @@ async def _run_agent_reply(
                 return
 
             member_id = await membersCrud.get_member_id_by_wa_id(db, contact_wa_id)
+            member = (
+                await membersCrud.get_member_by_id(db, member_id)
+                if member_id is not None
+                else None
+            )
             business_info = await build_business_info(db, config)
             history = await _load_history(db, conversation_id, exclude_message_id=message_id)
             require_mp = bool(config.require_mp_payment) and mercadopago_config.is_configured()
             pending_note = await _build_pending_note(db, conversation_id)
+            member_note = _build_member_note(member)
 
             ctx = ChatbotContext(
                 db=db,
@@ -171,7 +208,8 @@ async def _run_agent_reply(
             )
             tools = build_tools(ctx)
             reply = await run_agent(
-                config, tools, business_info, member_id, history, text, pending_note=pending_note
+                config, tools, business_info, member_id, history, text,
+                pending_note=pending_note, member_note=member_note,
             )
             if not reply:
                 return
