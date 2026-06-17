@@ -48,9 +48,13 @@ class DashboardMetrics:
     occupancy_by_class: list[ClassBucket]
     new_members_by_day: list[DailyPoint]
     membership_distribution: list[PlanBucket]
+    top_membership_sales_all_time: PlanBucket | None
+    top_membership_sales_period: PlanBucket | None
 
     @classmethod
     def from_data(cls, data) -> "DashboardMetrics":
+        top_all_time = data.top_membership_sales_all_time
+        top_period = data.top_membership_sales_period
         return cls(
             total_members=data.total_members,
             active_members=data.active_members,
@@ -90,4 +94,24 @@ class DashboardMetrics:
                 )
                 for b in data.membership_distribution
             ],
+            top_membership_sales_all_time=(
+                PlanBucket(
+                    plan_id=top_all_time.plan_id,
+                    plan_name=top_all_time.plan_name,
+                    count=top_all_time.count,
+                    total=top_all_time.total,
+                )
+                if top_all_time
+                else None
+            ),
+            top_membership_sales_period=(
+                PlanBucket(
+                    plan_id=top_period.plan_id,
+                    plan_name=top_period.plan_name,
+                    count=top_period.count,
+                    total=top_period.total,
+                )
+                if top_period
+                else None
+            ),
         )

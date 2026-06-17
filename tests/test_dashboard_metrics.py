@@ -13,6 +13,7 @@ data, and run inside the savepoint fixture so nothing persists.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import pytest
 
@@ -22,10 +23,12 @@ from app.crud.dashboard_metrics import (
     count_active_subscriptions,
     count_new_members,
     count_reservations,
+    top_membership_sales,
 )
 from app.models import (
     MembershipPlan,
     MembershipSubscription,
+    Payment,
     People,
 )
 from app.models.classModel import ClassSession, ClassType, Reservation
@@ -66,6 +69,62 @@ async def _make_member(
     db.add(pr)
     await db.flush()
     return person
+
+
+async def _make_plan(db, *, name: str, price: Decimal | str | int = 100) -> MembershipPlan:
+    plan = MembershipPlan(
+        name=name,
+        price=Decimal(str(price)),
+        duration_value=1,
+        duration_unit="month",
+    )
+    db.add(plan)
+    await db.flush()
+    return plan
+
+
+async def _make_subscription(
+    db,
+    *,
+    person: People,
+    plan: MembershipPlan,
+    start_at: datetime,
+    end_at: datetime,
+) -> MembershipSubscription:
+    subscription = MembershipSubscription(
+        person_id=person.id,
+        plan_id=plan.id,
+        start_at=start_at,
+        end_at=end_at,
+        status="active",
+    )
+    db.add(subscription)
+    await db.flush()
+    return subscription
+
+
+async def _add_payments(
+    db,
+    *,
+    person: People,
+    subscription: MembershipSubscription | None,
+    count: int,
+    amount: Decimal | str | int,
+    paid_at: datetime,
+    status: str = "COMPLETED",
+) -> None:
+    for _ in range(count):
+        db.add(
+            Payment(
+                person_id=person.id,
+                subscription_id=subscription.id if subscription else None,
+                amount=Decimal(str(amount)),
+                method="cash",
+                status=status,
+                paid_at=paid_at,
+            )
+        )
+    await db.flush()
 
 
 # --------------------------------------------------------------------------- #
@@ -305,6 +364,61 @@ async def test_occupancy_avg_zero_capacity_window(db):
 
 
 # --------------------------------------------------------------------------- #
+# top_membership_sales                                                        #
+# --------------------------------------------------------------------------- #
+
+
+async def test_top_membership_sales_breaks_count_ties_by_total(db):
+    role = await _ensure_member_role(db)
+    person = await _make_member(
+        db, role=role, full_name="Tie Payer", role_assigned_at=_utc(3012, 1, 1)
+    )
+
+    low_total_plan = await _make_plan(db, name="Tie Low Total 3012", price=100)
+    high_total_plan = await _make_plan(db, name="Tie High Total 3012", price=500)
+    low_sub = await _make_subscription(
+        db,
+        person=person,
+        plan=low_total_plan,
+        start_at=_utc(3012, 1, 1),
+        end_at=_utc(3012, 2, 1),
+    )
+    high_sub = await _make_subscription(
+        db,
+        person=person,
+        plan=high_total_plan,
+        start_at=_utc(3012, 1, 1),
+        end_at=_utc(3012, 2, 1),
+    )
+
+    await _add_payments(
+        db,
+        person=person,
+        subscription=low_sub,
+        count=2,
+        amount=Decimal("100.00"),
+        paid_at=_utc(3012, 1, 10),
+    )
+    await _add_payments(
+        db,
+        person=person,
+        subscription=high_sub,
+        count=2,
+        amount=Decimal("500.00"),
+        paid_at=_utc(3012, 1, 10),
+    )
+
+    top = await top_membership_sales(
+        db, start_date=_utc(3012, 1, 1), end_date=_utc(3012, 1, 31, 23)
+    )
+
+    assert top is not None
+    assert top.plan_id == high_total_plan.id
+    assert top.count == 2
+    assert top.total == 1000.0
+
+
+# --------------------------------------------------------------------------- #
 # get_dashboard_metrics orchestrator                                           #
 # --------------------------------------------------------------------------- #
 
@@ -391,6 +505,87 @@ async def test_dashboard_metrics_orchestrator_full(db):
     assert isinstance(metrics.occupancy_by_class, list)
     assert isinstance(metrics.new_members_by_day, list)
     assert isinstance(metrics.membership_distribution, list)
+
+
+async def test_dashboard_metrics_top_membership_sales_all_time_and_period(db):
+    """Top-selling plan is based on completed payments, not active subs."""
+    from app.crud.dashboard_metrics import get_dashboard_metrics
+
+    role = await _ensure_member_role(db)
+    person = await _make_member(
+        db, role=role, full_name="Top Sales Payer", role_assigned_at=_utc(3011, 1, 1)
+    )
+
+    baseline_top = await top_membership_sales(db)
+    baseline_count = baseline_top.count if baseline_top else 0
+
+    all_time_plan = await _make_plan(db, name="All Time Winner 3011", price=100)
+    period_plan = await _make_plan(db, name="Period Winner 3011", price=250)
+    all_time_sub = await _make_subscription(
+        db,
+        person=person,
+        plan=all_time_plan,
+        start_at=_utc(3011, 1, 1),
+        end_at=_utc(3011, 12, 31),
+    )
+    period_sub = await _make_subscription(
+        db,
+        person=person,
+        plan=period_plan,
+        start_at=_utc(3011, 5, 1),
+        end_at=_utc(3011, 6, 1),
+    )
+
+    # Enough completed payments to beat any pre-existing all-time production
+    # fixture data visible through the defaultdb-backed test transaction.
+    await _add_payments(
+        db,
+        person=person,
+        subscription=all_time_sub,
+        count=baseline_count + 3,
+        amount=Decimal("100.00"),
+        paid_at=_utc(3011, 3, 10),
+    )
+    await _add_payments(
+        db,
+        person=person,
+        subscription=period_sub,
+        count=2,
+        amount=Decimal("250.00"),
+        paid_at=_utc(3011, 5, 10),
+    )
+
+    # These must not move the period winner.
+    for status in ("PENDING", "FAILED", "REFUNDED"):
+        await _add_payments(
+            db,
+            person=person,
+            subscription=all_time_sub,
+            count=3,
+            amount=Decimal("999.00"),
+            paid_at=_utc(3011, 5, 10),
+            status=status,
+        )
+    await _add_payments(
+        db,
+        person=person,
+        subscription=None,
+        count=5,
+        amount=Decimal("999.00"),
+        paid_at=_utc(3011, 5, 10),
+    )
+
+    metrics = await get_dashboard_metrics(
+        db, start_date=_utc(3011, 5, 1), end_date=_utc(3011, 5, 31, 23)
+    )
+
+    assert metrics.top_membership_sales_all_time is not None
+    assert metrics.top_membership_sales_all_time.plan_id == all_time_plan.id
+    assert metrics.top_membership_sales_all_time.count == baseline_count + 3
+    assert metrics.top_membership_sales_period is not None
+    assert metrics.top_membership_sales_period.plan_id == period_plan.id
+    assert metrics.top_membership_sales_period.count == 2
+    assert metrics.top_membership_sales_period.total == 500.0
 
 
 async def test_dashboard_metrics_handles_empty_window(db):

@@ -25,6 +25,7 @@ from app.crud.memberships.utils import _normalize_to_utc
 from app.models import (
     MembershipPlan,
     MembershipSubscription,
+    Payment,
     People,
 )
 from app.models.classModel import ClassSession, ClassType, Reservation
@@ -70,6 +71,8 @@ class DashboardMetricsData:
     occupancy_by_class: list[ClassBucketData] = field(default_factory=list)
     new_members_by_day: list[DailyPointData] = field(default_factory=list)
     membership_distribution: list[PlanBucketData] = field(default_factory=list)
+    top_membership_sales_all_time: Optional[PlanBucketData] = None
+    top_membership_sales_period: Optional[PlanBucketData] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -326,8 +329,6 @@ async def revenue_by_day(
     avoid the round-trip cost of computing all the other payment aggregations
     we don't need for the dashboard chart.
     """
-    from app.models import Payment
-
     start = _normalize_to_utc(start_date)
     end = _normalize_to_utc(end_date)
 
@@ -397,6 +398,55 @@ async def membership_distribution(
     ]
 
 
+async def top_membership_sales(
+    db: AsyncSession,
+    *,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+) -> Optional[PlanBucketData]:
+    """Top-selling membership plan by completed payment count.
+
+    Counts only COMPLETED payments attached to a subscription and plan. Date
+    filters apply to Payment.paid_at when provided.
+    """
+    conditions = [Payment.status == "COMPLETED"]
+    if start_date is not None:
+        conditions.append(Payment.paid_at >= _normalize_to_utc(start_date))
+    if end_date is not None:
+        conditions.append(Payment.paid_at <= _normalize_to_utc(end_date))
+
+    payment_count = func.count(Payment.id)
+    payment_total = func.coalesce(func.sum(Payment.amount), 0)
+
+    stmt = (
+        select(
+            MembershipPlan.id.label("plan_id"),
+            MembershipPlan.name.label("plan_name"),
+            payment_count.label("count"),
+            payment_total.label("total"),
+        )
+        .select_from(Payment)
+        .join(
+            MembershipSubscription,
+            Payment.subscription_id == MembershipSubscription.id,
+        )
+        .join(MembershipPlan, MembershipPlan.id == MembershipSubscription.plan_id)
+        .where(and_(*conditions))
+        .group_by(MembershipPlan.id, MembershipPlan.name)
+        .order_by(payment_count.desc(), payment_total.desc(), MembershipPlan.name.asc())
+        .limit(1)
+    )
+    row = (await db.execute(stmt)).first()
+    if row is None:
+        return None
+    return PlanBucketData(
+        plan_id=row.plan_id,
+        plan_name=row.plan_name,
+        count=int(row.count or 0),
+        total=float(row.total or 0),
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Sum helper (single-shot SUM(amount) for previous period revenue)            #
 # --------------------------------------------------------------------------- #
@@ -406,8 +456,6 @@ async def _sum_revenue(
     db: AsyncSession, *, start_date: datetime, end_date: datetime
 ) -> float:
     """SUM(payments.amount) for COMPLETED payments in the window."""
-    from app.models import Payment
-
     start = _normalize_to_utc(start_date)
     end = _normalize_to_utc(end_date)
     stmt = select(func.coalesce(func.sum(Payment.amount), 0)).where(
@@ -488,6 +536,10 @@ async def get_dashboard_metrics(
     occupancy_series = await occupancy_by_class(db, start_date=start, end_date=end)
     new_members_serie = await new_members_series(db, start_date=start, end_date=end)
     plan_distribution = await membership_distribution(db, as_of=end)
+    top_sales_all_time = await top_membership_sales(db)
+    top_sales_period = await top_membership_sales(
+        db, start_date=start, end_date=end
+    )
 
     return DashboardMetricsData(
         total_members=total_members,
@@ -506,4 +558,6 @@ async def get_dashboard_metrics(
         occupancy_by_class=occupancy_series,
         new_members_by_day=new_members_serie,
         membership_distribution=plan_distribution,
+        top_membership_sales_all_time=top_sales_all_time,
+        top_membership_sales_period=top_sales_period,
     )
