@@ -93,6 +93,8 @@ def _buttons_to_dicts(buttons) -> list:
                 "text": button.text,
                 "url": button.url,
                 "phone_number": button.phone_number,
+                "offer_code": button.offer_code,
+                "subtype": button.subtype,
                 "example": button.example,
             }
         )

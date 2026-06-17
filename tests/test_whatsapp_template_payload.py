@@ -200,6 +200,48 @@ def test_build_components_buttons_reject_two_dynamic_urls():
         build_components("Cuerpo", buttons=buttons)
 
 
+def test_build_components_copy_code_button():
+    components = build_components(
+        "Usa este cupón",
+        buttons=[
+            {
+                "type": "COPY_CODE",
+                "text": "Copiar código",
+                "offer_code": "FIT20",
+            }
+        ],
+    )
+    assert components[-1] == {
+        "type": "BUTTONS",
+        "buttons": [{"type": "COPY_CODE", "example": "FIT20"}],
+    }
+
+
+def test_build_components_copy_code_requires_code():
+    with pytest.raises(ValueError, match="código de oferta"):
+        build_components(
+            "Usa este cupón",
+            buttons=[{"type": "COPY_CODE", "text": "Copiar código"}],
+        )
+
+
+def test_build_components_copy_code_rejects_multiple():
+    buttons = [
+        {"type": "COPY_CODE", "text": "Copiar A", "offer_code": "A"},
+        {"type": "COPY_CODE", "text": "Copiar B", "offer_code": "B"},
+    ]
+    with pytest.raises(ValueError, match="código de oferta"):
+        build_components("Cuerpo", buttons=buttons)
+
+
+def test_build_components_rejects_voice_call_button():
+    with pytest.raises(ValueError, match="VOICE_CALL"):
+        build_components(
+            "Cuerpo",
+            buttons=[{"type": "VOICE_CALL", "text": "Llamar en WhatsApp"}],
+        )
+
+
 def test_build_components_carousel_with_per_card_handles():
     cards = [
         {"header_format": "IMAGE", "header_handle": "h1", "body_text": "Tarjeta {{1}}", "body_examples": ["A"]},

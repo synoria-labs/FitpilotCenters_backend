@@ -15,13 +15,15 @@ _PLACEHOLDER_RE = re.compile(r"\{\{\s*(\d+)\s*\}\}")
 _MEDIA_HEADER_FORMATS = {"IMAGE", "VIDEO", "DOCUMENT"}
 # Header formats Meta allows inside a CAROUSEL card (no DOCUMENT/TEXT/LOCATION).
 _CAROUSEL_HEADER_FORMATS = {"IMAGE", "VIDEO"}
-_BUTTON_TYPES = {"QUICK_REPLY", "URL", "PHONE_NUMBER"}
+_BUTTON_TYPES = {"QUICK_REPLY", "URL", "PHONE_NUMBER", "COPY_CODE"}
+_UNSUPPORTED_BUTTON_TYPES = {"VOICE_CALL"}
 _HEADER_TEXT_MAX = 60
 _BUTTON_TEXT_MAX = 25
 _BUTTON_URL_MAX = 2000
 _MAX_BUTTONS = 10
 _MAX_URL_BUTTONS = 2
 _MAX_PHONE_BUTTONS = 1
+_MAX_COPY_CODE_BUTTONS = 1
 _MAX_CAROUSEL_CARDS = 10
 
 
@@ -182,9 +184,10 @@ def _build_text_header(header_text: Optional[str], header_text_example: Optional
 def _build_buttons(buttons: List[dict]) -> List[dict]:
     """Build a Meta ``buttons`` array and enforce Meta's structural limits.
 
-    Each input button is ``{type, text, url?, phone_number?, payload?, example?}``. A URL whose
-    value ends in ``{{1}}`` is a dynamic URL button and carries an ``example`` list (Meta needs a
-    sample suffix). Meta allows at most one dynamic URL variable across the whole template.
+    Each input button is ``{type, text, url?, phone_number?, offer_code?, payload?, example?}``.
+    A URL whose value ends in ``{{1}}`` is a dynamic URL button and carries an ``example`` list
+    (Meta needs a sample suffix). Meta allows at most one dynamic URL variable across the whole
+    template.
     """
     cleaned = [b for b in (buttons or []) if isinstance(b, dict)]
     if not cleaned:
@@ -193,11 +196,13 @@ def _build_buttons(buttons: List[dict]) -> List[dict]:
         raise ValueError(f"Máximo {_MAX_BUTTONS} botones por plantilla.")
 
     result: List[dict] = []
-    url_count = phone_count = 0
+    url_count = phone_count = copy_code_count = 0
     dynamic_url_seen = False
     for button in cleaned:
         btype = str(button.get("type") or "").strip().upper()
         text = str(button.get("text") or "").strip()
+        if btype in _UNSUPPORTED_BUTTON_TYPES:
+            raise ValueError(f"Tipo de botón no soportado: {btype}.")
         if btype not in _BUTTON_TYPES:
             raise ValueError(f"Tipo de botón no soportado: {btype or '(vacío)'}.")
         if not text:
@@ -213,6 +218,12 @@ def _build_buttons(buttons: List[dict]) -> List[dict]:
             if not phone:
                 raise ValueError("El botón de llamada requiere un número de teléfono.")
             result.append({"type": "PHONE_NUMBER", "text": text, "phone_number": phone})
+        elif btype == "COPY_CODE":
+            copy_code_count += 1
+            offer_code = str(button.get("offer_code") or button.get("example") or "").strip()
+            if not offer_code:
+                raise ValueError("El botón de código de oferta requiere un código.")
+            result.append({"type": "COPY_CODE", "example": offer_code})
         else:  # URL
             url_count += 1
             url = str(button.get("url") or "").strip()
@@ -240,6 +251,8 @@ def _build_buttons(buttons: List[dict]) -> List[dict]:
         raise ValueError(f"Solo se permite {_MAX_PHONE_BUTTONS} botón de llamada.")
     if url_count > _MAX_URL_BUTTONS:
         raise ValueError(f"Máximo {_MAX_URL_BUTTONS} botones de URL.")
+    if copy_code_count > _MAX_COPY_CODE_BUTTONS:
+        raise ValueError(f"Solo se permite {_MAX_COPY_CODE_BUTTONS} botón de código de oferta.")
     return result
 
 
@@ -292,10 +305,10 @@ def build_components(
     matches the placeholders (Meta rejects a mismatch).
 
     ``header_format`` accepts IMAGE/VIDEO/DOCUMENT (needs ``header_handle``), TEXT (needs
-    ``header_text``) or LOCATION. ``buttons`` is a list of QUICK_REPLY/URL/PHONE_NUMBER button
-    dicts. ``carousel_cards`` builds a CAROUSEL template: per Meta, such a template's bubble can
-    only carry a BODY (no top-level header/footer/buttons), so those are ignored when cards are
-    given and each card supplies its own media header (handle), body and optional buttons.
+    ``header_text``) or LOCATION. ``buttons`` is a list of QUICK_REPLY/URL/PHONE_NUMBER/COPY_CODE
+    button dicts. ``carousel_cards`` builds a CAROUSEL template: per Meta, such a template's
+    bubble can only carry a BODY (no top-level header/footer/buttons), so those are ignored when
+    cards are given and each card supplies its own media header (handle), body and optional buttons.
     """
     components: List[dict] = []
     header_format = (header_format or "").strip().upper()
