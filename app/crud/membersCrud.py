@@ -91,27 +91,37 @@ def _build_member_data(person: People) -> MemberData:
     if person.standing_bookings:
         current_date = date.today()
 
+        # Fallback de fechas de membresia: solo cuentan los standing bookings
+        # vigentes (comportamiento sin cambios).
         for sb in person.standing_bookings:
             if sb.status == 'active' and sb.end_date >= current_date:
                 if true_end_date is None or sb.end_date > true_end_date:
                     true_end_date = sb.end_date
                     true_start_date = sb.start_date
 
-                    if hasattr(sb, 'template') and sb.template:
-                        template = sb.template
-                        class_type = getattr(template, 'class_type', None)
-                        venue = getattr(template, 'venue', None)
-                        instructor = getattr(template, 'instructor', None)
+        # Datos a mostrar: elegir el standing booking mas relevante para exponer el
+        # horario fijo + centro de entrenamiento, INCLUYENDO los vencidos, para que la
+        # info siga visible cuando la membresia caduca. Prioridad: status 'active',
+        # luego el end_date mas reciente.
+        display_sb = max(
+            person.standing_bookings,
+            key=lambda sb: (sb.status == 'active', sb.end_date)
+        )
+        template = getattr(display_sb, 'template', None)
+        if template:
+            class_type = getattr(template, 'class_type', None)
+            venue = getattr(template, 'venue', None)
+            instructor = getattr(template, 'instructor', None)
 
-                        active_standing_booking_info = StandingBookingInfo(
-                            template_id=template.id,
-                            template_name=getattr(template, 'name', None),
-                            class_type_name=getattr(class_type, 'name', None) if class_type else None,
-                            weekday=getattr(template, 'weekday', 0),
-                            start_time_local=str(getattr(template, 'start_time_local', '')),
-                            venue_name=getattr(venue, 'name', None) if venue else None,
-                            instructor_name=getattr(instructor, 'full_name', None) if instructor else None
-                        )
+            active_standing_booking_info = StandingBookingInfo(
+                template_id=template.id,
+                template_name=getattr(template, 'name', None),
+                class_type_name=getattr(class_type, 'name', None) if class_type else None,
+                weekday=getattr(template, 'weekday', 0),
+                start_time_local=str(getattr(template, 'start_time_local', '')),
+                venue_name=getattr(venue, 'name', None) if venue else None,
+                instructor_name=getattr(instructor, 'full_name', None) if instructor else None
+            )
 
     if person.subscriptions:
         current_time = datetime.now(timezone.utc)
