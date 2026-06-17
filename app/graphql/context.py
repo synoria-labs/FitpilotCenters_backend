@@ -31,6 +31,26 @@ class Context(BaseContext):
     account_id: int = None
 
 
+async def _get_active_session(db: AsyncSession, session_id_value):
+    if not session_id_value:
+        logger.warning("Token without session_id provided; skipping context auth")
+        return None
+
+    session_id = str(session_id_value)
+    verified_session = await verify_session(db, session_id)
+    if verified_session is None:
+        logger.warning("Attempted to use unknown session: %s", session_id[:8])
+        return None
+
+    logger.debug("Verified session exists: %s", session_id[:8])
+    if verified_session.deleted_at is not None or verified_session.revoked_at is not None:
+        status = "deleted" if verified_session.deleted_at else "revoked"
+        logger.warning("Attempted to use %s session: %s", status, session_id[:8])
+        return None
+
+    return verified_session
+
+
 async def _mint_access_from_refresh(
     db: AsyncSession,
     request: HTTPConnection,
@@ -42,16 +62,10 @@ async def _mint_access_from_refresh(
         logger.warning("Invalid refresh token provided; skipping context auth")
         return None, None
 
-    session_id = str(payload_refresh.get("session_id"))
-    verified_session = await verify_session(db, session_id)
-    if verified_session is not None:
-        logger.debug("Verified session exists: %s", session_id[:8])
-
-    # Reject if session deleted or revoked
-    if verified_session and (verified_session.deleted_at is not None or verified_session.revoked_at is not None):
-        status = "deleted" if verified_session.deleted_at else "revoked"
-        logger.warning("Attempted to use %s session: %s", status, session_id[:8])
+    session_id_value = payload_refresh.get("session_id")
+    if await _get_active_session(db, session_id_value) is None:
         return None, None
+    session_id = str(session_id_value)
 
     person_id = payload_refresh.get("person_id")
     username = payload_refresh.get("username")
@@ -126,6 +140,10 @@ async def build_context(
         if payload:
             person_id = payload.get("person_id")
             username = payload.get("username")
+            session_id = payload.get("session_id")
+
+            if await _get_active_session(db, session_id) is None:
+                return Context(db=db, request=request, response=response, user=None, account_id=None)
 
             # Execute queries sequentially to avoid AsyncPG concurrent operation errors
             if person_id:
