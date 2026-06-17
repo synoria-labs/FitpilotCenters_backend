@@ -68,6 +68,7 @@ def build_system_prompt(
     business_info: str,
     member_id: Optional[int],
     pending_note: Optional[str] = None,
+    member_note: Optional[str] = None,
 ) -> str:
     parts: List[str] = []
     if config.system_prompt:
@@ -90,6 +91,8 @@ def build_system_prompt(
             "El cliente está identificado como socio. get_my_membership, list_my_reservations, "
             "renovación (propose_membership) y pase diario ya operan sobre su cuenta."
         )
+        if member_note:
+            parts.append(member_note)
     else:
         parts.append(
             "El cliente NO está registrado como socio. Para comprar un plan pídele su nombre "
@@ -124,10 +127,13 @@ async def run_agent(
     history: List[BaseMessage],
     user_text: str,
     pending_note: Optional[str] = None,
+    member_note: Optional[str] = None,
 ) -> Optional[str]:
     """Run one agent turn and return the reply text (or None if nothing to say)."""
     llm = build_llm(config)
-    system_prompt = build_system_prompt(config, business_info, member_id, pending_note)
+    system_prompt = build_system_prompt(
+        config, business_info, member_id, pending_note, member_note
+    )
     agent = create_react_agent(llm, tools, prompt=system_prompt)
 
     messages: List[BaseMessage] = list(history) + [HumanMessage(content=user_text)]
