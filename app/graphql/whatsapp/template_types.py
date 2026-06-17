@@ -104,10 +104,12 @@ class WhatsAppTemplate:
 
 @strawberry.input
 class TemplateButtonInput:
-    type: str  # QUICK_REPLY | URL | PHONE_NUMBER
+    type: str  # QUICK_REPLY | URL | PHONE_NUMBER | COPY_CODE
     text: str
     url: Optional[str] = None
     phone_number: Optional[str] = None
+    offer_code: Optional[str] = None
+    subtype: Optional[str] = None  # UI-only quick-reply flavor (custom/preconfigured)
     example: Optional[str] = None  # sample suffix for a dynamic URL ({{1}}) button
 
 
