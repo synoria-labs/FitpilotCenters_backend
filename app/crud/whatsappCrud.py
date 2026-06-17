@@ -12,7 +12,7 @@ from typing import Optional, List, Dict
 import json
 import logging
 
-from sqlalchemy import case, func, or_, select, and_, text as sql_text
+from sqlalchemy import case, func, or_, select, and_, update, text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -532,6 +532,7 @@ async def get_conversations(
 
     conv_ids = [conv.id for conv, _ in rows]
     last_messages = await _latest_message_per_conversation(db, conv_ids)
+    unread_by_conv = await _unread_counts(db, conv_ids)
     contacts = [conv.contact for conv, _ in rows]
     member_by_contact_id = await _resolve_member_contacts(db, contacts)
 
@@ -546,7 +547,7 @@ async def get_conversations(
                 contact=_contact_data(conv.contact, member),
                 last_message=last,
                 last_activity=last_activity,
-                unread_count=0,  # reserved for a later phase
+                unread_count=unread_by_conv.get(conv.id, 0),
                 bot_enabled=bool(getattr(conv, "bot_enabled", True)),
             )
         )
@@ -575,6 +576,7 @@ async def get_conversation_data(
 
     conv, last_activity = row
     last_messages = await _latest_message_per_conversation(db, [conv.id])
+    unread_by_conv = await _unread_counts(db, [conv.id])
     member_by_contact_id = await _resolve_member_contacts(db, [conv.contact])
     member = member_by_contact_id.get(conv.contact_id)
     return ConversationData(
@@ -583,7 +585,7 @@ async def get_conversation_data(
         contact=_contact_data(conv.contact, member),
         last_message=last_messages.get(conv.id),
         last_activity=last_activity,
-        unread_count=0,  # reserved for a later phase
+        unread_count=unread_by_conv.get(conv.id, 0),
         bot_enabled=bool(getattr(conv, "bot_enabled", True)),
     )
 
@@ -618,6 +620,66 @@ async def _latest_message_per_conversation(
     for m in messages:
         latest[m.conversation_id] = ChatMessageData.from_model(m)
     return latest
+
+
+async def _unread_counts(db: AsyncSession, conv_ids: List[int]) -> Dict[int, int]:
+    """Count unread inbound messages per conversation in ONE grouped query.
+
+    Mirrors ``_latest_message_per_conversation``: filters ``direction='inbound'`` and
+    excludes reactions (a reaction never counts as an unread message). Backed by the
+    partial index ``idx_messages_unread_inbound``.
+    """
+    if not conv_ids:
+        return {}
+
+    stmt = (
+        select(Message.conversation_id, func.count(Message.id))
+        .where(Message.conversation_id.in_(conv_ids))
+        .where(Message.direction == "inbound")
+        .where(Message.is_read.is_(False))
+        .where(Message.message_type != "reaction")
+        .group_by(Message.conversation_id)
+    )
+    rows = (await db.execute(stmt)).all()
+    return {cid: int(count) for cid, count in rows}
+
+
+async def mark_conversation_read(
+    db: AsyncSession, conversation_id: int
+) -> tuple[Optional["Conversation"], Optional[str]]:
+    """Mark all unread inbound messages of a conversation as read. Commits.
+
+    Returns ``(conversation, latest_inbound_wa_message_id)`` so the caller can send a
+    Meta read receipt for the newest inbound message. ``latest`` is None when there were
+    no unread inbound messages (or none had a wa_message_id).
+    """
+    conv = await db.get(Conversation, conversation_id)
+    if conv is None:
+        return None, None
+
+    # Capture the newest unread inbound wa_message_id BEFORE flipping is_read (for the receipt).
+    latest_wa_id = (
+        await db.execute(
+            select(Message.wa_message_id)
+            .where(Message.conversation_id == conversation_id)
+            .where(Message.direction == "inbound")
+            .where(Message.is_read.is_(False))
+            .where(Message.message_type != "reaction")
+            .where(Message.wa_message_id.isnot(None))
+            .order_by(Message.timestamp.desc(), Message.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    await db.execute(
+        update(Message)
+        .where(Message.conversation_id == conversation_id)
+        .where(Message.direction == "inbound")
+        .where(Message.is_read.is_(False))
+        .values(is_read=True, read_at=datetime.utcnow())
+    )
+    await db.commit()
+    return conv, latest_wa_id
 
 
 async def get_conversation_messages(
@@ -894,6 +956,7 @@ async def insert_outbound_message(
         created_at=now,
         is_processed=1,
         is_temp=0,
+        is_read=True,  # outbound is never "unread" (count filters inbound anyway)
     )
     db.add(msg)
     await db.flush()

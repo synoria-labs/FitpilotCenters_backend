@@ -325,3 +325,21 @@ class WhatsAppChatMutation:
             raise Exception("Conversación no encontrada.")
         data = await crud.get_conversation_data(db, conversation_id)
         return ChatConversation.from_data(data)
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated])
+    async def mark_conversation_read(
+        self, info: Info, conversation_id: int
+    ) -> ChatConversation:
+        """Mark a conversation's inbound messages as read and send a Meta read receipt.
+
+        Clears the unread badge in Chats; the read receipt (blue ticks) is best-effort
+        (only the latest inbound message, within the 24h window).
+        """
+        db: AsyncSession = info.context.db
+        conv, latest_wa_id = await crud.mark_conversation_read(db, conversation_id)
+        if conv is None:
+            raise Exception("Conversación no encontrada.")
+        if latest_wa_id:
+            await cloud.send_read_receipt(latest_wa_id)  # best-effort, never raises
+        data = await crud.get_conversation_data(db, conversation_id)
+        return ChatConversation.from_data(data)
