@@ -3,11 +3,12 @@
 Powers the desktop "Chatbot" admin tab: a single ``ChatbotConfigType`` (system prompt +
 business info + toggles + model) that the business edits at runtime.
 """
-from typing import Optional
+from typing import List, Optional
 
 import strawberry
 
 from app.crud.chatbotConfigCrud import ChatbotConfigData
+from app.services.chatbot.prompt_optimizer import PromptOptimizeSuggestionData
 
 
 @strawberry.type
@@ -65,4 +66,35 @@ class SaveChatbotConfigInput:
 class ChatbotConfigResult:
     success: bool = False
     config: Optional[ChatbotConfigType] = None
+    error: Optional[str] = None
+
+
+@strawberry.input
+class OptimizeSystemPromptInput:
+    system_prompt: str
+    tone: Optional[str] = None
+    instruction: Optional[str] = None
+
+
+@strawberry.type
+class SystemPromptSuggestion:
+    optimized_prompt: str
+    removed: List[str]
+    notes: List[str]
+    warnings: List[str]
+
+    @classmethod
+    def from_data(cls, data: PromptOptimizeSuggestionData) -> "SystemPromptSuggestion":
+        return cls(
+            optimized_prompt=data.optimized_prompt,
+            removed=list(data.removed or []),
+            notes=list(data.notes or []),
+            warnings=list(data.warnings or []),
+        )
+
+
+@strawberry.type
+class OptimizeSystemPromptResult:
+    success: bool = False
+    suggestion: Optional[SystemPromptSuggestion] = None
     error: Optional[str] = None
