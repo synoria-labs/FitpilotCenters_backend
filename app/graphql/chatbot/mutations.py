@@ -15,8 +15,12 @@ from app.graphql.auth.permissions import IsAuthenticated
 from app.graphql.chatbot.types import (
     ChatbotConfigResult,
     ChatbotConfigType,
+    OptimizeSystemPromptInput,
+    OptimizeSystemPromptResult,
     SaveChatbotConfigInput,
+    SystemPromptSuggestion,
 )
+from app.services.chatbot import prompt_optimizer
 
 logger = logging.getLogger(__name__)
 
@@ -55,4 +59,33 @@ class ChatbotConfigMutation:
         return ChatbotConfigResult(
             success=True,
             config=ChatbotConfigType.from_data(data) if data else None,
+        )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated])
+    async def optimize_system_prompt(
+        self, info: Info, input: OptimizeSystemPromptInput
+    ) -> OptimizeSystemPromptResult:
+        """Optimize the chatbot system prompt with Anthropic.
+
+        Read-only: it returns a suggestion for the editor and persists nothing. The existing
+        ``save_chatbot_config`` mutation remains the only path that writes the prompt.
+        """
+        db: AsyncSession = info.context.db
+        try:
+            suggestion = await prompt_optimizer.optimize_system_prompt(
+                db,
+                prompt_optimizer.PromptOptimizeRequestData(
+                    system_prompt=input.system_prompt or "",
+                    tone=input.tone or "",
+                    instruction=input.instruction or "",
+                ),
+            )
+        except ValueError as exc:
+            return OptimizeSystemPromptResult(success=False, error=str(exc))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Error optimizing chatbot system prompt")
+            return OptimizeSystemPromptResult(success=False, error=str(exc))
+        return OptimizeSystemPromptResult(
+            success=True,
+            suggestion=SystemPromptSuggestion.from_data(suggestion),
         )
