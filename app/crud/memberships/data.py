@@ -14,7 +14,9 @@ class MembershipPlanData:
     duration_value: int
     duration_unit: str
     class_limit: Optional[int]
+    plan_type: str
     fixed_time_slot: bool
+    is_active: bool
     max_sessions_per_day: Optional[int]
     max_sessions_per_week: Optional[int]
     created_at: datetime
@@ -43,7 +45,9 @@ def _plan_to_data(plan: MembershipPlan) -> MembershipPlanData:
         duration_value=plan.duration_value,
         duration_unit=plan.duration_unit,
         class_limit=plan.class_limit,
+        plan_type=getattr(plan, "plan_type", "fixed_schedule") or "fixed_schedule",
         fixed_time_slot=plan.fixed_time_slot,
+        is_active=bool(getattr(plan, "is_active", True)),
         max_sessions_per_day=plan.max_sessions_per_day,
         max_sessions_per_week=plan.max_sessions_per_week,
         created_at=plan.created_at,

@@ -16,6 +16,8 @@ from app.security.jwt import (
     get_refresh_cookie_max_age_seconds,
 )
 from app.crud.authCrud import get_account_by_username
+from app.crud.usersCrud import get_person_by_id
+from app.crud.permissions import get_capabilities_for_person
 from app.crud.sessionCrud import create_session, revoke_session
 from app.graphql.auth.types import LoginInput, TokenResponse
 from app.models.sessionModel import Session
@@ -56,17 +58,24 @@ class AuthMutation:
         if not verify_password(password, account.password_hash):
             raise HTTPException(status_code=401, detail="Credentials not valid")
 
+        # Load the person's roles + effective capabilities so the client can
+        # gate its UI without an extra round-trip. The backend re-checks
+        # capabilities from the DB on every protected mutation, so these claims
+        # are a UX convenience, not the security boundary.
+        person = await get_person_by_id(db, account.person_id)
+        role_codes = sorted({pr.role.code for pr in (person.roles if person else []) if pr.role})
+        capabilities = sorted(await get_capabilities_for_person(db, person))
+
         session_id = f"session-id{uuid.uuid4().hex}"
-        refresh_token = create_refresh_token({
+        token_payload = {
             "person_id": str(account.person_id),
             "username": account.username,
-            "session_id": session_id
-        })
-        access_token = create_access_token({
-            "person_id": str(account.person_id),
-            "username": account.username,
-            "session_id": session_id
-        })
+            "session_id": session_id,
+            "roles": role_codes,
+            "capabilities": capabilities,
+        }
+        refresh_token = create_refresh_token(token_payload)
+        access_token = create_access_token(token_payload)
 
         payload_refresh = verify_refresh_token(refresh_token)
         exp_timestamp = payload_refresh.get("exp") if payload_refresh else None
@@ -128,6 +137,7 @@ class AuthMutation:
         """Manual refresh token mutation for edge cases"""
         request: Request = info.context.request
         response: Response = info.context.response
+        db = info.context.db
 
         refresh_token = request.cookies.get("refresh_token")
 
@@ -138,11 +148,20 @@ class AuthMutation:
         if not payload:
             raise HTTPException(status_code=401, detail="Invalid refresh token")
 
+        # Re-derive roles/capabilities from the DB so newly granted/revoked
+        # permissions take effect on the next refresh (not only on re-login).
+        person_id = payload.get("person_id")
+        person = await get_person_by_id(db, person_id) if person_id else None
+        role_codes = sorted({pr.role.code for pr in (person.roles if person else []) if pr.role})
+        capabilities = sorted(await get_capabilities_for_person(db, person))
+
         # Create new access token
         new_access_token = create_access_token({
-            "person_id": payload.get("person_id"),
+            "person_id": person_id,
             "username": payload.get("username"),
-            "session_id": payload.get("session_id")
+            "session_id": payload.get("session_id"),
+            "roles": role_codes,
+            "capabilities": capabilities,
         })
 
         # Configurar cookies seguras

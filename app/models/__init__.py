@@ -1,5 +1,5 @@
 # Modern FitPilot models - Modular architecture
-from app.models.userModel import People, Role, PersonRole, Account
+from app.models.userModel import People, Role, PersonRole, Account, RoleCapability
 from app.models.membershipsModel import MembershipPlan, MembershipSubscription, Payment
 from app.models.venueModel import (
     Venue, Seat, SeatType, Asset, AssetType, AssetModel, AssetSeatAssignment, AssetEvent
@@ -21,7 +21,7 @@ from app.models.chatbotModel import ChatbotConfig, ChatbotPendingAction
 from app.models.campaignsModel import Campaign, CampaignVariant, CampaignRecipient
 
 __all__ = [
-    "People", "Role", "PersonRole", "Account",
+    "People", "Role", "PersonRole", "Account", "RoleCapability",
     "MembershipPlan", "MembershipSubscription", "Payment",
     "Venue", "Seat", "SeatType", "Asset", "AssetType", "AssetModel", "AssetSeatAssignment", "AssetEvent",
     "ClassType", "ClassTemplate", "ClassSession", "Reservation", "StandingBooking", "StandingBookingException",

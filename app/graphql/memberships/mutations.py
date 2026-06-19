@@ -16,6 +16,8 @@ from app.services.notification_service import dispatch_event_in_background
 
 from app.crud.membershipsCrud import (
     create_membership_plan,
+    update_membership_plan,
+    set_membership_plan_active,
     create_membership_subscription,
     get_membership_plan_by_id,
     create_member_enrollment,
@@ -26,16 +28,17 @@ from app.crud.membershipsCrud import (
     delete_payment
 )
 from app.crud.membersCrud import get_member_by_id
+from app.crud.permissions import MANAGE_MEMBERSHIP_PLANS
 from app.graphql.memberships.types import (
-    CreateMembershipPlanInput, CreateSubscriptionInput,
+    CreateMembershipPlanInput, UpdateMembershipPlanInput, CreateSubscriptionInput,
     CreateMemberEnrollmentInput, RenewSubscriptionInput,
-    MembershipPlanResponse, SubscriptionResponse,
+    MembershipPlanResponse, MembershipPlanMutationResponse, SubscriptionResponse,
     MemberEnrollmentResponse, SubscriptionRenewalResponse,
     MembershipPlan, Subscription, PaymentRecord,
     UpdatePaymentInput, PaymentMutationResponse
 )
 from app.graphql.members.types import Member
-from app.graphql.auth.permissions import IsAuthenticated
+from app.graphql.auth.permissions import IsAuthenticated, require_capability
 
 
 def _classify_renewal_error(error_text: str) -> tuple[str, str]:
@@ -65,9 +68,13 @@ def _classify_renewal_error(error_text: str) -> tuple[str, str]:
 @strawberry.type
 class MembershipMutation:
     @strawberry.mutation(permission_classes=[IsAuthenticated])
-    async def create_membership_plan(self, info: Info, input: CreateMembershipPlanInput) -> MembershipPlanResponse:
-        """Create a new membership plan"""
+    async def create_membership_plan(self, info: Info, input: CreateMembershipPlanInput) -> MembershipPlanMutationResponse:
+        """Create a new membership plan (requires the manage_membership_plans capability)."""
         db: AsyncSession = info.context.db
+
+        error = await require_capability(info, MANAGE_MEMBERSHIP_PLANS)
+        if error:
+            return MembershipPlanMutationResponse(success=False, plan=None, message=error)
 
         try:
             plan = await create_membership_plan(
@@ -78,7 +85,9 @@ class MembershipMutation:
                 duration_unit=input.duration_unit,
                 description=input.description,
                 class_limit=input.class_limit,
+                plan_type=input.plan_type,
                 fixed_time_slot=input.fixed_time_slot,
+                is_active=input.is_active,
                 max_sessions_per_day=input.max_sessions_per_day,
                 max_sessions_per_week=input.max_sessions_per_week
             )
@@ -86,17 +95,101 @@ class MembershipMutation:
             # Get plan data
             plan_data = await get_membership_plan_by_id(db=db, plan_id=plan.id)
 
-            return MembershipPlanResponse(
+            return MembershipPlanMutationResponse(
+                success=True,
                 plan=MembershipPlan.from_data(plan_data) if plan_data else None,
-                message="Plan de membresÃ­a creado exitosamente"
+                message="Plan de membresía creado exitosamente"
             )
 
         except Exception as e:
             # Rollback in case of error
             await db.rollback()
-            return MembershipPlanResponse(
+            return MembershipPlanMutationResponse(
+                success=False,
                 plan=None,
-                message=f"Error al crear plan de membresÃ­a: {str(e)}"
+                message=f"Error al crear plan de membresía: {str(e)}"
+            )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated])
+    async def update_membership_plan(self, info: Info, input: UpdateMembershipPlanInput) -> MembershipPlanMutationResponse:
+        """Update an existing membership plan (requires the manage_membership_plans capability)."""
+        db: AsyncSession = info.context.db
+
+        error = await require_capability(info, MANAGE_MEMBERSHIP_PLANS)
+        if error:
+            return MembershipPlanMutationResponse(success=False, plan=None, message=error)
+
+        _UNSET = object()
+
+        def _opt(value):
+            # Treat None as "not provided" so partial updates don't wipe fields,
+            # except for explicitly nullable fields handled below.
+            return value if value is not None else _UNSET
+
+        try:
+            plan = await update_membership_plan(
+                db=db,
+                plan_id=input.plan_id,
+                name=_opt(input.name),
+                price=_opt(input.price),
+                duration_value=_opt(input.duration_value),
+                duration_unit=_opt(input.duration_unit),
+                description=input.description if input.description is not None else _UNSET,
+                class_limit=input.class_limit if input.class_limit is not None else _UNSET,
+                plan_type=_opt(input.plan_type),
+                is_active=_opt(input.is_active),
+                max_sessions_per_day=input.max_sessions_per_day if input.max_sessions_per_day is not None else _UNSET,
+                max_sessions_per_week=input.max_sessions_per_week if input.max_sessions_per_week is not None else _UNSET,
+            )
+
+            if plan is None:
+                return MembershipPlanMutationResponse(
+                    success=False, plan=None, message="Plan no encontrado"
+                )
+
+            plan_data = await get_membership_plan_by_id(db=db, plan_id=plan.id)
+            return MembershipPlanMutationResponse(
+                success=True,
+                plan=MembershipPlan.from_data(plan_data) if plan_data else None,
+                message="Plan de membresía actualizado exitosamente"
+            )
+
+        except Exception as e:
+            await db.rollback()
+            return MembershipPlanMutationResponse(
+                success=False, plan=None,
+                message=f"Error al actualizar plan de membresía: {str(e)}"
+            )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated])
+    async def set_membership_plan_active(self, info: Info, plan_id: int, is_active: bool) -> MembershipPlanMutationResponse:
+        """Soft-delete (deactivate) or restore a membership plan."""
+        db: AsyncSession = info.context.db
+
+        error = await require_capability(info, MANAGE_MEMBERSHIP_PLANS)
+        if error:
+            return MembershipPlanMutationResponse(success=False, plan=None, message=error)
+
+        try:
+            plan = await set_membership_plan_active(db=db, plan_id=plan_id, is_active=is_active)
+            if plan is None:
+                return MembershipPlanMutationResponse(
+                    success=False, plan=None, message="Plan no encontrado"
+                )
+
+            plan_data = await get_membership_plan_by_id(db=db, plan_id=plan.id)
+            action = "reactivado" if is_active else "desactivado"
+            return MembershipPlanMutationResponse(
+                success=True,
+                plan=MembershipPlan.from_data(plan_data) if plan_data else None,
+                message=f"Plan {action} exitosamente"
+            )
+
+        except Exception as e:
+            await db.rollback()
+            return MembershipPlanMutationResponse(
+                success=False, plan=None,
+                message=f"Error al cambiar el estado del plan: {str(e)}"
             )
 
     @strawberry.mutation(permission_classes=[IsAuthenticated])
