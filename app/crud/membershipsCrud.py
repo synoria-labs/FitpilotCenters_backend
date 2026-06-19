@@ -29,6 +29,8 @@ from app.crud.memberships.plans import (
     create_membership_plan,
     get_membership_plan_by_id,
     get_membership_plans,
+    update_membership_plan,
+    set_membership_plan_active,
 )
 from app.crud.memberships.standing_bookings import (
     STANDING_BOOKINGS_AVAILABLE,
@@ -69,6 +71,8 @@ __all__ = [
     "get_membership_plans",
     "get_membership_plan_by_id",
     "create_membership_plan",
+    "update_membership_plan",
+    "set_membership_plan_active",
     "create_membership_subscription",
     "create_payment",
     "get_payments",

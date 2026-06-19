@@ -85,6 +85,28 @@ class PersonRole(Base):
     role: Mapped["Role"] = relationship(back_populates="person_roles")
 
 
+class RoleCapability(Base):
+    """Capabilities granted to a role (capability-based authorization).
+
+    A role can be granted named capabilities (e.g. ``manage_membership_plans``).
+    The ``admin`` role is treated as an implicit super-user in code and does not
+    depend on rows here, but it may be seeded for display purposes.
+    """
+
+    __tablename__ = "role_capabilities"
+
+    role_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True
+    )
+    capability: Mapped[str] = mapped_column(String(60), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow
+    )
+
+    # Relationships
+    role: Mapped["Role"] = relationship()
+
+
 class Account(Base):
     """Login accounts for system users"""
 

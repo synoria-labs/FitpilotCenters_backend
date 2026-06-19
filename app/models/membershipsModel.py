@@ -31,7 +31,13 @@ class MembershipPlan(Base):
     duration_value: Mapped[int] = mapped_column(Integer, nullable=False)
     duration_unit: Mapped[str] = mapped_column(String(10), nullable=False)
     class_limit: Mapped[Optional[int]] = mapped_column(Integer)
+    # plan_type discriminates the booking model the plan follows:
+    #   'fixed_schedule' -> recurring weekly slot (uses standing bookings; fixed_time_slot=True)
+    #   'flexible'       -> open time-based access, no fixed slot, no credit limit
+    #   'credit_pack'    -> prepaid credits / pay-per-session (class_limit = number of credits)
+    plan_type: Mapped[str] = mapped_column(String(20), nullable=False, default="fixed_schedule")
     fixed_time_slot: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     max_sessions_per_day: Mapped[Optional[int]] = mapped_column(Integer)
     max_sessions_per_week: Mapped[Optional[int]] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
@@ -42,6 +48,10 @@ class MembershipPlan(Base):
 
     __table_args__ = (
         CheckConstraint("duration_unit IN ('day','week','month')", name="ck_duration_unit"),
+        CheckConstraint(
+            "plan_type IN ('fixed_schedule','flexible','credit_pack')",
+            name="ck_plan_type",
+        ),
     )
 
 

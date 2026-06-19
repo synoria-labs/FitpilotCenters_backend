@@ -16,7 +16,9 @@ class MembershipPlan:
     duration_value: int
     duration_unit: str
     class_limit: Optional[int]
+    plan_type: str
     fixed_time_slot: bool
+    is_active: bool
     max_sessions_per_day: Optional[int]
     max_sessions_per_week: Optional[int]
     created_at: datetime
@@ -31,7 +33,9 @@ class MembershipPlan:
             duration_value=data.duration_value,
             duration_unit=data.duration_unit,
             class_limit=data.class_limit,
+            plan_type=data.plan_type,
             fixed_time_slot=data.fixed_time_slot,
+            is_active=data.is_active,
             max_sessions_per_day=data.max_sessions_per_day,
             max_sessions_per_week=data.max_sessions_per_week,
             created_at=data.created_at
@@ -199,7 +203,24 @@ class CreateMembershipPlanInput:
     duration_unit: str
     description: Optional[str] = None
     class_limit: Optional[int] = None
-    fixed_time_slot: bool = False
+    plan_type: str = "fixed_schedule"
+    fixed_time_slot: Optional[bool] = None  # derived from plan_type when omitted
+    is_active: bool = True
+    max_sessions_per_day: Optional[int] = None
+    max_sessions_per_week: Optional[int] = None
+
+
+@strawberry.input
+class UpdateMembershipPlanInput:
+    plan_id: int
+    name: Optional[str] = None
+    price: Optional[float] = None
+    duration_value: Optional[int] = None
+    duration_unit: Optional[str] = None
+    description: Optional[str] = None
+    class_limit: Optional[int] = None
+    plan_type: Optional[str] = None
+    is_active: Optional[bool] = None
     max_sessions_per_day: Optional[int] = None
     max_sessions_per_week: Optional[int] = None
 
@@ -248,6 +269,13 @@ class RenewSubscriptionInput:
 
 @strawberry.type
 class MembershipPlanResponse:
+    plan: Optional[MembershipPlan]
+    message: str
+
+
+@strawberry.type
+class MembershipPlanMutationResponse:
+    success: bool
     plan: Optional[MembershipPlan]
     message: str
 

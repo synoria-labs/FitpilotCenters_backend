@@ -23,10 +23,10 @@ from app.core.conversions import coerce_int
 @strawberry.type
 class MembershipsQuery:
     @strawberry.field(permission_classes=[IsAuthenticated])
-    async def membership_plans(self, info: Info) -> List[MembershipPlan]:
-        """Get all available membership plans"""
+    async def membership_plans(self, info: Info, include_inactive: bool = False) -> List[MembershipPlan]:
+        """Get membership plans. By default only active plans are returned."""
         db: AsyncSession = info.context.db
-        plans_data = await get_membership_plans(db=db)
+        plans_data = await get_membership_plans(db=db, include_inactive=include_inactive)
         return [MembershipPlan.from_data(plan_data) for plan_data in plans_data]
 
     @strawberry.field(permission_classes=[IsAuthenticated])
