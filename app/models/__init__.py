@@ -19,6 +19,13 @@ from app.models.whatsappModel import (
 from app.models.notificationModel import NotificationSetting, NotificationLog
 from app.models.chatbotModel import ChatbotConfig, ChatbotPendingAction
 from app.models.campaignsModel import Campaign, CampaignVariant, CampaignRecipient
+from app.models.ownerAgentModel import (
+    OwnerAgentConfig,
+    OwnerAgentAuthorizedPhone,
+    OwnerAgentPendingAction,
+    OwnerAgentAuditLog,
+    OwnerTask,
+)
 
 __all__ = [
     "People", "Role", "PersonRole", "Account", "RoleCapability",
@@ -32,5 +39,7 @@ __all__ = [
     "WhatsAppTemplate", "WhatsAppMediaAsset",
     "NotificationSetting", "NotificationLog",
     "ChatbotConfig", "ChatbotPendingAction",
-    "Campaign", "CampaignVariant", "CampaignRecipient"
+    "Campaign", "CampaignVariant", "CampaignRecipient",
+    "OwnerAgentConfig", "OwnerAgentAuthorizedPhone", "OwnerAgentPendingAction",
+    "OwnerAgentAuditLog", "OwnerTask",
 ]

@@ -63,7 +63,7 @@ class _MemberCandidate:
     phone_number: Optional[str]
     active_membership_rank: int
     latest_membership_end: Optional[datetime]
-    membership: Optional[ChatMembershipData]
+    membership: Optional[ChatMembershipData] = None
 
 
 @dataclass
