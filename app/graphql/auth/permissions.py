@@ -45,5 +45,5 @@ async def require_capability(info: Info, capability: str) -> Optional[str]:
 
     db = info.context.db
     if not await person_can(db, user, capability):
-        return "No tienes permiso para gestionar planes de membresía"
+        return "No tienes permiso para realizar esta accion"
     return None

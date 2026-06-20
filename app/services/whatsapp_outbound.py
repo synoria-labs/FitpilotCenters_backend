@@ -40,6 +40,7 @@ CLASS_MARKETING = "marketing"
 # --- send kinds (which subsystem) --------------------------------------------------
 KIND_MANUAL_HUMAN = "manual_human"
 KIND_CHATBOT_REPLY = "chatbot_reply"
+KIND_OWNER_AGENT_REPLY = "owner_agent_reply"
 KIND_PAYMENT_CONFIRM = "payment_confirm"
 KIND_NOTIFICATION = "notification"
 KIND_CAMPAIGN = "campaign"

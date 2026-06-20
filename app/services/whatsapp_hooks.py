@@ -36,6 +36,35 @@ async def on_inbound_message(
     if not text:
         return None
 
+    # Owner/admin agent takes precedence over every customer-facing behavior.
+    # An authorized owner phone must never fall through to the commercial chatbot
+    # or accidentally trigger customer STOP/BAJA handling.
+    try:
+        from app.crud import ownerAgentCrud
+
+        authorized = await ownerAgentCrud.resolve_authorized_phone(db, contact.wa_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("owner-agent authorization lookup failed: %s", e)
+        authorized = None
+
+    if authorized is not None:
+        logger.debug(
+            "on_inbound_message: scheduling owner agent reply msg=%s contact=%s",
+            message.id,
+            contact.wa_id,
+        )
+        from app.services.owner_agent import reply_service as owner_reply_service
+
+        owner_reply_service.schedule_agent_reply(
+            conversation_id=conversation.id,
+            contact_id=contact.id,
+            contact_wa_id=contact.wa_id,
+            authorized_phone_id=authorized.id,
+            message_id=message.id,
+            text=text,
+        )
+        return None
+
     # STOP/BAJA/ALTA keywords consume the turn (consent + bot pause/resume + confirmation); the bot
     # must NOT also reply.
     from app.services import whatsapp_optout

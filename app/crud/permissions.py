@@ -16,7 +16,8 @@ from app.models import People, Role, RoleCapability
 
 # --- Capability registry (used by the settings UI to render the matrix) ----
 MANAGE_MEMBERSHIP_PLANS = "manage_membership_plans"
-ALL_CAPABILITIES: List[str] = [MANAGE_MEMBERSHIP_PLANS]
+MANAGE_OWNER_AGENT = "manage_owner_agent"
+ALL_CAPABILITIES: List[str] = [MANAGE_MEMBERSHIP_PLANS, MANAGE_OWNER_AGENT]
 
 ADMIN_ROLE_CODE = "admin"
 
