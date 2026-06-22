@@ -1,15 +1,18 @@
 import strawberry
 from datetime import datetime
 from typing import Optional, List
-from app.models import People, Role, PersonRole, Account
+from app.models import People, Role, PersonRole, Account as AccountModel
 
 
 @strawberry.type
 class RoleType:
     id: int
-    name: str
     code: str
     description: Optional[str] = None
+
+    @classmethod
+    def from_model(cls, role: Role) -> "RoleType":
+        return cls(id=role.id, code=role.code, description=role.description)
 
 
 @strawberry.type
@@ -58,16 +61,45 @@ class Person:
             updated_at=person.updated_at,
             roles=[
                 PersonRole(
-                    role=RoleType(
-                        id=pr.role.id,
-                        name=pr.role.name,
-                        code=pr.role.code,
-                        description=pr.role.description
-                    ),
-                    assigned_at=pr.created_at
+                    role=RoleType.from_model(pr.role),
+                    assigned_at=pr.created_at,
                 )
                 for pr in person.roles
+                if pr.role
             ] if person.roles else []
+        )
+
+
+@strawberry.type
+class AppUser:
+    """A login user: account credentials + identity + assigned roles."""
+
+    account_id: int
+    person_id: int
+    username: str
+    is_active: bool
+    full_name: Optional[str]
+    email: Optional[str]
+    phone_number: Optional[str]
+    created_at: datetime
+    roles: List[RoleType]
+
+    @classmethod
+    def from_account(cls, account: AccountModel) -> "AppUser":
+        person = getattr(account, "person", None)
+        roles: List[RoleType] = []
+        if person is not None and getattr(person, "roles", None):
+            roles = [RoleType.from_model(pr.role) for pr in person.roles if pr.role]
+        return cls(
+            account_id=account.id,
+            person_id=account.person_id,
+            username=account.username,
+            is_active=account.is_active,
+            full_name=person.full_name if person else None,
+            email=person.email if person else None,
+            phone_number=person.phone_number if person else None,
+            created_at=account.created_at,
+            roles=roles,
         )
 
 
@@ -102,4 +134,33 @@ class ChangePasswordResponse:
 @strawberry.type
 class CreatePersonResponse:
     person: Person
+    message: str
+
+
+# --- User (login account) management -------------------------------------
+@strawberry.input
+class CreateUserInput:
+    full_name: str
+    username: str
+    password: str
+    email: Optional[str] = None
+    phone_number: Optional[str] = None
+    role_ids: List[int] = strawberry.field(default_factory=list)
+
+
+@strawberry.input
+class UpdateUserInput:
+    account_id: int
+    full_name: Optional[str] = None
+    username: Optional[str] = None
+    email: Optional[str] = None
+    phone_number: Optional[str] = None
+    is_active: Optional[bool] = None
+    role_ids: Optional[List[int]] = None
+
+
+@strawberry.type
+class UserMutationResponse:
+    success: bool
+    user: Optional[AppUser]
     message: str
