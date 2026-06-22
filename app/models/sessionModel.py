@@ -1,23 +1,22 @@
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import DateTime, TIMESTAMP, func, ForeignKey
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import String, Text, TIMESTAMP, func
+from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import INET
 from app.db.postgresql import Base
-# from app.models.userModel import People  # Commented until FK is properly set up
 
 
 class Session(Base):
     __tablename__ = "sessions"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    refresh_token: Mapped[str]
-    session: Mapped[str]
+    refresh_token: Mapped[str] = mapped_column(Text, nullable=False)
+    session: Mapped[str] = mapped_column(String(80), nullable=False)
     device_name: Mapped[Optional[str]] = mapped_column(nullable=True)
     ip_address: Mapped[Optional[str]] = mapped_column(INET, nullable=True)
     last_active_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     revoked_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
-    user_agent: Mapped[Optional[str]] = mapped_column(nullable=True)
+    user_agent: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     user_id: Mapped[Optional[int]] = mapped_column(nullable=True)
     created_at: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP(timezone=True),
@@ -33,6 +32,3 @@ class Session(Base):
         TIMESTAMP(timezone=True),
         nullable=True
     )
-
-    # Note: user_id currently doesn't have FK constraint in database
-    # No relationships defined until schema is updated

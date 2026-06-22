@@ -16,6 +16,8 @@ from app.security.jwt import (
 from app.crud.sessionCrud import update_last_active_at, verify_session
 from app.crud.usersCrud import get_person_by_id
 from app.crud.authCrud import get_account_by_username
+from app.crud.permissions import get_capabilities_for_person
+from app.graphql.auth.claims import build_access_claims
 from app.db.postgresql import get_db
 from app.core.logging_config import get_logger
 
@@ -73,18 +75,24 @@ async def _mint_access_from_refresh(
     # Load user/account sequentially
     user = None
     account_id = None
+    capabilities = []
     if person_id:
         user = await get_person_by_id(db, person_id)
+        capabilities = sorted(await get_capabilities_for_person(db, user))
     if username:
         account = await get_account_by_username(db, username)
         if account:
             account_id = account.id
 
-    new_access_token = create_access_token({
-        "person_id": person_id,
-        "username": username,
-        "session_id": payload_refresh.get("session_id"),
-    })
+    new_access_token = create_access_token(
+        build_access_claims(
+            person_id,
+            username,
+            payload_refresh.get("session_id"),
+            user,
+            capabilities,
+        )
+    )
     logger.info("Refreshed access token for user=%s, session=%s", username, session_id[:8])
 
     try:
