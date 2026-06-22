@@ -83,6 +83,27 @@ async def revoke_session(db: AsyncSession, session_id: str) -> None:
     # No flush, no commit - just queue the update
 
 
+async def revoke_other_sessions(db: AsyncSession, user_id: int, keep_session_id: str) -> int:
+    """Revoke every active session for a person except the current one.
+
+    Sessions are keyed by ``user_id`` (= ``People.id``, see auth login) and the
+    token identifier is the ``session`` column. Returns the number of sessions
+    revoked. Does NOT commit — the caller commits atomically with its own changes.
+    """
+    timestamp = datetime.now(timezone.utc)
+    result = await db.execute(
+        update(Session)
+        .where(
+            Session.user_id == user_id,
+            Session.session != keep_session_id,
+            Session.revoked_at.is_(None),
+            Session.deleted_at.is_(None),
+        )
+        .values(revoked_at=timestamp, updated_at=timestamp)
+    )
+    return result.rowcount or 0
+
+
 async def update_refresh_token(db: AsyncSession, session_id: str, refresh_token: str) -> None:
     """Stores a new refresh token for an existing session.
 

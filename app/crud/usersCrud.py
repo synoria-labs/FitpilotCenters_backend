@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.conversions import coerce_int
+from app.crud.sessionCrud import revoke_other_sessions
 from app.models import People, Account, PersonRole, Role
 
 async def get_person_by_id(db: AsyncSession, person_id: int) -> Optional[People]:
@@ -49,21 +50,6 @@ async def list_people(db: AsyncSession, role_code: str = None):
 async def list_members(db: AsyncSession):
     """List all people with member role"""
     return await list_people(db, role_code='member')
-
-async def update_account_password(db: AsyncSession, username: str, password_hash: str) -> Optional[Account]:
-    """Update account password"""
-    stmt = (
-        update(Account)
-        .where(Account.username == username)
-        .where(Account.is_active == True)
-        .values(password_hash=password_hash)
-        .returning(Account.id, Account.username, Account.person_id)
-    )
-
-    result = await db.execute(stmt)
-    row = result.first()
-    await db.commit()
-    return row
 
 async def get_person_roles(db: AsyncSession, person_id: int):
     """Get all roles for a person"""
@@ -341,3 +327,51 @@ async def reset_account_password(
     account.updated_at = datetime.now(timezone.utc)
     await db.commit()
     return account
+
+
+async def update_own_account(
+    db: AsyncSession,
+    account_id: int,
+    *,
+    full_name=_UNSET,
+    email=_UNSET,
+    phone_number=_UNSET,
+    new_password_hash=_UNSET,
+    revoke_other_sessions_now: bool = False,
+    keep_session_id: Optional[str] = None,
+) -> Optional[Account]:
+    """Self-service update of the current user's own People/Account fields.
+
+    Applies provided fields (``_UNSET`` = leave unchanged), optionally sets a new
+    password hash, and optionally revokes the person's other sessions — all in a
+    single atomic commit. ``username``/roles/``is_active`` are intentionally NOT
+    updatable here (admin-only). Password verification is the caller's job.
+    """
+    account_id_value = coerce_int(account_id)
+    if account_id_value is None:
+        return None
+
+    account = await get_user_by_account_id(db, account_id_value)
+    if account is None:
+        return None
+
+    person = account.person
+
+    if person is not None:
+        if full_name is not _UNSET and full_name is not None:
+            person.full_name = full_name
+        if email is not _UNSET:
+            person.email = email
+        if phone_number is not _UNSET:
+            person.phone_number = phone_number
+        person.updated_at = datetime.now(timezone.utc)
+
+    if new_password_hash is not _UNSET:
+        account.password_hash = new_password_hash
+    account.updated_at = datetime.now(timezone.utc)
+
+    if revoke_other_sessions_now and person is not None:
+        await revoke_other_sessions(db, person.id, keep_session_id)
+
+    await db.commit()
+    return await get_user_by_account_id(db, account_id_value)
