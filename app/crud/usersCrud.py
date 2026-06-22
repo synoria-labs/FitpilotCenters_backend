@@ -94,20 +94,53 @@ async def create_person(db: AsyncSession, full_name: str, email: str = None, pho
 # ---------------------------------------------------------------------------
 # User (login account) management — used by the Admin "Usuarios" CRUD.
 # A "user" = People (identity) + Account (login) + roles (PersonRole).
+#
+# This feature is scoped to INTERNAL TEAM only. Customer roles (socios) are
+# never listed nor assignable here; leads have no role/account so they never
+# appear. Keep NON_TEAM_ROLE_CODES in sync with any future customer roles.
 # ---------------------------------------------------------------------------
+
+# Roles that represent customers (socios), not internal team.
+NON_TEAM_ROLE_CODES = frozenset({"member"})
 
 # Sentinel so callers can distinguish "not provided" from "explicitly None".
 _UNSET = object()
 
 
+def _is_team_account(account: Account) -> bool:
+    """True unless the account belongs to a customer-only person (socio).
+
+    Socios generally have no login, but this defensively hides any account whose
+    person has only customer roles from the internal-team list. Accounts with no
+    roles yet are treated as team (a staff login pending role assignment).
+    """
+    person = getattr(account, "person", None)
+    codes = []
+    if person is not None and getattr(person, "roles", None):
+        codes = [pr.role.code for pr in person.roles if pr.role]
+    if not codes:
+        return True
+    return any(code not in NON_TEAM_ROLE_CODES for code in codes)
+
+
 async def list_roles(db: AsyncSession) -> List[Role]:
-    """All roles ordered by code (to populate role pickers)."""
-    result = await db.execute(select(Role).order_by(Role.code))
+    """Internal-team roles ordered by code (for the Usuarios role picker).
+
+    Customer roles (socios, see ``NON_TEAM_ROLE_CODES``) are excluded.
+    """
+    result = await db.execute(
+        select(Role)
+        .where(Role.code.not_in(tuple(NON_TEAM_ROLE_CODES)))
+        .order_by(Role.code)
+    )
     return result.scalars().all()
 
 
 async def list_users(db: AsyncSession, include_inactive: bool = True) -> List[Account]:
-    """List login accounts (staff users) with their person + roles loaded."""
+    """List internal-team login accounts with their person + roles loaded.
+
+    Customer-only (socio) accounts are filtered out — this section is staff-only.
+    """
     query = (
         select(Account)
         .options(
@@ -123,7 +156,7 @@ async def list_users(db: AsyncSession, include_inactive: bool = True) -> List[Ac
         query = query.where(Account.is_active.is_(True))
 
     result = await db.execute(query)
-    return result.scalars().all()
+    return [account for account in result.scalars().all() if _is_team_account(account)]
 
 
 async def get_user_by_account_id(db: AsyncSession, account_id: int) -> Optional[Account]:
@@ -170,12 +203,16 @@ async def _set_person_roles(db: AsyncSession, person_id: int, role_ids: List) ->
     target = set(normalized)
 
     if target:
-        found = set(
-            (await db.execute(select(Role.id).where(Role.id.in_(target)))).scalars().all()
-        )
+        rows = (
+            await db.execute(select(Role.id, Role.code).where(Role.id.in_(target)))
+        ).all()
+        found = {row.id for row in rows}
         missing = target - found
         if missing:
             raise ValueError(f"Roles inexistentes: {sorted(missing)}")
+        non_team = sorted(row.code for row in rows if row.code in NON_TEAM_ROLE_CODES)
+        if non_team:
+            raise ValueError(f"No se pueden asignar roles de socio a usuarios internos: {non_team}")
 
     current = (
         await db.execute(select(PersonRole.role_id).where(PersonRole.person_id == person_id))
