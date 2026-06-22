@@ -120,17 +120,6 @@ class UpdatePersonInput:
     wa_id: Optional[str] = None
 
 
-@strawberry.input
-class ChangePasswordInput:
-    username: str
-    password: str
-
-
-@strawberry.type
-class ChangePasswordResponse:
-    message: str
-
-
 @strawberry.type
 class CreatePersonResponse:
     person: Person
@@ -164,3 +153,13 @@ class UserMutationResponse:
     success: bool
     user: Optional[AppUser]
     message: str
+
+
+# --- Self-service (current user updates their own account) ----------------
+@strawberry.input
+class UpdateMyAccountInput:
+    full_name: Optional[str] = None
+    email: Optional[str] = None
+    phone_number: Optional[str] = None
+    current_password: Optional[str] = None
+    new_password: Optional[str] = None

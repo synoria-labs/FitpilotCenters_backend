@@ -60,6 +60,7 @@ async def test_build_context_accepts_active_access_token(monkeypatch):
 
     assert context.user is user
     assert context.account_id == 99
+    assert context.session_id == "session-1"
 
 
 @pytest.mark.asyncio
@@ -181,6 +182,7 @@ async def test_build_context_refreshes_active_refresh_token(monkeypatch):
 
     assert context.user is user
     assert context.account_id == 99
+    assert context.session_id == "session-1"
     assert touched == ["session-1"]
     assert response.headers["x-access-token"] == "new-access"
     assert response.cookies[0]["key"] == "access_token"

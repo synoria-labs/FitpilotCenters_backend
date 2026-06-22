@@ -31,6 +31,7 @@ class Context(BaseContext):
     response: Response | None
     user: object = None
     account_id: int = None
+    session_id: str = None
 
 
 async def _get_active_session(db: AsyncSession, session_id_value):
@@ -62,11 +63,11 @@ async def _mint_access_from_refresh(
     payload_refresh = verify_refresh_token(refresh_token)
     if payload_refresh is None:
         logger.warning("Invalid refresh token provided; skipping context auth")
-        return None, None
+        return None, None, None
 
     session_id_value = payload_refresh.get("session_id")
     if await _get_active_session(db, session_id_value) is None:
-        return None, None
+        return None, None, None
     session_id = str(session_id_value)
 
     person_id = payload_refresh.get("person_id")
@@ -113,7 +114,7 @@ async def _mint_access_from_refresh(
         )
         response.headers["x-access-token"] = new_access_token
 
-    return user, account_id
+    return user, account_id, session_id
 
 
 async def build_context(
@@ -126,6 +127,7 @@ async def build_context(
 
     user = None
     account_id = None
+    session_id_ctx = None
 
     # Priorizar cookies HTTP-Only, luego headers para compatibilidad
     access_token = request.cookies.get("access_token")
@@ -151,7 +153,7 @@ async def build_context(
             session_id = payload.get("session_id")
 
             if await _get_active_session(db, session_id) is None:
-                return Context(db=db, request=request, response=response, user=None, account_id=None)
+                return Context(db=db, request=request, response=response, user=None, account_id=None, session_id=None)
 
             # Execute queries sequentially to avoid AsyncPG concurrent operation errors
             if person_id:
@@ -160,13 +162,14 @@ async def build_context(
                 account = await get_account_by_username(db, username)
                 if account:
                     account_id = account.id
+            session_id_ctx = session_id
         else:
             # Access token invalid/expired -> attempt refresh
             if refresh_token:
-                user, account_id = await _mint_access_from_refresh(db, request, response, refresh_token)
+                user, account_id, session_id_ctx = await _mint_access_from_refresh(db, request, response, refresh_token)
     elif refresh_token:
         # No access token present but refresh_cookie exists -> proactively mint new access token
-        user, account_id = await _mint_access_from_refresh(db, request, response, refresh_token)
+        user, account_id, session_id_ctx = await _mint_access_from_refresh(db, request, response, refresh_token)
 
-    return Context(db=db, request=request, response=response, user=user, account_id=account_id)
+    return Context(db=db, request=request, response=response, user=user, account_id=account_id, session_id=session_id_ctx)
 

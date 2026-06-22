@@ -4,7 +4,9 @@ import strawberry
 from sqlalchemy.ext.asyncio import AsyncSession
 from strawberry.types import Info
 
-from app.crud.usersCrud import list_people, get_person_by_id, list_users, list_roles
+from app.crud.usersCrud import (
+    list_people, get_person_by_id, list_users, list_roles, get_user_by_account_id
+)
 from app.crud.permissions import MANAGE_USERS
 from app.db.postgresql import get_db
 from app.graphql.auth.permissions import IsAuthenticated, require_capability
@@ -41,6 +43,18 @@ class UserQuery:
 
         roles = await list_roles(db=db)
         return [RoleType.from_model(role) for role in roles]
+
+    @strawberry.field(permission_classes=[IsAuthenticated])
+    async def my_account(self, info: Info) -> Optional[AppUser]:
+        """The authenticated user's own account (self-service)."""
+        db = info.context.db
+
+        account_id = getattr(info.context, "account_id", None)
+        if account_id is None:
+            return None
+
+        account = await get_user_by_account_id(db=db, account_id=account_id)
+        return AppUser.from_account(account) if account else None
 
     @strawberry.field(permission_classes=[IsAuthenticated])
     async def person(self, info: Info, person_id: int) -> Optional[Person]:
