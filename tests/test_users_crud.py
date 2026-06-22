@@ -22,8 +22,23 @@ from app.crud.usersCrud import (
     set_account_active,
     reset_account_password,
     username_exists,
+    list_roles,
+    NON_TEAM_ROLE_CODES,
 )
 from app.models import Account, Role
+
+
+async def _get_or_make_member_role(db) -> Role:
+    """Reuse the existing 'member' (socio) role or create it (rolled back)."""
+    existing = (
+        await db.execute(select(Role).where(Role.code == "member"))
+    ).scalar_one_or_none()
+    if existing:
+        return existing
+    role = Role(code="member", description="Socio")
+    db.add(role)
+    await db.flush()
+    return role
 
 
 async def _make_role(db, code_prefix: str) -> Role:
@@ -109,6 +124,23 @@ async def test_set_account_active_toggle(db):
 
     reactivated = await set_account_active(db=db, account_id=account.id, is_active=True)
     assert reactivated.is_active is True
+
+
+async def test_list_roles_excludes_customer_roles(db):
+    # Ensure a 'member' (socio) role exists, then confirm it's filtered out.
+    await _get_or_make_member_role(db)
+    roles = await list_roles(db)
+    returned_codes = {r.code for r in roles}
+    assert returned_codes.isdisjoint(NON_TEAM_ROLE_CODES)
+
+
+async def test_cannot_assign_customer_role_to_user(db):
+    member_role = await _get_or_make_member_role(db)
+    with pytest.raises(ValueError):
+        await create_user_with_account(
+            db=db, full_name="Socio", username=_uname(), password_hash="h",
+            role_ids=[member_role.id],
+        )
 
 
 async def test_reset_account_password(db):
