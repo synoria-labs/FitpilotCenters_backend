@@ -18,7 +18,20 @@ from app.models import People, Role, RoleCapability
 MANAGE_MEMBERSHIP_PLANS = "manage_membership_plans"
 MANAGE_OWNER_AGENT = "manage_owner_agent"
 MANAGE_USERS = "manage_users"
-ALL_CAPABILITIES: List[str] = [MANAGE_MEMBERSHIP_PLANS, MANAGE_OWNER_AGENT, MANAGE_USERS]
+# POS / caja capabilities
+OPERATE_POS = "operate_pos"  # run the checkout (create sales)
+MANAGE_CASH_SESSION = "manage_cash_session"  # open/close caja, corte, cash movements
+VIEW_POS_REPORTS = "view_pos_reports"  # read sales + cash-session reports
+MANAGE_PRODUCTS = "manage_products"  # CRUD of the product catalog / inventory
+ALL_CAPABILITIES: List[str] = [
+    MANAGE_MEMBERSHIP_PLANS,
+    MANAGE_OWNER_AGENT,
+    MANAGE_USERS,
+    OPERATE_POS,
+    MANAGE_CASH_SESSION,
+    VIEW_POS_REPORTS,
+    MANAGE_PRODUCTS,
+]
 
 ADMIN_ROLE_CODE = "admin"
 

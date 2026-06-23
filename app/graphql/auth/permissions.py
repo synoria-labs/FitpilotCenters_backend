@@ -89,3 +89,23 @@ async def require_step_up_proof(info: Info, proof: Optional[str]) -> Optional[st
         if destination not in contacts:
             return "La verificación no corresponde a tu cuenta"
     return None
+
+
+async def require_any_capability(info: Info, capabilities) -> Optional[str]:
+    """Return None if the requester holds ANY of ``capabilities``, else an error message.
+
+    Authoritative DB-backed check (admin is an implicit super-user). Used where a
+    screen is reachable by more than one role, e.g. the Caja tab (manage_cash_session)
+    also needs to read its live corte (view_pos_reports).
+    """
+    user = getattr(info.context, "user", None)
+    if user is None:
+        return "Acceso no autorizado"
+
+    from app.crud.permissions import person_can
+
+    db = info.context.db
+    for capability in capabilities:
+        if await person_can(db, user, capability):
+            return None
+    return "No tienes permiso para realizar esta accion"
