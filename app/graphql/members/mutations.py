@@ -11,7 +11,8 @@ from strawberry.types import Info
 
 from app.crud.membersCrud import create_member, update_member, delete_member_and_related
 from app.graphql.members.types import Member, MemberResponse, DeleteMemberResponse
-from app.graphql.auth.permissions import IsAuthenticated
+from app.graphql.auth.permissions import IsAuthenticated, require_step_up_proof
+from app.core.verification_config import step_up_enabled
 from app.crud.authCrud import get_account_by_id
 from app.security.hashing import verify_password
 from app.services.image_service import ImageService
@@ -196,49 +197,52 @@ class MemberMutation:
             )
 
     @strawberry.mutation(name="deleteMember", permission_classes=[IsAuthenticated])
-    async def delete_member(self, info: Info, member_id: int, admin_password: str) -> DeleteMemberResponse:
-        """Delete a member after validating administrator password."""
+    async def delete_member(
+        self,
+        info: Info,
+        member_id: int,
+        admin_password: Optional[str] = None,
+        step_up_proof: Optional[str] = None,
+    ) -> DeleteMemberResponse:
+        """Delete a member. Requires admin role + a second factor.
+
+        When step-up verification is enabled, a single-use ``step_up_proof`` is
+        required; otherwise the admin re-enters their password (legacy path).
+        """
         db: AsyncSession = info.context.db
 
         member_id = coerce_int(member_id)
         if member_id is None:
-            return DeleteMemberResponse(
-                success=False,
-                message="ID de socio invalido"
-            )
-
-        if not admin_password:
-            return DeleteMemberResponse(
-                success=False,
-                message="La contrasena de administrador es obligatoria"
-            )
+            return DeleteMemberResponse(success=False, message="ID de socio invalido")
 
         account_id = getattr(info.context, "account_id", None)
         if not account_id:
-            return DeleteMemberResponse(
-                success=False,
-                message="Acceso no autorizado"
-            )
+            return DeleteMemberResponse(success=False, message="Acceso no autorizado")
 
         account = await get_account_by_id(db=db, account_id=account_id)
         if not account or not account.person:
             return DeleteMemberResponse(
-                success=False,
-                message="Cuenta de administrador no encontrada"
+                success=False, message="Cuenta de administrador no encontrada"
             )
 
         roles = {role.role.code for role in account.person.roles if role.role}
         if "admin" not in roles:
-            return DeleteMemberResponse(
-                success=False,
-                message="Se requiere rol de administrador"
-            )
+            return DeleteMemberResponse(success=False, message="Se requiere rol de administrador")
 
-        if not verify_password(admin_password, account.password_hash):
-            return DeleteMemberResponse(
-                success=False,
-                message="Contrasena de administrador incorrecta"
-            )
+        # Second factor: step-up proof when enabled, else legacy admin password.
+        if step_up_enabled():
+            error = await require_step_up_proof(info, step_up_proof)
+            if error:
+                return DeleteMemberResponse(success=False, message=error)
+        else:
+            if not admin_password:
+                return DeleteMemberResponse(
+                    success=False, message="La contrasena de administrador es obligatoria"
+                )
+            if not verify_password(admin_password, account.password_hash):
+                return DeleteMemberResponse(
+                    success=False, message="Contrasena de administrador incorrecta"
+                )
 
         success, message = await delete_member_and_related(db=db, member_id=member_id)
         return DeleteMemberResponse(success=success, message=message)

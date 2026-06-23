@@ -38,6 +38,7 @@ from app.graphql.permissions.queries import PermissionsQuery
 from app.graphql.permissions.mutations import PermissionsMutation
 from app.graphql.owner_agent.queries import OwnerAgentQuery
 from app.graphql.owner_agent.mutations import OwnerAgentMutation
+from app.graphql.verification.mutations import StepUpMutation
 from app.graphql.pos.queries import PosQuery
 from app.graphql.pos.mutations import PosMutation
 
@@ -68,7 +69,7 @@ class Query(UserQuery, MembersQuery, MembershipsQuery, LeadsQuery, ReservationQu
         return "Hello from GraphQL!"
 
 @strawberry.type
-class Mutation(AuthMutation, UserMutation, MemberMutation, MembershipMutation, LeadsMutation, ReservationMutation, StandingBookingMutation, SessionMutation, ClassSessionMutations, WhatsAppChatMutation, WhatsAppTemplateMutation, NotificationSettingsMutation, ChatbotConfigMutation, CampaignsMutation, PermissionsMutation, OwnerAgentMutation, PosMutation):
+class Mutation(AuthMutation, UserMutation, MemberMutation, MembershipMutation, LeadsMutation, ReservationMutation, StandingBookingMutation, SessionMutation, ClassSessionMutations, WhatsAppChatMutation, WhatsAppTemplateMutation, NotificationSettingsMutation, ChatbotConfigMutation, CampaignsMutation, PermissionsMutation, OwnerAgentMutation, PosMutation, StepUpMutation):
     pass
 
 

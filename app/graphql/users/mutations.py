@@ -1,4 +1,5 @@
 import strawberry
+from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from strawberry.types import Info
 
@@ -14,7 +15,7 @@ from app.crud.usersCrud import (
     username_exists,
 )
 from app.crud.permissions import MANAGE_USERS
-from app.graphql.auth.permissions import IsAuthenticated, require_capability
+from app.graphql.auth.permissions import IsAuthenticated, require_capability, require_step_up_proof
 from app.graphql.users.types import (
     CreatePersonInput, CreatePersonResponse, Person,
     CreateUserInput, UpdateUserInput, UserMutationResponse, AppUser,
@@ -49,13 +50,17 @@ class UserMutation:
     # User (login account) management — requires the manage_users capability.
     # ------------------------------------------------------------------
     @strawberry.mutation(permission_classes=[IsAuthenticated])
-    async def create_user(self, info: Info, input: CreateUserInput) -> UserMutationResponse:
+    async def create_user(self, info: Info, input: CreateUserInput, step_up_proof: Optional[str] = None) -> UserMutationResponse:
         """Create a login account (person + credentials + roles)."""
         db: AsyncSession = info.context.db
 
         error = await require_capability(info, MANAGE_USERS)
         if error:
             return UserMutationResponse(success=False, user=None, message=error)
+
+        step_error = await require_step_up_proof(info, step_up_proof)
+        if step_error:
+            return UserMutationResponse(success=False, user=None, message=step_error)
 
         full_name = (input.full_name or "").strip()
         username = (input.username or "").strip()
@@ -98,13 +103,17 @@ class UserMutation:
             )
 
     @strawberry.mutation(permission_classes=[IsAuthenticated])
-    async def update_user(self, info: Info, input: UpdateUserInput) -> UserMutationResponse:
+    async def update_user(self, info: Info, input: UpdateUserInput, step_up_proof: Optional[str] = None) -> UserMutationResponse:
         """Update a user's identity, username, active state and/or roles."""
         db: AsyncSession = info.context.db
 
         error = await require_capability(info, MANAGE_USERS)
         if error:
             return UserMutationResponse(success=False, user=None, message=error)
+
+        step_error = await require_step_up_proof(info, step_up_proof)
+        if step_error:
+            return UserMutationResponse(success=False, user=None, message=step_error)
 
         def _opt(value):
             return value if value is not None else _UNSET
@@ -143,13 +152,17 @@ class UserMutation:
             )
 
     @strawberry.mutation(permission_classes=[IsAuthenticated])
-    async def set_user_active(self, info: Info, account_id: int, is_active: bool) -> UserMutationResponse:
+    async def set_user_active(self, info: Info, account_id: int, is_active: bool, step_up_proof: Optional[str] = None) -> UserMutationResponse:
         """Activate or deactivate (soft-delete) a login account."""
         db: AsyncSession = info.context.db
 
         error = await require_capability(info, MANAGE_USERS)
         if error:
             return UserMutationResponse(success=False, user=None, message=error)
+
+        step_error = await require_step_up_proof(info, step_up_proof)
+        if step_error:
+            return UserMutationResponse(success=False, user=None, message=step_error)
 
         try:
             account = await set_account_active(db=db, account_id=account_id, is_active=is_active)
@@ -169,13 +182,17 @@ class UserMutation:
             )
 
     @strawberry.mutation(permission_classes=[IsAuthenticated])
-    async def reset_user_password(self, info: Info, account_id: int, password: str) -> UserMutationResponse:
+    async def reset_user_password(self, info: Info, account_id: int, password: str, step_up_proof: Optional[str] = None) -> UserMutationResponse:
         """Set a new password for a user account."""
         db: AsyncSession = info.context.db
 
         error = await require_capability(info, MANAGE_USERS)
         if error:
             return UserMutationResponse(success=False, user=None, message=error)
+
+        step_error = await require_step_up_proof(info, step_up_proof)
+        if step_error:
+            return UserMutationResponse(success=False, user=None, message=step_error)
 
         if not (password or "").strip():
             return UserMutationResponse(success=False, user=None, message="La contraseña es obligatoria")
@@ -201,13 +218,17 @@ class UserMutation:
     # account_id/session_id come from the authenticated context — never the client.
     # ------------------------------------------------------------------
     @strawberry.mutation(permission_classes=[IsAuthenticated])
-    async def update_my_account(self, info: Info, input: UpdateMyAccountInput) -> UserMutationResponse:
+    async def update_my_account(self, info: Info, input: UpdateMyAccountInput, step_up_proof: Optional[str] = None) -> UserMutationResponse:
         """Let the authenticated user edit their own name/email/phone/password."""
         db: AsyncSession = info.context.db
 
         account_id = getattr(info.context, "account_id", None)
         if account_id is None:
             return UserMutationResponse(success=False, user=None, message="Acceso no autorizado")
+
+        step_error = await require_step_up_proof(info, step_up_proof)
+        if step_error:
+            return UserMutationResponse(success=False, user=None, message=step_error)
 
         _UNSET = object()
         full_name = _UNSET
