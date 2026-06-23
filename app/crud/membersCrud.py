@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone, date
-from typing import Optional, List, Tuple
+from typing import Optional, List
 import time
 
 import logging
@@ -55,29 +55,6 @@ class MemberData:
     active_standing_booking: Optional[StandingBookingInfo]
     total_payments: float
     last_activity: Optional[datetime]
-
-
-def _member_sort_key(member: 'MemberData') -> Tuple[int, float, str]:
-    """Sort key placing active memberships first, then by end date descending."""
-    membership = member.active_membership
-    status = (membership.status or '').lower() if membership and membership.status else ''
-
-    if 'active' in status or 'activo' in status:
-        priority = 0
-    elif membership:
-        priority = 1
-    else:
-        priority = 2
-
-    end_timestamp = 0.0
-    if membership and membership.end_date:
-        try:
-            end_timestamp = membership.end_date.timestamp()
-        except Exception:  # noqa: BLE001
-            end_timestamp = 0.0
-
-    full_name = (member.full_name or '').lower()
-    return (priority, -end_timestamp, full_name)
 
 
 def _build_member_data(person: People) -> MemberData:
@@ -204,14 +181,8 @@ def _build_member_data(person: People) -> MemberData:
     )
 
 
-async def get_members_list(
-    db: AsyncSession,
-    limit: Optional[int] = None,
-    offset: int = 0,
-    search: Optional[str] = None
-) -> List[MemberData]:
-    """Get comprehensive list of members with optional filters."""
-
+def _membership_sort_expressions():
+    """SQL ordering helpers shared by member list queries."""
     current_time = datetime.now(timezone.utc)
 
     active_membership_rank = (
@@ -240,31 +211,20 @@ async def get_members_list(
         .scalar_subquery()
     )
 
-    # Base query for people with member role
+    return active_membership_rank, latest_membership_end
+
+
+def _apply_member_filters(query, search: Optional[str] = None):
     query = (
-        select(People)
+        query
         .join(PersonRole)
         .join(Role)
-        .options(
-            selectinload(People.roles).selectinload(PersonRole.role),
-            selectinload(People.subscriptions).selectinload(MembershipSubscription.plan),
-            selectinload(People.payments),
-            selectinload(People.reservations).selectinload(Reservation.session),
-            selectinload(People.standing_bookings).selectinload(StandingBooking.template).selectinload(ClassTemplate.class_type),
-            selectinload(People.standing_bookings).selectinload(StandingBooking.template).selectinload(ClassTemplate.venue),
-            selectinload(People.standing_bookings).selectinload(StandingBooking.template).selectinload(ClassTemplate.instructor)
-        )
         .where(Role.code == 'member')
         .where(People.deleted_at.is_(None))
         .where(
             select(MembershipSubscription.id)
             .where(MembershipSubscription.person_id == People.id)
             .exists()
-        )
-        .order_by(
-            func.coalesce(active_membership_rank, 0).desc(),
-            latest_membership_end.desc(),
-            People.full_name
         )
     )
 
@@ -278,6 +238,40 @@ async def get_members_list(
             )
         )
 
+    return query
+
+
+async def get_members_list(
+    db: AsyncSession,
+    limit: Optional[int] = None,
+    offset: int = 0,
+    search: Optional[str] = None
+) -> List[MemberData]:
+    """Get comprehensive list of members with optional filters."""
+    active_membership_rank, latest_membership_end = _membership_sort_expressions()
+
+    # Base query for people with member role
+    query = _apply_member_filters(
+        select(People)
+        .options(
+            selectinload(People.roles).selectinload(PersonRole.role),
+            selectinload(People.subscriptions).selectinload(MembershipSubscription.plan),
+            selectinload(People.payments),
+            selectinload(People.reservations).selectinload(Reservation.session),
+            selectinload(People.standing_bookings).selectinload(StandingBooking.template).selectinload(ClassTemplate.class_type),
+            selectinload(People.standing_bookings).selectinload(StandingBooking.template).selectinload(ClassTemplate.venue),
+            selectinload(People.standing_bookings).selectinload(StandingBooking.template).selectinload(ClassTemplate.instructor)
+        ),
+        search=search,
+    )
+
+    query = query.order_by(
+        func.coalesce(active_membership_rank, 0).desc(),
+        latest_membership_end.desc().nullslast(),
+        People.full_name.asc().nullslast(),
+        People.id.asc(),
+    )
+
     if offset:
         query = query.offset(offset)
 
@@ -287,10 +281,17 @@ async def get_members_list(
     result = await db.execute(query)
     people = result.scalars().all()
 
-    members_data = [_build_member_data(person) for person in people]
+    return [_build_member_data(person) for person in people]
 
-    members_data.sort(key=_member_sort_key)
-    return members_data
+
+async def count_members(
+    db: AsyncSession,
+    search: Optional[str] = None,
+) -> int:
+    """Count members matching the same filters as get_members_list."""
+    query = _apply_member_filters(select(func.count(func.distinct(People.id))), search=search)
+    result = await db.execute(query)
+    return int(result.scalar_one() or 0)
 
 
 async def get_member_by_id(db: AsyncSession, member_id: int) -> Optional[MemberData]:

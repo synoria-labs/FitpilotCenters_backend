@@ -127,6 +127,12 @@ class Member:
         )
 
 
+@strawberry.type
+class PaginatedMembers:
+    items: List[Member]
+    total: int
+
+
 @strawberry.input
 class CreateMemberInput:
     full_name: str
