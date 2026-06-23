@@ -47,3 +47,23 @@ async def require_capability(info: Info, capability: str) -> Optional[str]:
     if not await person_can(db, user, capability):
         return "No tienes permiso para realizar esta accion"
     return None
+
+
+async def require_any_capability(info: Info, capabilities) -> Optional[str]:
+    """Return None if the requester holds ANY of ``capabilities``, else an error message.
+
+    Authoritative DB-backed check (admin is an implicit super-user). Used where a
+    screen is reachable by more than one role, e.g. the Caja tab (manage_cash_session)
+    also needs to read its live corte (view_pos_reports).
+    """
+    user = getattr(info.context, "user", None)
+    if user is None:
+        return "Acceso no autorizado"
+
+    from app.crud.permissions import person_can
+
+    db = info.context.db
+    for capability in capabilities:
+        if await person_can(db, user, capability):
+            return None
+    return "No tienes permiso para realizar esta accion"

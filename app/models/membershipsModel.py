@@ -90,7 +90,8 @@ class Payment(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     subscription_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("membership_subscriptions.id"))
-    person_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("people.id"), nullable=False)
+    # Nullable since the POS can sell products to a walk-in customer (no member).
+    person_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("people.id"))
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     paid_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     method: Mapped[str] = mapped_column(String(40), nullable=False)
