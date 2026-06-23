@@ -116,9 +116,14 @@ async def renew_subscription_with_standing_booking(
     external_reference: Optional[str] = None,
     recorded_by: Optional[int] = None,
     auto_materialize: bool = True,
+    commit: bool = True,
 ) -> tuple[MembershipSubscription, Payment, MembershipPlan, Optional[int], dict]:
     """
     Renew a subscription and handle standing booking creation for fixed time slot plans.
+
+    When ``commit`` is False the caller owns the transaction (e.g. a POS sale that
+    wraps several operations into one atomic commit); ids are still available via
+    the earlier flushes.
 
     Returns:
         - MembershipSubscription: The renewed subscription
@@ -281,14 +286,15 @@ async def renew_subscription_with_standing_booking(
         )
         _assert_materialization_success(materialization_stats)
 
-    # Commit transaction
-    logger.info("Committing renewal transaction for subscription %s", subscription.id)
-    await db.commit()
+    # Commit transaction (unless the caller owns it, e.g. a POS sale)
+    if commit:
+        logger.info("Committing renewal transaction for subscription %s", subscription.id)
+        await db.commit()
 
-    # Refresh objects
-    await db.refresh(subscription)
-    await db.refresh(payment)
-    await db.refresh(plan)
+        # Refresh objects
+        await db.refresh(subscription)
+        await db.refresh(payment)
+        await db.refresh(plan)
 
     return subscription, payment, plan, standing_booking_id, materialization_stats
 
@@ -311,9 +317,13 @@ async def create_member_enrollment_with_standing_booking(
     external_reference: Optional[str] = None,
     recorded_by: Optional[int] = None,
     auto_materialize: bool = True,
+    commit: bool = True,
 ) -> tuple[People, MembershipSubscription, Payment, MembershipPlan, Optional[int], dict]:
     """
     Create member enrollment with automatic standing booking for fixed time slot plans.
+
+    When ``commit`` is False the caller owns the transaction (e.g. a POS sale that
+    wraps several operations into one atomic commit).
 
     Returns:
         - People: The created member
@@ -361,7 +371,8 @@ async def create_member_enrollment_with_standing_booking(
     elif plan.fixed_time_slot:
         raise ValueError("Debe seleccionar un horario para registrar este plan.")
 
-    # Final commit
-    await db.commit()
+    # Final commit (unless the caller owns the transaction, e.g. a POS sale)
+    if commit:
+        await db.commit()
 
     return person, subscription, payment, plan, standing_booking_id, materialization_stats

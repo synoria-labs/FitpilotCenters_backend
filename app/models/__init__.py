@@ -19,6 +19,9 @@ from app.models.whatsappModel import (
 from app.models.notificationModel import NotificationSetting, NotificationLog
 from app.models.chatbotModel import ChatbotConfig, ChatbotPendingAction
 from app.models.campaignsModel import Campaign, CampaignVariant, CampaignRecipient
+from app.models.posModel import (
+    Product, CashSession, CashMovement, Sale, SaleLineItem, SalePayment
+)
 from app.models.ownerAgentModel import (
     OwnerAgentConfig,
     OwnerAgentAuthorizedPhone,
@@ -40,6 +43,7 @@ __all__ = [
     "NotificationSetting", "NotificationLog",
     "ChatbotConfig", "ChatbotPendingAction",
     "Campaign", "CampaignVariant", "CampaignRecipient",
+    "Product", "CashSession", "CashMovement", "Sale", "SaleLineItem", "SalePayment",
     "OwnerAgentConfig", "OwnerAgentAuthorizedPhone", "OwnerAgentPendingAction",
     "OwnerAgentAuditLog", "OwnerTask",
 ]

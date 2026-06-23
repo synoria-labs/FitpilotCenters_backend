@@ -38,6 +38,8 @@ from app.graphql.permissions.queries import PermissionsQuery
 from app.graphql.permissions.mutations import PermissionsMutation
 from app.graphql.owner_agent.queries import OwnerAgentQuery
 from app.graphql.owner_agent.mutations import OwnerAgentMutation
+from app.graphql.pos.queries import PosQuery
+from app.graphql.pos.mutations import PosMutation
 
 logger = logging.getLogger(__name__)
 
@@ -60,13 +62,13 @@ except ImportError as e:
         pass
 
 @strawberry.type
-class Query(UserQuery, MembersQuery, MembershipsQuery, LeadsQuery, ReservationQuery, StandingBookingQuery, SessionQuery, ClassSessionQueries, DashboardQuery, WhatsAppChatQuery, WhatsAppTemplateQuery, NotificationSettingsQuery, ChatbotConfigQuery, CampaignsQuery, PermissionsQuery, OwnerAgentQuery):
+class Query(UserQuery, MembersQuery, MembershipsQuery, LeadsQuery, ReservationQuery, StandingBookingQuery, SessionQuery, ClassSessionQueries, DashboardQuery, WhatsAppChatQuery, WhatsAppTemplateQuery, NotificationSettingsQuery, ChatbotConfigQuery, CampaignsQuery, PermissionsQuery, OwnerAgentQuery, PosQuery):
     @strawberry.field
     def hello(self) -> str:
         return "Hello from GraphQL!"
 
 @strawberry.type
-class Mutation(AuthMutation, UserMutation, MemberMutation, MembershipMutation, LeadsMutation, ReservationMutation, StandingBookingMutation, SessionMutation, ClassSessionMutations, WhatsAppChatMutation, WhatsAppTemplateMutation, NotificationSettingsMutation, ChatbotConfigMutation, CampaignsMutation, PermissionsMutation, OwnerAgentMutation):
+class Mutation(AuthMutation, UserMutation, MemberMutation, MembershipMutation, LeadsMutation, ReservationMutation, StandingBookingMutation, SessionMutation, ClassSessionMutations, WhatsAppChatMutation, WhatsAppTemplateMutation, NotificationSettingsMutation, ChatbotConfigMutation, CampaignsMutation, PermissionsMutation, OwnerAgentMutation, PosMutation):
     pass
 
 
