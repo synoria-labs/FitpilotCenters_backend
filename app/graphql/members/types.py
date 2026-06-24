@@ -15,6 +15,7 @@ class ActiveStandingBooking:
     start_time_local: str
     venue_name: Optional[str]
     instructor_name: Optional[str]
+    seat_id: Optional[int] = None
 
     @classmethod
     def from_info(cls, info: Optional[StandingBookingInfo]) -> Optional["ActiveStandingBooking"]:
@@ -28,7 +29,8 @@ class ActiveStandingBooking:
             weekday=info.weekday,
             start_time_local=info.start_time_local,
             venue_name=info.venue_name,
-            instructor_name=info.instructor_name
+            instructor_name=info.instructor_name,
+            seat_id=info.seat_id,
         )
 
 

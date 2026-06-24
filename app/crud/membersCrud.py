@@ -28,6 +28,7 @@ class StandingBookingInfo:
     start_time_local: str
     venue_name: Optional[str]
     instructor_name: Optional[str]
+    seat_id: Optional[int] = None
 
 
 @dataclass
@@ -97,7 +98,8 @@ def _build_member_data(person: People) -> MemberData:
                 weekday=getattr(template, 'weekday', 0),
                 start_time_local=str(getattr(template, 'start_time_local', '')),
                 venue_name=getattr(venue, 'name', None) if venue else None,
-                instructor_name=getattr(instructor, 'full_name', None) if instructor else None
+                instructor_name=getattr(instructor, 'full_name', None) if instructor else None,
+                seat_id=getattr(display_sb, 'seat_id', None),
             )
 
     if person.subscriptions:
