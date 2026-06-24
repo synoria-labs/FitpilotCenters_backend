@@ -26,10 +26,21 @@ class VerificationConfig:
     # Identifies this consumer to the service; proofs are bound to this audience.
     AUDIENCE: str = (os.getenv("VERIFICATION_AUDIENCE", "gym") or "gym").strip()
     TIMEOUT_SECONDS: float = float(os.getenv("VERIFICATION_TIMEOUT_SECONDS", "10"))
+    # Comma-separated list of channels the gym is allowed to request.
+    # MVP defaults to email only because the project has no SMS budget.
+    ALLOWED_CHANNELS: tuple = tuple(
+        c.strip().lower()
+        for c in (os.getenv("STEP_UP_ALLOWED_CHANNELS", "email") or "email").split(",")
+        if c.strip()
+    )
 
     @classmethod
     def is_configured(cls) -> bool:
         return bool(cls.SERVICE_URL and cls.SERVICE_TOKEN)
+
+    @classmethod
+    def channel_allowed(cls, channel: str) -> bool:
+        return (channel or "").strip().lower() in cls.ALLOWED_CHANNELS
 
 
 def step_up_enabled() -> bool:

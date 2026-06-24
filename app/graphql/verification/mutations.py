@@ -12,6 +12,7 @@ from app.services import verification_client as vc
 
 CHANNEL_SMS = "sms"
 CHANNEL_EMAIL = "email"
+SUPPORTED_CHANNELS = (CHANNEL_SMS, CHANNEL_EMAIL)
 
 
 def _mask(destination: str, channel: str) -> str:
@@ -49,11 +50,19 @@ class StepUpMutation:
             )
 
         channel = (channel or "").strip().lower()
-        if channel not in (CHANNEL_SMS, CHANNEL_EMAIL):
+        if channel not in SUPPORTED_CHANNELS:
             return StepUpRequestResponse(
                 success=False, verification_id=None, channel=None,
                 masked_destination=None, next_cooldown_seconds=None,
                 message="Canal inválido (usa 'sms' o 'email')",
+            )
+
+        if not VerificationConfig.channel_allowed(channel):
+            allowed = ", ".join(VerificationConfig.ALLOWED_CHANNELS) or "ninguno"
+            return StepUpRequestResponse(
+                success=False, verification_id=None, channel=channel,
+                masked_destination=None, next_cooldown_seconds=None,
+                message=f"Canal no disponible; usa {allowed}",
             )
 
         account = await get_user_by_account_id(db, account_id)
