@@ -9,7 +9,10 @@ from app.models import MembershipPlan, MembershipSubscription
 from app.models.classModel import ClassTemplate
 
 from app.crud.standing_bookings.materialization import _init_materialization_stats
-from app.crud.standing_bookings.utils import _get_templates_in_same_group as _get_templates_in_same_group_core
+from app.crud.standing_bookings.utils import (
+    _get_templates_in_same_group as _get_templates_in_same_group_core,
+    _resolve_group_seat,
+)
 from .utils import _align_date_to_weekday, _calculate_window_end_for_plan
 
 
@@ -47,21 +50,27 @@ async def _create_standing_bookings_for_group(
     subscription: MembershipSubscription,
     template_id: int,
     seat_id: Optional[int] = None,
-) -> Tuple[List[int], List[int], Dict[int, date]]:
-    """Create standing bookings for ALL templates in the same TimeslotGroup."""
+) -> Tuple[List[int], List[int], Dict[int, date], Optional[str]]:
+    """Create standing bookings for ALL templates in the same TimeslotGroup.
+
+    Before creating them, resolve the seat group-wide: if the preferred seat is taken on any
+    session of any group template across the membership window, auto-reassign to another free
+    bike so a paid booking succeeds instead of failing (and refunding). Returns the assigned
+    seat's label (for the customer-facing confirmation) as the 4th element.
+    """
     import logging
 
     logger = logging.getLogger(__name__)
 
     if not STANDING_BOOKINGS_AVAILABLE:
         logger.warning("Standing bookings not available, skipping group creation")
-        return [], [], {}
+        return [], [], {}, None
 
     templates = await _get_templates_in_same_group(db, template_id)
 
     if not templates:
         logger.warning("No templates found for group with template_id %s", template_id)
-        return [], [], {}
+        return [], [], {}, None
 
     logger.info(
         "Creating %s standing bookings for group (templates: %s)",
@@ -71,6 +80,25 @@ async def _create_standing_bookings_for_group(
 
     membership_start = subscription.start_at.date()
     membership_end = subscription.end_at.date()
+
+    # Resolve the seat across the WHOLE group/window so an occupied bike is swapped for a free
+    # one (instead of every per-template create raising "Seat already reserved" -> refund).
+    resolved_seat_id, assigned_seat_label = await _resolve_group_seat(
+        db,
+        templates,
+        membership_start,
+        membership_end,
+        subscription.person_id,
+        seat_id,
+    )
+    if seat_id is not None and resolved_seat_id != seat_id:
+        logger.info(
+            "Preferred seat %s taken across group; reassigned to %s (%s)",
+            seat_id,
+            resolved_seat_id,
+            assigned_seat_label,
+        )
+    seat_id = resolved_seat_id
 
     standing_booking_ids: List[int] = []
     template_ids_used: List[int] = []
@@ -124,7 +152,7 @@ async def _create_standing_bookings_for_group(
         len(standing_booking_ids),
         template_ids_used,
     )
-    return standing_booking_ids, template_ids_used, template_start_dates
+    return standing_booking_ids, template_ids_used, template_start_dates, assigned_seat_label
 
 
 async def _generate_sessions_for_templates(
@@ -327,11 +355,13 @@ async def _handle_fixed_timeslot_effects(
     generation_stats: dict = {"sessions_created": 0}
 
     # Create standing bookings for the whole TimeslotGroup
-    standing_booking_ids, template_ids_used, template_start_dates = await _create_standing_bookings_for_group(
-        db=db,
-        subscription=subscription,
-        template_id=template_id,
-        seat_id=seat_id,
+    standing_booking_ids, template_ids_used, template_start_dates, assigned_seat_label = (
+        await _create_standing_bookings_for_group(
+            db=db,
+            subscription=subscription,
+            template_id=template_id,
+            seat_id=seat_id,
+        )
     )
     primary_id = standing_booking_ids[0] if standing_booking_ids else None
 
@@ -376,6 +406,7 @@ async def _handle_fixed_timeslot_effects(
     # Attach aggregation info
     materialization_stats["generation_stats"] = generation_stats
     materialization_stats["standing_booking_ids"] = standing_booking_ids
+    materialization_stats["assigned_seat_label"] = assigned_seat_label
     materialization_stats["aligned_start_dates"] = template_start_dates_iso
     materialization_stats["window"] = {
         "start": window_start.isoformat(),
