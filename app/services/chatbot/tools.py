@@ -433,6 +433,13 @@ def _materialized_count(stats) -> str:
     return f" Reservé {created} clase(s) de tu horario." if created else ""
 
 
+def _assigned_seat_note(stats) -> str:
+    """Tell the customer which bike was assigned (it may differ from the one first offered if it
+    got taken before the payment acreditó and we auto-reassigned a free one)."""
+    label = stats.get("assigned_seat_label") if isinstance(stats, dict) else None
+    return f" Tu lugar asignado: {label}." if label else ""
+
+
 async def _execute_pending(
     db: AsyncSession,
     pending,
@@ -477,7 +484,7 @@ async def _execute_pending(
                 )
             )
             return (f"¡Listo! Membresía {plan.name} activada. Vence {_fmt_dt(subscription.end_at)}."
-                    f"{_materialized_count(stats)}")
+                    f"{_materialized_count(stats)}{_assigned_seat_note(stats)}")
         # New customer -> enrollment with standing booking (commits internally).
         person, subscription, _payment, plan, _sb, stats = (
             await enrollment_crud.create_member_enrollment_with_standing_booking(
@@ -497,7 +504,8 @@ async def _execute_pending(
             )
         )
         return (f"¡Bienvenido/a {person.full_name}! Inscripción lista con {plan.name}. "
-                f"Vence {_fmt_dt(subscription.end_at)}.{_materialized_count(stats)}")
+                f"Vence {_fmt_dt(subscription.end_at)}.{_materialized_count(stats)}"
+                f"{_assigned_seat_note(stats)}")
 
     if action == ACTION_BUY_DAY_PASS:
         plan_id = int(payload["plan_id"])

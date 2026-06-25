@@ -186,3 +186,71 @@ async def _resolve_seat_for_session(
             return seat_item.id, "Preferred seat taken, auto-selected another"
 
     return None, "No seats available for target session"
+
+
+async def _resolve_group_seat(
+    db: AsyncSession,
+    templates: List[ClassTemplate],
+    window_start: date,
+    window_end: date,
+    person_id: int,
+    preferred_seat_id: Optional[int],
+) -> tuple[Optional[int], Optional[str]]:
+    """Pick a seat free across ALL templates of a timeslot group for the whole window.
+
+    A fixed-slot package reserves the SAME seat for every template in the group (e.g. Mon-Fri at
+    8pm) across the entire membership period, so the seat must be free for every session of every
+    group template in ``[window_start, window_end]`` -- mirroring the per-template check in
+    ``create_standing_booking`` (bookings.py).
+
+    Returns ``(seat_id, label)``:
+    - keeps ``preferred_seat_id`` when it is free across the whole group/window (so a renewal
+      preserves the member's existing bike);
+    - otherwise returns the first free seat by label (auto-reassign to another available bike);
+    - returns ``(preferred_seat_id, None)`` when NO seat is free, so the caller's existing
+      failure/refund path still applies (genuinely full class);
+    - returns ``(None, None)`` when the venue has no seats (capacity-based class).
+    """
+    if not templates:
+        return preferred_seat_id, None
+
+    venue_id = templates[0].venue_id
+
+    seats_stmt = (
+        select(Seat)
+        .where(and_(Seat.venue_id == venue_id, Seat.is_active == True))
+        .order_by(Seat.label)
+    )
+    seats = (await db.execute(seats_stmt)).scalars().all()
+    if not seats:
+        return None, None
+
+    template_ids = [t.id for t in templates]
+    taken_stmt = (
+        select(Reservation.seat_id)
+        .join(ClassSession, Reservation.session_id == ClassSession.id)
+        .where(
+            and_(
+                ClassSession.template_id.in_(template_ids),
+                func.date(ClassSession.start_at) >= window_start,
+                func.date(ClassSession.start_at) <= window_end,
+                Reservation.seat_id.isnot(None),
+                Reservation.status.in_(["reserved", "checked_in"]),
+                Reservation.person_id != person_id,
+            )
+        )
+        .distinct()
+    )
+    taken_ids = {seat_id for (seat_id,) in (await db.execute(taken_stmt)).all()}
+
+    free_seats = [s for s in seats if s.id not in taken_ids]
+    if not free_seats:
+        return preferred_seat_id, None
+
+    if preferred_seat_id is not None:
+        kept = next((s for s in free_seats if s.id == preferred_seat_id), None)
+        if kept is not None:
+            return kept.id, kept.label
+
+    chosen = free_seats[0]
+    return chosen.id, chosen.label
