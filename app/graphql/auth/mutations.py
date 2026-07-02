@@ -4,7 +4,8 @@ from user_agents import parse
 import uuid
 import datetime
 
-from app.security.hashing import verify_password
+from app.security.hashing import verify_password, dummy_verify
+from app.security.login_rate_limit import check_allowed, record_failure, record_success
 from app.security.jwt import (
     create_access_token,
     create_refresh_token,
@@ -20,6 +21,7 @@ from app.crud.usersCrud import get_person_by_id
 from app.crud.permissions import get_capabilities_for_person
 from app.graphql.auth.claims import build_access_claims, build_session_claims
 from app.crud.sessionCrud import create_session, revoke_session
+from app.graphql.context import _get_active_session
 from app.graphql.auth.types import LoginInput, TokenResponse
 from app.models.sessionModel import Session
 from app.core.logging_config import get_logger
@@ -50,14 +52,34 @@ class AuthMutation:
         db = info.context.db
         logger.info("Login attempt for '%s' from %s", identifier, ip_address or "unknown-ip")
 
+        # Throttle brute-force / credential-stuffing before touching the DB.
+        allowed, retry_after = check_allowed(ip_address, identifier)
+        if not allowed:
+            logger.warning(
+                "Login rate-limited for '%s' from %s (retry in %ss)",
+                identifier, ip_address or "unknown-ip", retry_after,
+            )
+            raise HTTPException(
+                status_code=429,
+                detail="Demasiados intentos fallidos. Intenta de nuevo más tarde.",
+            )
+
         account = await get_account_by_username(db=db, username=identifier)
         logger.info("Account lookup for '%s': %s", identifier, "found" if account else "not-found")
 
+        # Unified error + constant-time behaviour: a missing account still runs a
+        # bcrypt check so it cannot be distinguished from a wrong password by
+        # message or timing (prevents user enumeration).
         if not account:
-            raise HTTPException(status_code=401, detail="Account not found")
+            dummy_verify()
+            record_failure(ip_address, identifier)
+            raise HTTPException(status_code=401, detail="Credenciales inválidas")
 
         if not verify_password(password, account.password_hash):
-            raise HTTPException(status_code=401, detail="Credentials not valid")
+            record_failure(ip_address, identifier)
+            raise HTTPException(status_code=401, detail="Credenciales inválidas")
+
+        record_success(ip_address, identifier)
 
         # Load the person's roles + effective capabilities so the client can
         # gate its UI without an extra round-trip. The backend re-checks
@@ -127,8 +149,9 @@ class AuthMutation:
             max_age=get_access_cookie_max_age_seconds(),
         )
 
-        # Mantener header para compatibilidad temporal
-        response.headers["x-access-token"] = access_token
+        # The token travels in the HttpOnly cookie and in the GraphQL body below.
+        # It is deliberately NOT echoed in a JS-readable response header (that
+        # would defeat the HttpOnly protection).
 
         logger.info("User '%s' logged in; session %s", account.username, session_id[:8])
         return TokenResponse(access_token=access_token)
@@ -148,6 +171,11 @@ class AuthMutation:
         payload = verify_refresh_token(refresh_token)
         if not payload:
             raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+        # Reject refresh tokens whose session has been revoked/deleted (e.g. after
+        # logout), consistent with build_context which re-checks on every request.
+        if await _get_active_session(db, payload.get("session_id")) is None:
+            raise HTTPException(status_code=401, detail="Session no longer active")
 
         # Re-derive roles/capabilities from the DB so newly granted/revoked
         # permissions take effect on the next refresh (not only on re-login).
@@ -180,8 +208,7 @@ class AuthMutation:
             max_age=get_access_cookie_max_age_seconds(),
         )
 
-        # Mantener header para compatibilidad temporal
-        response.headers["x-access-token"] = new_access_token
+        # Not echoed in a JS-readable header (see login).
 
         return TokenResponse(access_token=new_access_token)
 

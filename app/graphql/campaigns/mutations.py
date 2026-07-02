@@ -16,7 +16,8 @@ from strawberry.types import Info
 
 from app.crud import campaignsCrud as crud
 from app.crud import whatsappTemplatesCrud as templates_crud
-from app.graphql.auth.permissions import IsAuthenticated
+from app.crud.permissions import SEND_CAMPAIGNS
+from app.graphql.auth.permissions import IsAuthenticated, require_capability
 from app.graphql.campaigns.types import (
     CampaignMutationResult,
     CampaignResult,
@@ -96,6 +97,9 @@ class CampaignsMutation:
     @strawberry.mutation(permission_classes=[IsAuthenticated])
     async def create_campaign(self, info: Info, input: CreateCampaignInput) -> CampaignResult:
         db: AsyncSession = info.context.db
+        error = await require_capability(info, SEND_CAMPAIGNS)
+        if error:
+            return CampaignResult(success=False, error=error)
         if input.objective not in CAMPAIGN_OBJECTIVES:
             return CampaignResult(success=False, error="Objetivo de campaña desconocido.")
         if not (input.name or "").strip():
@@ -135,6 +139,9 @@ class CampaignsMutation:
         self, info: Info, id: int, input: UpdateCampaignInput
     ) -> CampaignResult:
         db: AsyncSession = info.context.db
+        error = await require_capability(info, SEND_CAMPAIGNS)
+        if error:
+            return CampaignResult(success=False, error=error)
         campaign = await crud.get_campaign_model(db, id)
         if campaign is None:
             return CampaignResult(success=False, error="Campaña no encontrada.")
@@ -180,6 +187,9 @@ class CampaignsMutation:
     @strawberry.mutation(permission_classes=[IsAuthenticated])
     async def delete_campaign(self, info: Info, id: int) -> CampaignMutationResult:
         db: AsyncSession = info.context.db
+        error = await require_capability(info, SEND_CAMPAIGNS)
+        if error:
+            return CampaignMutationResult(success=False, error=error)
         campaign = await crud.get_campaign_model(db, id)
         if campaign is None:
             return CampaignMutationResult(success=False, error="Campaña no encontrada.")
@@ -194,6 +204,9 @@ class CampaignsMutation:
     async def build_campaign_audience(self, info: Info, id: int) -> CampaignRunResult:
         """Materialize campaign_recipients for preview before sending."""
         db: AsyncSession = info.context.db
+        error = await require_capability(info, SEND_CAMPAIGNS)
+        if error:
+            return CampaignRunResult(success=False, error=error)
         campaign = await crud.get_campaign_model(db, id)
         if campaign is None:
             return CampaignRunResult(success=False, error="Campaña no encontrada.")
@@ -215,6 +228,9 @@ class CampaignsMutation:
         self, info: Info, id: int, scheduled_at: datetime, send_local_time: bool = False
     ) -> CampaignResult:
         db: AsyncSession = info.context.db
+        error = await require_capability(info, SEND_CAMPAIGNS)
+        if error:
+            return CampaignResult(success=False, error=error)
         campaign = await crud.get_campaign_model(db, id)
         if campaign is None:
             return CampaignResult(success=False, error="Campaña no encontrada.")
@@ -236,6 +252,9 @@ class CampaignsMutation:
         self, info: Info, id: int, dry_run: bool = False
     ) -> CampaignRunResult:
         db: AsyncSession = info.context.db
+        error = await require_capability(info, SEND_CAMPAIGNS)
+        if error:
+            return CampaignRunResult(success=False, error=error)
         campaign = await crud.get_campaign_model(db, id)
         if campaign is None:
             return CampaignRunResult(success=False, error="Campaña no encontrada.")
@@ -266,6 +285,9 @@ class CampaignsMutation:
     @strawberry.mutation(permission_classes=[IsAuthenticated])
     async def pause_campaign(self, info: Info, id: int) -> CampaignResult:
         db: AsyncSession = info.context.db
+        error = await require_capability(info, SEND_CAMPAIGNS)
+        if error:
+            return CampaignResult(success=False, error=error)
         campaign = await crud.get_campaign_model(db, id)
         if campaign is None:
             return CampaignResult(success=False, error="Campaña no encontrada.")
@@ -279,6 +301,9 @@ class CampaignsMutation:
     @strawberry.mutation(permission_classes=[IsAuthenticated])
     async def resume_campaign(self, info: Info, id: int) -> CampaignRunResult:
         db: AsyncSession = info.context.db
+        error = await require_capability(info, SEND_CAMPAIGNS)
+        if error:
+            return CampaignRunResult(success=False, error=error)
         campaign = await crud.get_campaign_model(db, id)
         if campaign is None:
             return CampaignRunResult(success=False, error="Campaña no encontrada.")
@@ -291,6 +316,9 @@ class CampaignsMutation:
     @strawberry.mutation(permission_classes=[IsAuthenticated])
     async def cancel_campaign(self, info: Info, id: int) -> CampaignResult:
         db: AsyncSession = info.context.db
+        error = await require_capability(info, SEND_CAMPAIGNS)
+        if error:
+            return CampaignResult(success=False, error=error)
         campaign = await crud.get_campaign_model(db, id)
         if campaign is None:
             return CampaignResult(success=False, error="Campaña no encontrada.")
@@ -303,6 +331,9 @@ class CampaignsMutation:
     async def retry_campaign_failures(self, info: Info, id: int) -> CampaignRunResult:
         """Re-dispatch failed recipients (run_campaign only picks pending/failed)."""
         db: AsyncSession = info.context.db
+        error = await require_capability(info, SEND_CAMPAIGNS)
+        if error:
+            return CampaignRunResult(success=False, error=error)
         campaign = await crud.get_campaign_model(db, id)
         if campaign is None:
             return CampaignRunResult(success=False, error="Campaña no encontrada.")
@@ -314,6 +345,9 @@ class CampaignsMutation:
     @strawberry.mutation(permission_classes=[IsAuthenticated])
     async def run_campaign_sweep(self, info: Info) -> CampaignRunResult:
         """Run scheduled-campaign + conversion sweeps now (testing / manual trigger)."""
+        error = await require_capability(info, SEND_CAMPAIGNS)
+        if error:
+            return CampaignRunResult(success=False, error=error)
         try:
             send_stats = await campaign_service.run_campaign_sweep()
             await campaign_service.run_conversion_sweep()

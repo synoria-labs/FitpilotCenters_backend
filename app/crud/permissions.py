@@ -23,6 +23,13 @@ OPERATE_POS = "operate_pos"  # run the checkout (create sales)
 MANAGE_CASH_SESSION = "manage_cash_session"  # open/close caja, corte, cash movements
 VIEW_POS_REPORTS = "view_pos_reports"  # read sales + cash-session reports
 MANAGE_PRODUCTS = "manage_products"  # CRUD of the product catalog / inventory
+# Members / finance / messaging capabilities (gate previously IsAuthenticated-only resolvers)
+MANAGE_PAYMENTS = "manage_payments"  # create/update/delete payments
+MANAGE_SUBSCRIPTIONS = "manage_subscriptions"  # create/renew/enroll subscriptions
+SEND_CAMPAIGNS = "send_campaigns"  # create/schedule/trigger WhatsApp campaigns
+VIEW_MEMBERS = "view_members"  # read the member directory + detail (PII)
+VIEW_FINANCES = "view_finances"  # read payments, metrics, dashboard KPIs
+VIEW_CHATS = "view_chats"  # read WhatsApp conversations/messages
 ALL_CAPABILITIES: List[str] = [
     MANAGE_MEMBERSHIP_PLANS,
     MANAGE_OWNER_AGENT,
@@ -31,6 +38,12 @@ ALL_CAPABILITIES: List[str] = [
     MANAGE_CASH_SESSION,
     VIEW_POS_REPORTS,
     MANAGE_PRODUCTS,
+    MANAGE_PAYMENTS,
+    MANAGE_SUBSCRIPTIONS,
+    SEND_CAMPAIGNS,
+    VIEW_MEMBERS,
+    VIEW_FINANCES,
+    VIEW_CHATS,
 ]
 
 ADMIN_ROLE_CODE = "admin"

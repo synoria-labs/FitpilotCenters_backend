@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from app.core.env import is_production
+
 
 class SecurityFilter(logging.Filter):
     """Filter to remove sensitive information from logs while preserving context"""
@@ -26,8 +28,19 @@ class SecurityFilter(logging.Filter):
     ]
 
     def filter(self, record):
+        import re
+
+        # Merge args into the message first so parameterised records (e.g.
+        # SQLAlchemy's "%r" bound parameters, which arrive in record.args, not
+        # record.msg) are also subject to redaction.
+        if record.args:
+            try:
+                record.msg = record.getMessage()
+                record.args = None
+            except Exception:
+                pass
+
         if hasattr(record, 'msg'):
-            import re
             msg = str(record.msg)
 
             # Only apply pattern-based filtering, not keyword blanket censoring
@@ -42,16 +55,21 @@ def setup_logging():
     """Configure application logging based on environment variables"""
 
     # Environment configuration
-    # Defaults tuned for diagnostics; can be overridden with env vars
-    log_level = os.getenv("LOG_LEVEL", "DEBUG").upper()
-    sql_log_level = os.getenv("SQL_LOG_LEVEL", "INFO").upper()
+    # Defaults are production-safe: quiet level, SQL echo off, redaction on.
+    # Override with env vars for local diagnostics (e.g. LOG_LEVEL=DEBUG).
+    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    sql_log_level = os.getenv("SQL_LOG_LEVEL", "WARNING").upper()
     log_format = os.getenv("LOG_FORMAT", "text").lower()
 
     # Resolve default log file within backend/logs/app.log regardless of CWD
     default_log_path = Path(__file__).resolve().parents[2] / "logs" / "app.log"
     log_file_path = os.getenv("LOG_FILE_PATH", str(default_log_path))
     auth_log_events = os.getenv("AUTH_LOG_EVENTS", "true").lower() == "true"
-    enable_security_filter = os.getenv("ENABLE_SECURITY_FILTER", "false").lower() == "true"
+    # Redaction is opt-out via env var, but always forced on in production so a
+    # misconfigured deploy cannot log secrets/PII unredacted.
+    enable_security_filter = (
+        os.getenv("ENABLE_SECURITY_FILTER", "false").lower() == "true" or is_production()
+    )
 
     # Create logs directory
     log_dir = Path(log_file_path).parent

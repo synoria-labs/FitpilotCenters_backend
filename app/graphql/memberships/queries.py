@@ -16,8 +16,19 @@ from app.graphql.memberships.types import (
     PaginatedPayments,
     PaymentMetrics,
 )
-from app.graphql.auth.permissions import IsAuthenticated
+from app.graphql.auth.permissions import IsAuthenticated, require_capability
+from app.crud.permissions import VIEW_FINANCES
 from app.core.conversions import coerce_int
+
+
+def _empty_payment_metrics() -> PaymentMetrics:
+    """Zeroed metrics returned when the requester lacks view_finances."""
+    return PaymentMetrics(
+        total_amount=0.0, total_count=0, avg_amount=0.0, completed_amount=0.0,
+        pending_count=0, pending_amount=0.0, failed_count=0, refunded_count=0,
+        orphan_count=0, duplicate_suspect_count=0,
+        by_method=[], by_plan=[], by_status=[], daily_series=[],
+    )
 
 
 @strawberry.type
@@ -92,6 +103,8 @@ class MembershipsQuery:
         Returns both the page items and the total row count matching the filters,
         so the UI can render an accurate "X of Y" footer without a second query.
         """
+        if await require_capability(info, VIEW_FINANCES):
+            return PaginatedPayments(items=[], total=0)
         db: AsyncSession = info.context.db
         from app.crud.membershipsCrud import get_payments, count_payments
 
@@ -125,6 +138,8 @@ class MembershipsQuery:
         duplicates within 5 minutes). Filter parameters are the same as the
         `payments` query so the panel stays in sync with the table.
         """
+        if await require_capability(info, VIEW_FINANCES):
+            return _empty_payment_metrics()
         db: AsyncSession = info.context.db
         from app.crud.membershipsCrud import get_payment_metrics
 

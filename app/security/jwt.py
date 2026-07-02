@@ -5,12 +5,37 @@ from fastapi import HTTPException
 from jose import ExpiredSignatureError, JWTError, jwt
 from zoneinfo import ZoneInfo
 
+from app.core.env import load_environment
 from app.core.logging_config import get_logger
+
+# Make sure backend/.env is loaded before we read the secrets (systemd/container
+# runtimes may also supply them directly, which takes precedence).
+load_environment()
 
 logger = get_logger("auth.jwt")
 
-SECRET_KEY_ACCESS_TOKEN = os.getenv("SECRET_KEY_ACCESS_TOKEN", "super-secret")
-SECRET_KEY_REFRESH_TOKEN = os.getenv("SECRET_KEY_REFRESH_TOKEN", "super-secret1")
+# Minimum secret strength. HS256 is symmetric, so a weak/known key lets anyone
+# forge tokens for any person_id/capabilities.
+_MIN_SECRET_BYTES = 32
+
+
+def _require_secret(env_name: str) -> str:
+    """Read a mandatory JWT secret from the environment, failing fast if weak.
+
+    There is deliberately NO fallback default: a missing or trivial secret must
+    abort startup instead of silently running in an insecure mode.
+    """
+    value = os.getenv(env_name)
+    if not value or len(value.encode("utf-8")) < _MIN_SECRET_BYTES:
+        raise RuntimeError(
+            f"{env_name} must be set to a strong secret of at least "
+            f"{_MIN_SECRET_BYTES} bytes. Refusing to start with a missing or weak JWT secret."
+        )
+    return value
+
+
+SECRET_KEY_ACCESS_TOKEN = _require_secret("SECRET_KEY_ACCESS_TOKEN")
+SECRET_KEY_REFRESH_TOKEN = _require_secret("SECRET_KEY_REFRESH_TOKEN")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 5))  # default 5 minutes
 ACCESS_TOKEN_EXPIRE_DAYS = int(os.getenv("ACCESS_TOKEN_EXPIRE_DAYS", 30))

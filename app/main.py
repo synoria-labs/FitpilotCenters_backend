@@ -10,6 +10,7 @@ from strawberry.subscriptions import (
     GRAPHQL_WS_PROTOCOL,
 )
 
+from app.core.env import is_production
 from app.graphql.schema import schema
 from app.graphql.context import build_context
 from app.webhooks.whatsapp_webhook import router as whatsapp_webhook_router
@@ -76,7 +77,9 @@ app.add_middleware(
 graphql_app = GraphQLRouter(
     schema=schema,
     context_getter=build_context,
-    graphql_ide="graphiql",
+    # Serve the interactive IDE only outside production so the public endpoint
+    # does not expose an explorable UI (introspection is disabled in schema.py).
+    graphql_ide=None if is_production() else "graphiql",
     subscription_protocols=[
         GRAPHQL_TRANSPORT_WS_PROTOCOL,
         GRAPHQL_WS_PROTOCOL,

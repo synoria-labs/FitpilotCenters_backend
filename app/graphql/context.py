@@ -112,7 +112,8 @@ async def _mint_access_from_refresh(
             samesite=cookie_samesite,
             max_age=get_access_cookie_max_age_seconds(),
         )
-        response.headers["x-access-token"] = new_access_token
+        # Refreshed token stays in the HttpOnly cookie only; not echoed in a
+        # JS-readable response header.
 
     return user, account_id, session_id
 

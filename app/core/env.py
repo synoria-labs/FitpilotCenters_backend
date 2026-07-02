@@ -1,8 +1,18 @@
 """Environment loading helpers."""
+import os
 from pathlib import Path
 
 
 _LOADED = False
+
+
+def is_production() -> bool:
+    """True when running in the production environment.
+
+    Mirrors the comparison already used for secure-cookie settings so callers
+    can gate behaviour (GraphiQL IDE, introspection, redaction) consistently.
+    """
+    return os.getenv("ENVIRONMENT", "development").strip().lower() == "production"
 
 
 def load_environment() -> None:
