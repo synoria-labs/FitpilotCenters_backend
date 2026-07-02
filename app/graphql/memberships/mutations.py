@@ -28,7 +28,11 @@ from app.crud.membershipsCrud import (
     delete_payment
 )
 from app.crud.membersCrud import get_member_by_id
-from app.crud.permissions import MANAGE_MEMBERSHIP_PLANS
+from app.crud.permissions import (
+    MANAGE_MEMBERSHIP_PLANS,
+    MANAGE_PAYMENTS,
+    MANAGE_SUBSCRIPTIONS,
+)
 from app.graphql.memberships.types import (
     CreateMembershipPlanInput, UpdateMembershipPlanInput, CreateSubscriptionInput,
     CreateMemberEnrollmentInput, RenewSubscriptionInput,
@@ -197,6 +201,10 @@ class MembershipMutation:
         """Create a new membership subscription"""
         db: AsyncSession = info.context.db
 
+        error = await require_capability(info, MANAGE_SUBSCRIPTIONS)
+        if error:
+            return SubscriptionResponse(subscription=None, message=error)
+
         try:
             created_by = getattr(info.context, 'account_id', None)
 
@@ -253,6 +261,10 @@ class MembershipMutation:
     async def create_member_enrollment(self, info: Info, input: CreateMemberEnrollmentInput) -> MemberEnrollmentResponse:
         """Create member, subscription and payment; optionally create standing bookings + sessions like renewal."""
         db: AsyncSession = info.context.db
+
+        error = await require_capability(info, MANAGE_SUBSCRIPTIONS)
+        if error:
+            return MemberEnrollmentResponse(member=None, subscription=None, payment=None, message=error)
 
         try:
             created_by = getattr(info.context, 'account_id', None)
@@ -373,6 +385,13 @@ class MembershipMutation:
         """Renew a member's subscription."""
         db: AsyncSession = info.context.db
 
+        error = await require_capability(info, MANAGE_SUBSCRIPTIONS)
+        if error:
+            return SubscriptionRenewalResponse(
+                success=False, subscription=None, payment=None, message=error,
+                standingBookingId=None, materializationStats=None,
+            )
+
         try:
             created_by = getattr(info.context, 'account_id', None)
 
@@ -489,7 +508,11 @@ class MembershipMutation:
     async def update_payment(self, info: Info, input: UpdatePaymentInput) -> PaymentMutationResponse:
         """Update an existing payment."""
         db: AsyncSession = info.context.db
-        
+
+        error = await require_capability(info, MANAGE_PAYMENTS)
+        if error:
+            return PaymentMutationResponse(success=False, payment=None, message=error)
+
         try:
             from sqlalchemy.orm import selectinload
             payment = await update_payment(
@@ -533,7 +556,11 @@ class MembershipMutation:
     async def delete_payment(self, info: Info, payment_id: int) -> PaymentMutationResponse:
         """Delete an existing payment."""
         db: AsyncSession = info.context.db
-        
+
+        error = await require_capability(info, MANAGE_PAYMENTS)
+        if error:
+            return PaymentMutationResponse(success=False, payment=None, message=error)
+
         try:
             success = await delete_payment(db=db, payment_id=payment_id, commit=True)
             if success:

@@ -1,9 +1,14 @@
 import logging
+import os
 # from dataclasses import dataclass
 # from fastapi import Request, Response
 # from sqlalchemy.ext.asyncio import AsyncSession
 # from strawberry.fastapi import BaseContext
 import strawberry
+from strawberry.extensions import AddValidationRules, QueryDepthLimiter
+from graphql import NoSchemaIntrospectionCustomRule
+
+from app.core.env import is_production
 
 # from app.security.jwt import verify_token
 # from app.crud.usersCrud import get_user_by_id
@@ -86,4 +91,18 @@ class RootSubscription(WhatsAppChatSubscription):
 #     response: Response
 #     user: object | None = None
    
-schema = strawberry.Schema(query=Query, mutation=Mutation, subscription=RootSubscription)
+# Query-cost guardrails. Depth limit blunts maliciously nested queries (DoS);
+# introspection is disabled in production so the schema/attack surface is not
+# self-documenting on the public endpoint (the GraphiQL IDE is also turned off
+# in main.py for production).
+_MAX_QUERY_DEPTH = int(os.getenv("GRAPHQL_MAX_DEPTH", "15"))
+_schema_extensions = [QueryDepthLimiter(max_depth=_MAX_QUERY_DEPTH)]
+if is_production():
+    _schema_extensions.append(AddValidationRules([NoSchemaIntrospectionCustomRule]))
+
+schema = strawberry.Schema(
+    query=Query,
+    mutation=Mutation,
+    subscription=RootSubscription,
+    extensions=_schema_extensions,
+)

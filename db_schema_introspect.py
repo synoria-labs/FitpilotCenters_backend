@@ -1,5 +1,7 @@
 ﻿import asyncio
 import json
+import os
+import sys
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -7,7 +9,11 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy import inspect, text
 
-DATABASE_URL = "postgresql+asyncpg://appuser:secret123@localhost:5432/defaultdb"
+# Read the connection string from the environment (same var as the app). No
+# hardcoded credential in source.
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    sys.exit("DATABASE_URL is not set. Export it before running the introspection script.")
 TARGET_SCHEMA = "app"
 BASE_PATH = Path(__file__).parent
 OUTPUT_JSON = BASE_PATH / "db_schema_report.json"
