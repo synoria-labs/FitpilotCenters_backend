@@ -30,3 +30,29 @@ async def lock_class_session(db: AsyncSession, session_id: int) -> None:
         sa_text("SELECT pg_advisory_xact_lock(:k)"),
         {"k": _lock_key("class_session", session_id)},
     )
+
+
+# Fixed key: one coarse lock serializes ALL multi-session batch runs against
+# each other (materialization + reschedule share it).
+_MATERIALIZE_BATCH_KEY = _lock_key("materialize_batch", 0)
+
+
+async def lock_materialization_batch(db: AsyncSession) -> None:
+    """Serialize whole multi-session batch runs (materialize / reschedule).
+
+    A batch acquires MANY per-session ``lock_class_session`` locks, held until
+    the single terminal commit, in a data-dependent order. Two concurrent
+    batches could therefore grab the same pair of session locks in opposite
+    order and ABBA-deadlock (Postgres kills one; the batch's per-item
+    ``except: continue`` then runs on the aborted transaction and the final
+    commit rolls back — silently losing every reservation it created).
+
+    Taking this coarse lock FIRST (before any per-session lock) makes batches
+    mutually exclusive, so no two batches ever hold session locks at the same
+    time. A single manual booking still only holds ONE session lock and never
+    takes this one, so it can never form a cycle with a batch.
+    """
+    await db.execute(
+        sa_text("SELECT pg_advisory_xact_lock(:k)"),
+        {"k": _MATERIALIZE_BATCH_KEY},
+    )

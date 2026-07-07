@@ -13,7 +13,7 @@ from app.models.classModel import (
     StandingBookingException,
 )
 
-from app.crud.locks import lock_class_session
+from app.crud.locks import lock_class_session, lock_materialization_batch
 from app.crud.time_filters import between_dates
 
 from .utils import _session_has_capacity
@@ -80,6 +80,10 @@ async def materialize_standing_bookings(
 
     end_date = start_date + timedelta(weeks=window_weeks)
     stats = _init_materialization_stats()
+
+    # Coarse batch lock FIRST (before any per-session lock below) so two
+    # concurrent multi-session batches cannot ABBA-deadlock on session locks.
+    await lock_materialization_batch(db)
 
     conditions = [
         StandingBooking.status == "active",

@@ -12,6 +12,8 @@ from app.models.classModel import (
     Reservation,
 )
 
+from app.crud.locks import lock_materialization_batch
+
 from .bookings import create_standing_booking_exception
 from .data import RescheduleItem
 from .utils import (
@@ -318,6 +320,12 @@ async def reschedule_standing_booking(
     target_seat_id: Optional[int] = None,
     strict: bool = False,
 ) -> Dict[str, Any]:
+    # Coarse batch lock FIRST: this creates reservations across MANY target
+    # sessions (each taking a per-session lock), so it shares the same
+    # serialization lock as materialization to avoid an ABBA deadlock between
+    # concurrent batches.
+    await lock_materialization_batch(db)
+
     sb_stmt = select(StandingBooking).where(StandingBooking.id == standing_booking_id)
     sb_result = await db.execute(sb_stmt)
     standing_booking = sb_result.scalar_one_or_none()

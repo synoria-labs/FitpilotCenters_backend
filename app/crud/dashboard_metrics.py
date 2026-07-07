@@ -475,10 +475,27 @@ async def _sum_revenue(
 
 _T = TypeVar("_T")
 
-# Bound on concurrent DB sessions spun up for the dashboard fan-out. Kept well
-# under the engine pool (pool_size=5 + max_overflow=10 = 15) so a dashboard load
-# cannot starve the pool of connections needed by other in-flight requests.
+# GLOBAL bound on concurrent fan-out DB sessions across ALL in-flight dashboard
+# loads (not per call). The engine pool is pool_size=5 + max_overflow=10 = 15;
+# capping total fan-out checkouts here means a burst of simultaneous dashboards
+# adds at most _DASHBOARD_FANOUT connections combined, leaving headroom for the
+# requests' own sessions and other endpoints. A per-call semaphore (the naive
+# version) would NOT bound this: N concurrent dashboards could each open 6.
 _DASHBOARD_FANOUT = 6
+
+# One semaphore per event loop (an asyncio.Semaphore is bound to the loop it is
+# first awaited on). Same lazy per-loop pattern as GraphQLClient's refresh sem.
+_fanout_semaphores: "dict[int, asyncio.Semaphore]" = {}
+
+
+def _get_fanout_semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    key = id(loop)
+    sem = _fanout_semaphores.get(key)
+    if sem is None:
+        sem = asyncio.Semaphore(_DASHBOARD_FANOUT)
+        _fanout_semaphores[key] = sem
+    return sem
 
 
 async def _gather_in_sessions(
@@ -488,10 +505,11 @@ async def _gather_in_sessions(
 
     A single AsyncSession cannot run queries concurrently ("another operation is
     in progress"), so each task gets a fresh session from the factory. A
-    semaphore caps how many run at once to protect the connection pool. Results
-    are returned in the same order as ``tasks``.
+    process-global (per-loop) semaphore caps how many fan-out sessions run at
+    once ACROSS all concurrent dashboard loads, so the pool cannot be starved.
+    Results are returned in the same order as ``tasks``.
     """
-    sem = asyncio.Semaphore(_DASHBOARD_FANOUT)
+    sem = _get_fanout_semaphore()
 
     async def _run(fn: Callable[[AsyncSession], Awaitable[_T]]) -> _T:
         async with sem:
