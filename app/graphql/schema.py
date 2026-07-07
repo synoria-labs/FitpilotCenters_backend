@@ -19,8 +19,11 @@ from app.graphql.members.queries import MembersQuery
 from app.graphql.members.mutations import MemberMutation
 from app.graphql.memberships.queries import MembershipsQuery
 from app.graphql.memberships.mutations import MembershipMutation
-from app.graphql.leads.queries import LeadsQuery
-from app.graphql.leads.mutations import LeadsMutation
+# NOTE: LeadsQuery/LeadsMutation intentionally NOT exposed. They were 19 unimplemented
+# stub resolvers with NO authorization wired into the public schema (a latent trap:
+# the next dev filling in a TODO would inherit auth-less resolvers). The frontend
+# does not use them. Re-add here — WITH permission_classes/require_capability — only
+# when leads is actually implemented.
 from app.graphql.reservations.queries import ReservationQuery
 from app.graphql.reservations.mutations import ReservationMutation
 from app.graphql.standing_bookings.queries import StandingBookingQuery
@@ -68,13 +71,13 @@ except ImportError as e:
         pass
 
 @strawberry.type
-class Query(UserQuery, MembersQuery, MembershipsQuery, LeadsQuery, ReservationQuery, StandingBookingQuery, SessionQuery, ClassSessionQueries, DashboardQuery, WhatsAppChatQuery, WhatsAppTemplateQuery, NotificationSettingsQuery, ChatbotConfigQuery, CampaignsQuery, PermissionsQuery, OwnerAgentQuery, PosQuery):
+class Query(UserQuery, MembersQuery, MembershipsQuery, ReservationQuery, StandingBookingQuery, SessionQuery, ClassSessionQueries, DashboardQuery, WhatsAppChatQuery, WhatsAppTemplateQuery, NotificationSettingsQuery, ChatbotConfigQuery, CampaignsQuery, PermissionsQuery, OwnerAgentQuery, PosQuery):
     @strawberry.field
     def hello(self) -> str:
         return "Hello from GraphQL!"
 
 @strawberry.type
-class Mutation(AuthMutation, UserMutation, MemberMutation, MembershipMutation, LeadsMutation, ReservationMutation, StandingBookingMutation, SessionMutation, ClassSessionMutations, WhatsAppChatMutation, WhatsAppTemplateMutation, NotificationSettingsMutation, ChatbotConfigMutation, CampaignsMutation, PermissionsMutation, OwnerAgentMutation, PosMutation, StepUpMutation):
+class Mutation(AuthMutation, UserMutation, MemberMutation, MembershipMutation, ReservationMutation, StandingBookingMutation, SessionMutation, ClassSessionMutations, WhatsAppChatMutation, WhatsAppTemplateMutation, NotificationSettingsMutation, ChatbotConfigMutation, CampaignsMutation, PermissionsMutation, OwnerAgentMutation, PosMutation, StepUpMutation):
     pass
 
 

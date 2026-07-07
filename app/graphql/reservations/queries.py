@@ -26,6 +26,9 @@ from app.graphql.reservations.types import (
 )
 from app.graphql.auth.permissions import IsAuthenticated
 from app.graphql.context import Context
+from app.core.logging_config import get_logger
+
+logger = get_logger("graphql.reservations.queries")
 
 
 @strawberry.type
@@ -45,8 +48,9 @@ class ReservationQuery:
             reservation_data = await get_reservation_by_id(db, id)
             return Reservation.from_data(reservation_data) if reservation_data else None
 
-        except Exception as e:
-            # Log error but don't expose to client
+        except Exception:
+            # A DB/query failure here must not look like "reservation not found".
+            logger.exception("reservation query failed")
             return None
 
     @strawberry.field(permission_classes=[IsAuthenticated])
@@ -91,7 +95,8 @@ class ReservationQuery:
                 total_count=len(reservations)
             )
 
-        except Exception as e:
+        except Exception:
+            logger.exception("reservations query failed")
             return ReservationsResponse(
                 reservations=[],
                 total_count=0
@@ -131,7 +136,8 @@ class ReservationQuery:
                 total_count=len(sessions)
             )
 
-        except Exception as e:
+        except Exception:
+            logger.exception("available_sessions query failed")
             return SessionsResponse(
                 sessions=[],
                 total_count=0
@@ -157,7 +163,8 @@ class ReservationQuery:
                 total_count=len(seats)
             )
 
-        except Exception as e:
+        except Exception:
+            logger.exception("available_seats query failed")
             return SeatsResponse(
                 seats=[],
                 available_count=0,
@@ -187,7 +194,8 @@ class ReservationQuery:
 
             return [Reservation.from_data(data) for data in reservations_data]
 
-        except Exception as e:
+        except Exception:
+            logger.exception("person_reservations query failed")
             return []
 
     @strawberry.field(permission_classes=[IsAuthenticated])
@@ -209,7 +217,8 @@ class ReservationQuery:
 
             return [Reservation.from_data(data) for data in reservations_data]
 
-        except Exception as e:
+        except Exception:
+            logger.exception("session_reservations query failed")
             return []
 
     @strawberry.field(permission_classes=[IsAuthenticated])
@@ -237,5 +246,6 @@ class ReservationQuery:
 
             return [Session.from_data(data) for data in sessions_data]
 
-        except Exception as e:
+        except Exception:
+            logger.exception("upcoming_sessions query failed")
             return []

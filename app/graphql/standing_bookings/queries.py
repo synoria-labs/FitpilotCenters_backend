@@ -29,6 +29,9 @@ from app.graphql.standing_bookings.types import (
 )
 from app.graphql.auth.permissions import IsAuthenticated
 from app.graphql.context import Context
+from app.core.logging_config import get_logger
+
+logger = get_logger("graphql.standing_bookings.queries")
 
 
 @strawberry.type
@@ -48,7 +51,8 @@ class StandingBookingQuery:
                 total_count=len(class_types_data)
             )
 
-        except Exception as e:
+        except Exception:
+            logger.exception("class_types query failed")
             return ClassTypesResponse(
                 class_types=[],
                 total_count=0
@@ -76,7 +80,8 @@ class StandingBookingQuery:
                 total_count=len(templates_data)
             )
 
-        except Exception as e:
+        except Exception:
+            logger.exception("class_templates query failed")
             return ClassTemplatesResponse(
                 templates=[],
                 total_count=0
@@ -98,7 +103,8 @@ class StandingBookingQuery:
                 total_count=len(templates_data)
             )
 
-        except Exception as e:
+        except Exception:
+            logger.exception("all_class_templates query failed")
             return ClassTemplatesResponse(
                 templates=[],
                 total_count=0
@@ -128,7 +134,8 @@ class StandingBookingQuery:
                 total_count=len(seats_data)
             )
 
-        except Exception as e:
+        except Exception:
+            logger.exception("template_available_seats query failed")
             return AvailableSeatsResponse(
                 seats=[],
                 available_count=0,
@@ -158,7 +165,8 @@ class StandingBookingQuery:
                 total_count=len(standing_bookings_data)
             )
 
-        except Exception as e:
+        except Exception:
+            logger.exception("standing_bookings query failed")
             return StandingBookingsResponse(
                 standing_bookings=[],
                 total_count=0
@@ -189,11 +197,12 @@ class StandingBookingQuery:
                 message="Standing booking retrieved successfully"
             )
 
-        except Exception as e:
+        except Exception:
+            logger.exception("standing_booking query failed")
             return StandingBookingResponse(
                 success=False,
                 standing_booking=None,
-                message=f"Error retrieving standing booking: {str(e)}"
+                message="Error retrieving standing booking"
             )
 
     @strawberry.field(permission_classes=[IsAuthenticated])
@@ -218,7 +227,8 @@ class StandingBookingQuery:
                 total_count=len(standing_bookings_data)
             )
 
-        except Exception as e:
+        except Exception:
+            logger.exception("standing_bookings_for_person query failed")
             return StandingBookingsResponse(
                 standing_bookings=[],
                 total_count=0
@@ -246,7 +256,8 @@ class StandingBookingQuery:
                 total_count=len(standing_bookings_data)
             )
 
-        except Exception as e:
+        except Exception:
+            logger.exception("standing_bookings_for_template query failed")
             return StandingBookingsResponse(
                 standing_bookings=[],
                 total_count=0
@@ -278,7 +289,8 @@ class StandingBookingQuery:
                 total_count=len(weekday_templates)
             )
 
-        except Exception as e:
+        except Exception:
+            logger.exception("class_templates_by_weekday query failed")
             return ClassTemplatesResponse(
                 templates=[],
                 total_count=0
@@ -317,7 +329,8 @@ class StandingBookingQuery:
                 total_count=len(seat_templates)
             )
 
-        except Exception as e:
+        except Exception:
+            logger.exception("templates_requiring_seats query failed")
             return ClassTemplatesResponse(
                 templates=[],
                 total_count=0
