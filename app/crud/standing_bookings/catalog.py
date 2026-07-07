@@ -7,6 +7,7 @@ from sqlalchemy.orm import joinedload
 
 from app.models.classModel import ClassTemplate, ClassType, ClassSession, Reservation
 from app.models.venueModel import Seat
+from app.crud.time_filters import on_date
 
 from .data import ClassTemplateData, ClassTypeData, SeatData
 
@@ -120,7 +121,7 @@ async def get_available_seats_for_template(
     session_stmt = select(ClassSession).where(
         and_(
             ClassSession.template_id == template_id,
-            func.date(ClassSession.start_at) == date_to_check,
+            on_date(ClassSession.start_at, date_to_check),
         )
     )
     session_result = await db.execute(session_stmt)

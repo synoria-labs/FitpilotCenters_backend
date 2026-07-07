@@ -15,6 +15,7 @@ from app.models import (
     SeatType, MembershipSubscription
 )
 from app.crud.locks import lock_class_session
+from app.crud.time_filters import between_dates
 
 
 @dataclass
@@ -527,12 +528,7 @@ async def _get_sessions_with_seats_range(
             joinedload(ClassSession.class_type),
             joinedload(ClassSession.venue),
         )
-        .where(
-            and_(
-                func.date(ClassSession.start_at) >= start_date,
-                func.date(ClassSession.start_at) <= end_date,
-            )
-        )
+        .where(between_dates(ClassSession.start_at, start_date, end_date))
     )
 
     if class_type_id:
@@ -545,6 +541,25 @@ async def _get_sessions_with_seats_range(
 
     sessions_result = await db.execute(session_query)
     sessions = sessions_result.scalars().all()
+
+    # Todas las reservas del rango en UNA query (antes: una query por sesión, N+1
+    # que en la vista semanal significaba ~50 round-trips).
+    reservations_by_session: Dict[int, List[Reservation]] = {}
+    if sessions:
+        session_ids = [s.id for s in sessions]
+        all_res_result = await db.execute(
+            select(Reservation)
+            .options(joinedload(Reservation.person))
+            .where(
+                and_(
+                    Reservation.session_id.in_(session_ids),
+                    Reservation.seat_id.isnot(None),
+                    Reservation.status.in_(['reserved', 'checked_in']),
+                )
+            )
+        )
+        for r in all_res_result.scalars().all():
+            reservations_by_session.setdefault(r.session_id, []).append(r)
 
     results: List[Dict[str, Any]] = []
     seats_cache: Dict[int, List] = {}
@@ -592,19 +607,8 @@ async def _get_sessions_with_seats_range(
 
         venue_seats = seats_cache[session.venue_id]
 
-        # Reservations for this session mapped by seat_id
-        reservations_result = await db.execute(
-            select(Reservation)
-            .options(joinedload(Reservation.person))
-            .where(
-                and_(
-                    Reservation.session_id == session.id,
-                    Reservation.seat_id.isnot(None),
-                    Reservation.status.in_(['reserved', 'checked_in']),
-                )
-            )
-        )
-        reservations = reservations_result.scalars().all()
+        # Reservations for this session mapped by seat_id (pre-cargadas en bloque)
+        reservations = reservations_by_session.get(session.id, [])
         reserved_by_seat: Dict[int, People] = {}
         for r in reservations:
             if r.seat_id is not None and r.person is not None:

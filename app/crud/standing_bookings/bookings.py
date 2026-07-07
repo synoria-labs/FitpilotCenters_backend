@@ -14,6 +14,7 @@ from app.models.classModel import (
 )
 from app.models.membershipsModel import MembershipSubscription
 from app.models.venueModel import Seat
+from app.crud.time_filters import between_dates
 
 from .data import StandingBookingData, _standing_booking_to_data
 
@@ -87,8 +88,7 @@ async def create_standing_booking(
             .where(
                 and_(
                     ClassSession.template_id == template_id,
-                    func.date(ClassSession.start_at) >= start_date,
-                    func.date(ClassSession.start_at) <= end_date,
+                    between_dates(ClassSession.start_at, start_date, end_date),
                     Reservation.seat_id == seat_id,
                     Reservation.status.in_(["reserved", "checked_in"]),
                     Reservation.person_id != person_id,

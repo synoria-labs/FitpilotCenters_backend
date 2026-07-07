@@ -14,6 +14,7 @@ from app.models.classModel import (
 )
 
 from app.crud.locks import lock_class_session
+from app.crud.time_filters import between_dates
 
 from .utils import _session_has_capacity
 
@@ -196,8 +197,11 @@ async def _materialize_single_standing_booking(
         .where(
             and_(
                 ClassSession.template_id == template.id,
-                func.date(ClassSession.start_at) >= max(start_date, standing_booking.start_date),
-                func.date(ClassSession.start_at) <= min(end_date, standing_booking.end_date),
+                between_dates(
+                    ClassSession.start_at,
+                    max(start_date, standing_booking.start_date),
+                    min(end_date, standing_booking.end_date),
+                ),
                 ClassSession.status == "scheduled",
             )
         )
@@ -328,8 +332,7 @@ async def get_materialization_preview(
         .where(
             and_(
                 ClassSession.template_id == template.id,
-                func.date(ClassSession.start_at) >= start_date,
-                func.date(ClassSession.start_at) <= end_date,
+                between_dates(ClassSession.start_at, start_date, end_date),
                 ClassSession.status == "scheduled",
             )
         )

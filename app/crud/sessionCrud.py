@@ -46,8 +46,9 @@ async def verify_session(db: AsyncSession, session_id: str) -> Session | None:
 async def update_last_active_at(db: AsyncSession, session_id: str) -> None:
     """Updates the last_active_at timestamp for a session using database function.
 
-    Note: Does NOT commit or flush - changes will be committed when the session closes.
-    This function is typically called from build_context() which shares the request session.
+    Note: Does NOT commit or flush - only queues the UPDATE. The caller MUST commit:
+    ``get_db`` does not commit on close, so an uncommitted change is silently rolled
+    back (e.g. read-only requests). ``build_context`` commits explicitly after calling this.
     """
     logger.debug("Updating last_active_at for session %s", session_id)
     stmt = update(Session).where(Session.session == session_id).values(last_active_at=func.now())
@@ -58,7 +59,8 @@ async def update_last_active_at(db: AsyncSession, session_id: str) -> None:
 async def touch_session(db: AsyncSession, session_id: str) -> None:
     """Updates the last_active_at timestamp for a session with explicit UTC time.
 
-    Note: Does NOT commit or flush - changes will be committed when the session closes.
+    Note: Does NOT commit or flush - only queues the UPDATE. The caller MUST commit
+    (``get_db`` does not commit on close, so an uncommitted change is rolled back).
     """
     timestamp = datetime.now(timezone.utc)
     await db.execute(
@@ -72,7 +74,8 @@ async def touch_session(db: AsyncSession, session_id: str) -> None:
 async def revoke_session(db: AsyncSession, session_id: str) -> None:
     """Marks the session as revoked.
 
-    Note: Does NOT commit or flush - changes will be committed when the session closes.
+    Note: Does NOT commit or flush - only queues the UPDATE; the caller MUST commit
+    (the logout/revoke mutations do). ``get_db`` does not commit on close.
     """
     timestamp = datetime.now(timezone.utc)
     await db.execute(
@@ -107,7 +110,8 @@ async def revoke_other_sessions(db: AsyncSession, user_id: int, keep_session_id:
 async def update_refresh_token(db: AsyncSession, session_id: str, refresh_token: str) -> None:
     """Stores a new refresh token for an existing session.
 
-    Note: Does NOT commit or flush - changes will be committed when the session closes.
+    Note: Does NOT commit or flush - only queues the UPDATE; the caller MUST commit
+    (``get_db`` does not commit on close, so an uncommitted change is rolled back).
     """
     await db.execute(
         update(Session)
