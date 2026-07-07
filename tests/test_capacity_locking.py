@@ -46,6 +46,37 @@ def test_capacity_paths_take_session_lock(rel_path, functions):
     assert not missing, f"{rel_path}: capacity paths without lock_class_session: {missing}"
 
 
+# Multi-session batch entry points MUST take the coarse batch lock to avoid an
+# ABBA deadlock between concurrent batches (each accumulates many per-session
+# locks in a data-dependent order held until the terminal commit).
+BATCH_FUNCTIONS = {
+    "standing_bookings/materialization.py": ["materialize_standing_bookings"],
+    "standing_bookings/reschedule.py": ["reschedule_standing_booking"],
+}
+
+
+def _functions_calling(path, callee):
+    tree = ast.parse(open(path, encoding="utf-8-sig").read())
+    out = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef):
+            out[node.name] = any(
+                isinstance(c, ast.Call)
+                and isinstance(c.func, ast.Name)
+                and c.func.id == callee
+                for c in ast.walk(node)
+            )
+    return out
+
+
+@pytest.mark.parametrize("rel_path,functions", sorted(BATCH_FUNCTIONS.items()))
+def test_batch_paths_take_batch_lock(rel_path, functions):
+    path = os.path.join(_CRUD, *rel_path.split("/"))
+    calling = _functions_calling(path, "lock_materialization_batch")
+    missing = [f for f in functions if not calling.get(f, False)]
+    assert not missing, f"{rel_path}: batch paths without lock_materialization_batch: {missing}"
+
+
 def test_lock_key_is_stable_and_64bit():
     """The advisory-lock key must be deterministic across processes and fit int8."""
     key = _lock_key("class_session", 42)

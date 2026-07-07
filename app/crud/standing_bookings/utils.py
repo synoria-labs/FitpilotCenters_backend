@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.classModel import ClassTemplate, ClassSession, StandingBooking, Reservation
 from app.models.venueModel import Seat
+from app.crud.time_filters import between_dates
 
 
 def _normalize_weekday_to_iso(weekday: Optional[int]) -> Optional[int]:
@@ -71,8 +72,7 @@ async def _load_sessions_by_template_ids(
     stmt = select(ClassSession).where(
         and_(
             ClassSession.template_id.in_(template_ids),
-            func.date(ClassSession.start_at) >= start_date,
-            func.date(ClassSession.start_at) <= end_date,
+            between_dates(ClassSession.start_at, start_date, end_date),
             ClassSession.status == "scheduled",
         )
     )
@@ -232,8 +232,7 @@ async def _resolve_group_seat(
         .where(
             and_(
                 ClassSession.template_id.in_(template_ids),
-                func.date(ClassSession.start_at) >= window_start,
-                func.date(ClassSession.start_at) <= window_end,
+                between_dates(ClassSession.start_at, window_start, window_end),
                 Reservation.seat_id.isnot(None),
                 Reservation.status.in_(["reserved", "checked_in"]),
                 Reservation.person_id != person_id,

@@ -13,15 +13,17 @@ useful.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Awaitable, Callable, Optional, TypeVar
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crud.memberships.payment_metrics import DailyPointData, PlanBucketData
 from app.crud.memberships.utils import _normalize_to_utc
+from app.db.postgresql import async_session_factory
 from app.models import (
     MembershipPlan,
     MembershipSubscription,
@@ -471,6 +473,52 @@ async def _sum_revenue(
 # --------------------------------------------------------------------------- #
 
 
+_T = TypeVar("_T")
+
+# GLOBAL bound on concurrent fan-out DB sessions across ALL in-flight dashboard
+# loads (not per call). The engine pool is pool_size=5 + max_overflow=10 = 15;
+# capping total fan-out checkouts here means a burst of simultaneous dashboards
+# adds at most _DASHBOARD_FANOUT connections combined, leaving headroom for the
+# requests' own sessions and other endpoints. A per-call semaphore (the naive
+# version) would NOT bound this: N concurrent dashboards could each open 6.
+_DASHBOARD_FANOUT = 6
+
+# One semaphore per event loop (an asyncio.Semaphore is bound to the loop it is
+# first awaited on). Same lazy per-loop pattern as GraphQLClient's refresh sem.
+_fanout_semaphores: "dict[int, asyncio.Semaphore]" = {}
+
+
+def _get_fanout_semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    key = id(loop)
+    sem = _fanout_semaphores.get(key)
+    if sem is None:
+        sem = asyncio.Semaphore(_DASHBOARD_FANOUT)
+        _fanout_semaphores[key] = sem
+    return sem
+
+
+async def _gather_in_sessions(
+    tasks: list[Callable[[AsyncSession], Awaitable[_T]]],
+) -> list[_T]:
+    """Run each read-only metric in its OWN session, concurrently but bounded.
+
+    A single AsyncSession cannot run queries concurrently ("another operation is
+    in progress"), so each task gets a fresh session from the factory. A
+    process-global (per-loop) semaphore caps how many fan-out sessions run at
+    once ACROSS all concurrent dashboard loads, so the pool cannot be starved.
+    Results are returned in the same order as ``tasks``.
+    """
+    sem = _get_fanout_semaphore()
+
+    async def _run(fn: Callable[[AsyncSession], Awaitable[_T]]) -> _T:
+        async with sem:
+            async with async_session_factory() as session:
+                return await fn(session)
+
+    return await asyncio.gather(*(_run(fn) for fn in tasks))
+
+
 def _previous_window(
     start_date: datetime, end_date: datetime
 ) -> tuple[datetime, datetime]:
@@ -486,7 +534,7 @@ def _previous_window(
 
 
 async def get_dashboard_metrics(
-    db: AsyncSession,
+    db: AsyncSession,  # noqa: ARG001 - kept for signature stability; fan-out uses its own sessions
     *,
     start_date: datetime,
     end_date: datetime,
@@ -499,47 +547,58 @@ async def get_dashboard_metrics(
 
     Flow KPIs (revenue, reservations, new members, occupancy) and their prev
     counterparts use the (start, end) and (prev_start, prev_end) windows.
+
+    The request ``db`` is intentionally not used for the queries: the 18 metrics
+    fan out over dedicated sessions (a single AsyncSession can't run concurrent
+    queries). It stays in the signature so callers don't need to change.
     """
     start = _normalize_to_utc(start_date)
     end = _normalize_to_utc(end_date)
     prev_start, prev_end = _previous_window(start, end)
 
-    # Stock — snapshot at end_date and at start_date (= prev_end)
-    total_members = await count_active_members(db, as_of=end)
-    total_members_prev = await count_active_members(db, as_of=start)
-    active_members = await count_active_subscriptions(db, as_of=end)
-    active_members_prev = await count_active_subscriptions(db, as_of=start)
-
-    # Flow — current and previous windows
-    new_members = await count_new_members(db, start_date=start, end_date=end)
-    new_members_prev = await count_new_members(
-        db, start_date=prev_start, end_date=prev_end
-    )
-
-    period_reservations = await count_reservations(db, start_date=start, end_date=end)
-    reservations_prev = await count_reservations(
-        db, start_date=prev_start, end_date=prev_end
-    )
-
-    period_revenue = await _sum_revenue(db, start_date=start, end_date=end)
-    revenue_prev = await _sum_revenue(db, start_date=prev_start, end_date=prev_end)
-
-    avg_occupancy = await calculate_occupancy_avg(
-        db, start_date=start, end_date=end
-    )
-    avg_occupancy_prev = await calculate_occupancy_avg(
-        db, start_date=prev_start, end_date=prev_end
-    )
-
-    # Series
-    revenue_series = await revenue_by_day(db, start_date=start, end_date=end)
-    occupancy_series = await occupancy_by_class(db, start_date=start, end_date=end)
-    new_members_serie = await new_members_series(db, start_date=start, end_date=end)
-    plan_distribution = await membership_distribution(db, as_of=end)
-    top_sales_all_time = await top_membership_sales(db)
-    top_sales_period = await top_membership_sales(
-        db, start_date=start, end_date=end
-    )
+    # These 18 metrics are independent read-only aggregations. Run them
+    # concurrently, each in its own session (a single session serializes queries),
+    # instead of ~18 sequential round-trips on the request session. Order here
+    # MUST match the unpacking below.
+    (
+        total_members,
+        total_members_prev,
+        active_members,
+        active_members_prev,
+        new_members,
+        new_members_prev,
+        period_reservations,
+        reservations_prev,
+        period_revenue,
+        revenue_prev,
+        avg_occupancy,
+        avg_occupancy_prev,
+        revenue_series,
+        occupancy_series,
+        new_members_serie,
+        plan_distribution,
+        top_sales_all_time,
+        top_sales_period,
+    ) = await _gather_in_sessions([
+        lambda s: count_active_members(s, as_of=end),
+        lambda s: count_active_members(s, as_of=start),
+        lambda s: count_active_subscriptions(s, as_of=end),
+        lambda s: count_active_subscriptions(s, as_of=start),
+        lambda s: count_new_members(s, start_date=start, end_date=end),
+        lambda s: count_new_members(s, start_date=prev_start, end_date=prev_end),
+        lambda s: count_reservations(s, start_date=start, end_date=end),
+        lambda s: count_reservations(s, start_date=prev_start, end_date=prev_end),
+        lambda s: _sum_revenue(s, start_date=start, end_date=end),
+        lambda s: _sum_revenue(s, start_date=prev_start, end_date=prev_end),
+        lambda s: calculate_occupancy_avg(s, start_date=start, end_date=end),
+        lambda s: calculate_occupancy_avg(s, start_date=prev_start, end_date=prev_end),
+        lambda s: revenue_by_day(s, start_date=start, end_date=end),
+        lambda s: occupancy_by_class(s, start_date=start, end_date=end),
+        lambda s: new_members_series(s, start_date=start, end_date=end),
+        lambda s: membership_distribution(s, as_of=end),
+        lambda s: top_membership_sales(s),
+        lambda s: top_membership_sales(s, start_date=start, end_date=end),
+    ])
 
     return DashboardMetricsData(
         total_members=total_members,

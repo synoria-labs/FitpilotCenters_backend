@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models.classModel import ClassSession, ClassTemplate, ClassType, Reservation
 from app.models.venueModel import Venue
+from app.crud.time_filters import between_dates, from_date, on_date, until_date
 
 logger = logging.getLogger(__name__)
 
@@ -92,9 +93,9 @@ async def get_sessions_by_template(
     query = select(ClassSession).where(ClassSession.template_id == template_id)
 
     if start_date:
-        query = query.where(func.date(ClassSession.start_at) >= start_date)
+        query = query.where(from_date(ClassSession.start_at, start_date))
     if end_date:
-        query = query.where(func.date(ClassSession.start_at) <= end_date)
+        query = query.where(until_date(ClassSession.start_at, end_date))
     if status:
         query = query.where(ClassSession.status == status)
 
@@ -146,7 +147,7 @@ async def generate_sessions_from_template(
             existing_query = select(ClassSession).where(
                 and_(
                     ClassSession.template_id == template_id,
-                    func.date(ClassSession.start_at) == current_date
+                    on_date(ClassSession.start_at, current_date),
                 )
             )
             existing_result = await db.execute(existing_query)
@@ -265,12 +266,7 @@ async def get_sessions_by_date_range(
         selectinload(ClassSession.venue),
         selectinload(ClassSession.template),
         selectinload(ClassSession.instructor)
-    ).where(
-        and_(
-            func.date(ClassSession.start_at) >= start_date,
-            func.date(ClassSession.start_at) <= end_date
-        )
-    )
+    ).where(between_dates(ClassSession.start_at, start_date, end_date))
 
     if venue_id:
         query = query.where(ClassSession.venue_id == venue_id)

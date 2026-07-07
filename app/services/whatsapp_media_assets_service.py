@@ -1,8 +1,10 @@
 """Reusable WhatsApp media asset storage and validation."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import mimetypes
+import threading
 from pathlib import Path
 from typing import Optional, Tuple
 from urllib.parse import urlparse
@@ -212,25 +214,40 @@ async def _reuse_existing_asset(
     return await crud.make_asset_active(db, asset, public_url=public_url)
 
 
-async def _put_object(storage_key: str, raw: bytes, mime_type: str) -> None:
-    if not media_storage_config.is_configured():
-        raise MediaAssetError(
-            "Storage R2 no configurado. Define MEDIA_S3_ENDPOINT_URL, MEDIA_S3_BUCKET, "
-            "MEDIA_S3_ACCESS_KEY_ID, MEDIA_S3_SECRET_ACCESS_KEY y MEDIA_PUBLIC_BASE_URL."
-        )
+# boto3 client cacheado a nivel de modulo: crearlo es caro (resuelve credenciales,
+# carga modelos de servicio) y put_object es thread-safe, asi que uno solo basta.
+_s3_client = None
+_s3_client_lock = threading.Lock()
+
+
+def _get_s3_client():
+    global _s3_client
+    if _s3_client is not None:
+        return _s3_client
     try:
         import boto3  # type: ignore
+    except ImportError as exc:  # pragma: no cover - dependency issue
+        raise MediaAssetError("Falta instalar boto3 para subir media a R2/S3.") from exc
+    with _s3_client_lock:
+        if _s3_client is None:
+            _s3_client = boto3.client(
+                "s3",
+                endpoint_url=media_storage_config.S3_ENDPOINT_URL,
+                region_name=media_storage_config.S3_REGION,
+                aws_access_key_id=media_storage_config.S3_ACCESS_KEY_ID,
+                aws_secret_access_key=media_storage_config.S3_SECRET_ACCESS_KEY,
+            )
+    return _s3_client
+
+
+def _put_object_blocking(storage_key: str, raw: bytes, mime_type: str) -> None:
+    """Synchronous S3 upload — must run in a worker thread, never on the event loop."""
+    try:
         from botocore.exceptions import BotoCoreError, ClientError  # type: ignore
     except ImportError as exc:  # pragma: no cover - dependency issue
         raise MediaAssetError("Falta instalar boto3 para subir media a R2/S3.") from exc
 
-    client = boto3.client(
-        "s3",
-        endpoint_url=media_storage_config.S3_ENDPOINT_URL,
-        region_name=media_storage_config.S3_REGION,
-        aws_access_key_id=media_storage_config.S3_ACCESS_KEY_ID,
-        aws_secret_access_key=media_storage_config.S3_SECRET_ACCESS_KEY,
-    )
+    client = _get_s3_client()
     try:
         client.put_object(
             Bucket=media_storage_config.S3_BUCKET,
@@ -241,6 +258,17 @@ async def _put_object(storage_key: str, raw: bytes, mime_type: str) -> None:
         )
     except (BotoCoreError, ClientError) as exc:
         raise MediaAssetError(f"No se pudo subir el archivo a R2/S3: {exc}") from exc
+
+
+async def _put_object(storage_key: str, raw: bytes, mime_type: str) -> None:
+    if not media_storage_config.is_configured():
+        raise MediaAssetError(
+            "Storage R2 no configurado. Define MEDIA_S3_ENDPOINT_URL, MEDIA_S3_BUCKET, "
+            "MEDIA_S3_ACCESS_KEY_ID, MEDIA_S3_SECRET_ACCESS_KEY y MEDIA_PUBLIC_BASE_URL."
+        )
+    # boto3 es sincrono: una subida de hasta 100 MB bloquearia el event loop
+    # completo (todas las requests). Se despacha a un thread del pool.
+    await asyncio.to_thread(_put_object_blocking, storage_key, raw, mime_type)
 
 
 async def store_object(storage_key: str, raw: bytes, mime_type: str) -> str:

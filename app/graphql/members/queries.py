@@ -49,14 +49,22 @@ class MembersQuery:
         offset: int = 0,
         search: Optional[str] = None
     ) -> List[Member]:
-        """Get comprehensive list of all members with optional filters"""
+        """Get comprehensive list of members with optional filters.
+
+        A default/max page size is enforced: ``limit=None`` previously
+        materialized every member with all their payment/reservation/booking
+        collections just to sum totals in Python. Use ``members_page`` for
+        explicit pagination with a total count.
+        """
         if await require_capability(info, VIEW_MEMBERS):
             return []
         db: AsyncSession = info.context.db
+        safe_limit = max(1, min(int(limit) if limit else 100, 500))
+        safe_offset = max(0, int(offset or 0))
         members_data = await get_members_list(
             db=db,
-            limit=limit,
-            offset=offset,
+            limit=safe_limit,
+            offset=safe_offset,
             search=search
         )
 

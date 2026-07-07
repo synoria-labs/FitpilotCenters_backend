@@ -98,8 +98,13 @@ async def _mint_access_from_refresh(
 
     try:
         await update_last_active_at(db, session_id)
+        # get_db no commitea al cerrar: sin este commit el UPDATE se revierte
+        # silenciosamente en requests de solo-lectura. Estamos en context-build,
+        # antes de cualquier resolver, así que no hay otro trabajo pendiente.
+        await db.commit()
     except Exception as e:
         logger.warning("Failed to update last_active_at for session %s: %s", session_id[:8], e)
+        await db.rollback()
 
     if response is not None:
         cookie_secure = get_cookie_secure_setting()

@@ -13,7 +13,8 @@ from app.models.classModel import (
     StandingBookingException,
 )
 
-from app.crud.locks import lock_class_session
+from app.crud.locks import lock_class_session, lock_materialization_batch
+from app.crud.time_filters import between_dates
 
 from .utils import _session_has_capacity
 
@@ -79,6 +80,10 @@ async def materialize_standing_bookings(
 
     end_date = start_date + timedelta(weeks=window_weeks)
     stats = _init_materialization_stats()
+
+    # Coarse batch lock FIRST (before any per-session lock below) so two
+    # concurrent multi-session batches cannot ABBA-deadlock on session locks.
+    await lock_materialization_batch(db)
 
     conditions = [
         StandingBooking.status == "active",
@@ -196,8 +201,11 @@ async def _materialize_single_standing_booking(
         .where(
             and_(
                 ClassSession.template_id == template.id,
-                func.date(ClassSession.start_at) >= max(start_date, standing_booking.start_date),
-                func.date(ClassSession.start_at) <= min(end_date, standing_booking.end_date),
+                between_dates(
+                    ClassSession.start_at,
+                    max(start_date, standing_booking.start_date),
+                    min(end_date, standing_booking.end_date),
+                ),
                 ClassSession.status == "scheduled",
             )
         )
@@ -328,8 +336,7 @@ async def get_materialization_preview(
         .where(
             and_(
                 ClassSession.template_id == template.id,
-                func.date(ClassSession.start_at) >= start_date,
-                func.date(ClassSession.start_at) <= end_date,
+                between_dates(ClassSession.start_at, start_date, end_date),
                 ClassSession.status == "scheduled",
             )
         )

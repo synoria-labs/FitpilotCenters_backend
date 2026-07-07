@@ -1,5 +1,6 @@
 ﻿from typing import Optional
 from datetime import datetime, timezone
+import asyncio
 import logging
 import time
 
@@ -267,8 +268,10 @@ class MemberMutation:
             # Read file data
             file_data = await file.read()
 
-            # Validate image
-            is_valid, error_message = image_service.validate_image(file_data, file.filename)
+            # Validate image (PIL es CPU-bound/sincrono: fuera del event loop)
+            is_valid, error_message = await asyncio.to_thread(
+                image_service.validate_image, file_data, file.filename
+            )
             if not is_valid:
                 return MemberResponse(
                     success=False,
@@ -294,11 +297,12 @@ class MemberMutation:
             if member_data.profile_picture_path:
                 image_service.delete_old_picture(member_data.profile_picture_path)
 
-            # Process and save new image
-            new_path = image_service.process_and_save_image(
+            # Process and save new image (resize/re-encode PIL en un thread)
+            new_path = await asyncio.to_thread(
+                image_service.process_and_save_image,
                 file_data=file_data,
                 user_id=member_id,
-                original_filename=file.filename
+                original_filename=file.filename,
             )
 
             if not new_path:
