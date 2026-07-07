@@ -14,6 +14,7 @@ from app.models import (
     Reservation, People, Seat, ClassSession, ClassType, Venue,
     SeatType, MembershipSubscription
 )
+from app.crud.locks import lock_class_session
 
 
 @dataclass
@@ -73,6 +74,10 @@ async def create_reservation(
     commit: bool = True
 ) -> Reservation:
     """Create a new reservation"""
+
+    # Serialize the availability checks + insert for this session (TOCTOU): without
+    # the lock, two concurrent bookings can both count "1 spot left" and oversell.
+    await lock_class_session(db, session_id)
 
     # Validate session exists and is not full
     session_result = await db.execute(

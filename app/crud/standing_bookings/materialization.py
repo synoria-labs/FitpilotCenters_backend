@@ -2,6 +2,7 @@ from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import and_, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -11,6 +12,8 @@ from app.models.classModel import (
     StandingBooking,
     StandingBookingException,
 )
+
+from app.crud.locks import lock_class_session
 
 from .utils import _session_has_capacity
 
@@ -234,6 +237,11 @@ async def _create_reservation_if_possible(
     seat_id_override: Optional[int] = None,
 ) -> None:
     """Create a reservation if possible, respecting capacity and seat constraints."""
+    # Serialize check+insert per session: the capacity count has no backing DB
+    # constraint, so two concurrent materializations (or a manual booking racing a
+    # materialization) could both see the last free spot and oversell (TOCTOU).
+    await lock_class_session(db, session_id)
+
     existing = await _get_existing_reservation(db, session_id, standing_booking.person_id)
     if existing:
         stats["skipped_existing"] += 1
@@ -266,7 +274,20 @@ async def _create_reservation_if_possible(
         source=source,
     )
 
-    db.add(reservation)
+    # SAVEPOINT so a lone constraint violation (uq_session_person /
+    # uq_reservations_seat_once) skips this reservation without poisoning the
+    # whole batch's transaction.
+    try:
+        async with db.begin_nested():
+            db.add(reservation)
+            await db.flush()
+    except IntegrityError as exc:
+        if "uq_reservations_seat_once" in str(exc):
+            stats["skipped_seat_taken"] += 1
+        else:
+            stats["skipped_existing"] += 1
+        return
+
     stats["created_reservations"] += 1
 
 

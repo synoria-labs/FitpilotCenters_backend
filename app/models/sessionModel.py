@@ -11,13 +11,14 @@ class Session(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     refresh_token: Mapped[str] = mapped_column(Text, nullable=False)
-    session: Mapped[str] = mapped_column(String(80), nullable=False)
+    # Consultada en cada request autenticado (verify_session) — indexada.
+    session: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
     device_name: Mapped[Optional[str]] = mapped_column(nullable=True)
     ip_address: Mapped[Optional[str]] = mapped_column(INET, nullable=True)
     last_active_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     revoked_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     user_agent: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    user_id: Mapped[Optional[int]] = mapped_column(nullable=True)
+    user_id: Mapped[Optional[int]] = mapped_column(nullable=True, index=True)
     created_at: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=True,

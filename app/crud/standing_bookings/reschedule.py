@@ -350,35 +350,39 @@ async def reschedule_standing_booking(
         try:
             from app.crud.reservationsCrud import create_reservation
 
-            await create_reservation(
-                db=db,
-                session_id=item.target_session_id,
-                person_id=standing_booking.person_id,
-                seat_id=item.seat_id,
-                source="override",
-                commit=False,
-            )
-
-            await create_standing_booking_exception(
-                db=db,
-                standing_booking_id=item.standing_booking_id,
-                session_date=item.session_date,
-                action="reschedule",
-                new_session_id=item.target_session_id,
-                new_seat_id=item.seat_id,
-            )
-
-            if item.source_session_id:
-                reservation_stmt = select(Reservation).where(
-                    and_(
-                        Reservation.session_id == item.source_session_id,
-                        Reservation.person_id == standing_booking.person_id,
-                    )
+            # SAVEPOINT per item: a failed insert (e.g. constraint violation from a
+            # concurrent booking) must skip only this item, not poison the whole
+            # transaction so every later item fails with InFailedSQLTransaction.
+            async with db.begin_nested():
+                await create_reservation(
+                    db=db,
+                    session_id=item.target_session_id,
+                    person_id=standing_booking.person_id,
+                    seat_id=item.seat_id,
+                    source="override",
+                    commit=False,
                 )
-                reservation_result = await db.execute(reservation_stmt)
-                reservation = reservation_result.scalar_one_or_none()
-                if reservation and reservation.status in ["reserved", "waitlisted"]:
-                    reservation.status = "canceled"
+
+                await create_standing_booking_exception(
+                    db=db,
+                    standing_booking_id=item.standing_booking_id,
+                    session_date=item.session_date,
+                    action="reschedule",
+                    new_session_id=item.target_session_id,
+                    new_seat_id=item.seat_id,
+                )
+
+                if item.source_session_id:
+                    reservation_stmt = select(Reservation).where(
+                        and_(
+                            Reservation.session_id == item.source_session_id,
+                            Reservation.person_id == standing_booking.person_id,
+                        )
+                    )
+                    reservation_result = await db.execute(reservation_stmt)
+                    reservation = reservation_result.scalar_one_or_none()
+                    if reservation and reservation.status in ["reserved", "waitlisted"]:
+                        reservation.status = "canceled"
 
             item.status = "rescheduled"
             item.reason = "Rescheduled"
