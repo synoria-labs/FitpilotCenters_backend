@@ -30,6 +30,9 @@ from app.crud.reservationsCrud import (
     get_sessions_with_seats_by_date,
     get_week_sessions_with_seats
 )
+from app.core.logging_config import get_logger
+
+logger = get_logger("graphql.class_sessions.queries")
 
 def _to_session_with_seats_items(data: List[dict]) -> List[SessionWithSeats]:
     gql_items: List[SessionWithSeats] = []
@@ -115,7 +118,8 @@ class ClassSessionQueries:
                 total_count=len(session_list)
             )
 
-        except Exception as e:
+        except Exception:
+            logger.exception("get_class_sessions query failed")
             return ClassSessionsResponse(
                 sessions=[],
                 total_count=0
@@ -149,7 +153,8 @@ class ClassSessionQueries:
                 total_count=len(session_list)
             )
 
-        except Exception as e:
+        except Exception:
+            logger.exception("get_sessions_by_template query failed")
             return ClassSessionsResponse(
                 sessions=[],
                 total_count=0
@@ -180,11 +185,12 @@ class ClassSessionQueries:
                     message="Session not found"
                 )
 
-        except Exception as e:
+        except Exception:
+            logger.exception("get_session_capacity_info query failed")
             return SessionCapacityResponse(
                 success=False,
                 capacity_info=None,
-                message=f"Error retrieving capacity info: {str(e)}"
+                message="Error retrieving capacity info"
             )
 
     @strawberry.field(permission_classes=[IsAuthenticated])
@@ -206,11 +212,12 @@ class ClassSessionQueries:
                 message="Coverage report generated successfully"
             )
 
-        except Exception as e:
+        except Exception:
+            logger.exception("get_session_coverage_report query failed")
             return SessionCoverageResponse(
                 success=False,
                 report=None,
-                message=f"Error generating coverage report: {str(e)}"
+                message="Error generating coverage report"
             )
 
     @strawberry.field(permission_classes=[IsAuthenticated])
