@@ -26,13 +26,17 @@ SCHEMA = "app"
 
 def upgrade() -> None:
     # Defensive: ensure the standard roles exist (no-op where already present).
+    # created_at is NOT NULL with no server default, so it MUST be supplied here:
+    # on a fresh DB (new env / CI) the rows don't exist yet, so the INSERT actually
+    # runs (rather than hitting ON CONFLICT), and omitting created_at would violate
+    # the not-null constraint and abort `alembic upgrade head`.
     op.execute(
         f"""
-        INSERT INTO {SCHEMA}.roles (code, description) VALUES
-            ('admin', 'Administrador'),
-            ('staff', 'Recepción / personal'),
-            ('instructor', 'Instructor de clases'),
-            ('member', 'Socio')
+        INSERT INTO {SCHEMA}.roles (code, description, created_at) VALUES
+            ('admin', 'Administrador', now()),
+            ('staff', 'Recepción / personal', now()),
+            ('instructor', 'Instructor de clases', now()),
+            ('member', 'Socio', now())
         ON CONFLICT (code) DO NOTHING
         """
     )

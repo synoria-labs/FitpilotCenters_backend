@@ -270,9 +270,13 @@ async def _create_session(db, *, start_at: datetime, capacity: int = 10) -> Clas
         db.add(ctype)
         await db.flush()
 
-    # Use any existing venue (real DB has at least one)
+    # Get-or-create a venue so the test is self-contained (a fresh CI DB has none;
+    # on the shared defaultdb this reuses the first existing venue).
     venue = (await db.execute(select(Venue).limit(1))).scalar_one_or_none()
-    assert venue is not None, "test requires at least one Venue in defaultdb"
+    if venue is None:
+        venue = Venue(name="Test Venue", capacity=10)
+        db.add(venue)
+        await db.flush()
 
     sess = ClassSession(
         class_type_id=ctype.id,
@@ -434,7 +438,22 @@ async def test_dashboard_metrics_previous_window_arithmetic(db):
     assert prev_end - prev_start == end - start
 
 
-async def test_dashboard_metrics_orchestrator_full(db):
+@pytest.fixture
+def _fanout_on_test_db(db, monkeypatch):
+    """get_dashboard_metrics fans out over NEW sessions (separate connections) that
+    only see COMMITTED data; under the rollback fixture the seed rows are flushed
+    but never committed, so the fan-out would see nothing. Redirect it to run
+    sequentially on the test's own session so it sees the seeds. Prod fan-out is
+    unchanged (in prod the queried rows are committed)."""
+    import app.crud.dashboard_metrics as _dm
+
+    async def _run_on_test_db(tasks):
+        return [await fn(db) for fn in tasks]
+
+    monkeypatch.setattr(_dm, "_gather_in_sessions", _run_on_test_db)
+
+
+async def test_dashboard_metrics_orchestrator_full(db, _fanout_on_test_db):
     """End-to-end: seed 2 windows of data, verify current vs previous deltas."""
     from app.crud.dashboard_metrics import get_dashboard_metrics
 
@@ -507,7 +526,7 @@ async def test_dashboard_metrics_orchestrator_full(db):
     assert isinstance(metrics.membership_distribution, list)
 
 
-async def test_dashboard_metrics_top_membership_sales_all_time_and_period(db):
+async def test_dashboard_metrics_top_membership_sales_all_time_and_period(db, _fanout_on_test_db):
     """Top-selling plan is based on completed payments, not active subs."""
     from app.crud.dashboard_metrics import get_dashboard_metrics
 

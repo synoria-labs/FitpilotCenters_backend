@@ -23,6 +23,21 @@ class _FakeResponse:
         self.cookies.append(kwargs)
 
 
+class _FakeSession:
+    """Minimal async session: build_context commits the last_active_at update on
+    the refresh path (get_db does not commit on close)."""
+
+    def __init__(self):
+        self.commits = 0
+        self.rollbacks = 0
+
+    async def commit(self):
+        self.commits += 1
+
+    async def rollback(self):
+        self.rollbacks += 1
+
+
 async def _fake_account(_db, username):
     return SimpleNamespace(id=99, username=username)
 
@@ -174,17 +189,22 @@ async def test_build_context_refreshes_active_refresh_token(monkeypatch):
     monkeypatch.setattr(auth_context, "create_access_token", fake_create_access_token)
     monkeypatch.setattr(auth_context, "update_last_active_at", fake_touch)
 
+    db = _FakeSession()
     context = await auth_context.build_context(
         _FakeRequest(cookies={"refresh_token": "refresh-token"}),
         response=response,
-        db=object(),
+        db=db,
     )
 
     assert context.user is user
     assert context.account_id == 99
     assert context.session_id == "session-1"
     assert touched == ["session-1"]
-    assert response.headers["x-access-token"] == "new-access"
+    assert db.commits == 1  # last_active_at update is committed on the refresh path
+    # The refreshed token is delivered ONLY via the HttpOnly cookie; the
+    # x-access-token response header was intentionally removed (Fase 1) so it is
+    # not readable by JS.
+    assert "x-access-token" not in response.headers
     assert response.cookies[0]["key"] == "access_token"
     assert response.cookies[0]["value"] == "new-access"
     assert access_payloads == [

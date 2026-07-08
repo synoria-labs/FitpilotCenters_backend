@@ -93,7 +93,13 @@ async def _members_page(db, *, limit: int, offset: int, search: str):
         }
         """,
         variable_values={"limit": limit, "offset": offset, "search": search},
-        context_value=SimpleNamespace(db=db, user=object()),
+        # members_page is gated by require_capability(VIEW_MEMBERS) (Fase 1.7).
+        # Give the context user the admin role so person_can() short-circuits True
+        # (admin implies all capabilities) without needing seeded role_capabilities.
+        context_value=SimpleNamespace(
+            db=db,
+            user=SimpleNamespace(roles=[SimpleNamespace(role=SimpleNamespace(code="admin"))]),
+        ),
     )
     assert result.errors is None
     return result.data["membersPage"]
