@@ -2,7 +2,8 @@ import os
 from datetime import datetime, timedelta
 from datetime import timezone
 from fastapi import HTTPException
-from jose import ExpiredSignatureError, JWTError, jwt
+import jwt
+from jwt import PyJWTError
 from zoneinfo import ZoneInfo
 
 from app.core.env import load_environment
@@ -83,13 +84,13 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
 def verify_token(token: str):
     try:
         return jwt.decode(token, SECRET_KEY_ACCESS_TOKEN, algorithms=[ALGORITHM])
-    except JWTError as e:
+    except PyJWTError as e:
         logger.warning(f"Error verifying access token: {e}")
         return None
-    
+
 def verify_refresh_token(token: str):
     try:
         return jwt.decode(token, SECRET_KEY_REFRESH_TOKEN, algorithms=[ALGORITHM])
-    except JWTError as e:
+    except PyJWTError as e:
         logger.warning(f"Error verifying refresh token: {e}")
         return None
