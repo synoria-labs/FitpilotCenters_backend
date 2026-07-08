@@ -159,6 +159,9 @@ async def get_user_by_account_id(db: AsyncSession, account_id: int) -> Optional[
             .selectinload(PersonRole.role)
         )
         .where(Account.id == account_id)
+        # Overwrite identity-map state so a re-read after a role change (update_user)
+        # reflects the just-applied roles instead of a stale selectin-loaded collection.
+        .execution_options(populate_existing=True)
     )
     return result.scalar_one_or_none()
 

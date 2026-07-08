@@ -13,6 +13,7 @@ from app.crud.usersCrud import (
     update_own_account,
     get_user_by_account_id,
     username_exists,
+    _UNSET,
 )
 from app.crud.permissions import MANAGE_USERS
 from app.graphql.auth.permissions import IsAuthenticated, require_capability, require_step_up_proof
@@ -24,9 +25,10 @@ from app.graphql.users.types import (
 
 MIN_PASSWORD_LENGTH = 8
 
-
-# Sentinel so partial updates don't wipe fields that were not provided.
-_UNSET = object()
+# NOTE: _UNSET is imported from app.crud.usersCrud (above). It MUST be the SAME
+# sentinel object the CRUD layer checks against with `is not _UNSET`; defining a
+# separate local _UNSET here made partial updates set unspecified fields to the
+# sentinel object (encode failure on commit -> updateMyAccount silently failed).
 
 
 @strawberry.type
@@ -230,7 +232,6 @@ class UserMutation:
         if step_error:
             return UserMutationResponse(success=False, user=None, message=step_error)
 
-        _UNSET = object()
         full_name = _UNSET
         email = _UNSET
         phone_number = _UNSET
