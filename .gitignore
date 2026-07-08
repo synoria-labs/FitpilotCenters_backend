@@ -90,8 +90,14 @@ find_*.py
 
 # --- Investigation / debug outputs ---
 *_report.txt
+*_report.json
+*_report.md
 *_dump.txt
 debug_output*.txt
+database_report_legacy.txt
 fix_proposal.txt
 final_verification.txt
 migrated_names.txt
+
+# --- PowerShell redirection junk (`pip install x>=1.2.3` crea el archivo `=1.2.3`) ---
+=*
