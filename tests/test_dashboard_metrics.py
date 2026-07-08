@@ -270,9 +270,13 @@ async def _create_session(db, *, start_at: datetime, capacity: int = 10) -> Clas
         db.add(ctype)
         await db.flush()
 
-    # Use any existing venue (real DB has at least one)
+    # Get-or-create a venue so the test is self-contained (a fresh CI DB has none;
+    # on the shared defaultdb this reuses the first existing venue).
     venue = (await db.execute(select(Venue).limit(1))).scalar_one_or_none()
-    assert venue is not None, "test requires at least one Venue in defaultdb"
+    if venue is None:
+        venue = Venue(name="Test Venue", capacity=10)
+        db.add(venue)
+        await db.flush()
 
     sess = ClassSession(
         class_type_id=ctype.id,
