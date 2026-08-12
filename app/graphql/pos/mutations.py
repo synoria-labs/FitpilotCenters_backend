@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import strawberry
@@ -34,8 +35,48 @@ from app.graphql.pos.types import (
     SaleType,
     UpdateProductInput,
 )
+from app.models.notificationModel import EVENT_RENEWAL_CONFIRMATION
+from app.services.notification_service import dispatch_event_in_background
 
 logger = logging.getLogger(__name__)
+
+
+def _schedule_sale_renewal_confirmations(sale) -> None:
+    """Schedule POS renewal notifications only after ``create_sale`` has committed."""
+    for item in getattr(sale, "line_items", None) or []:
+        if getattr(item, "line_type", None) != "membership_renewal":
+            continue
+
+        subscription_id = getattr(item, "subscription_id", None)
+        item_meta = getattr(item, "meta", None) or {}
+        person_id = item_meta.get("person_id") or getattr(sale, "person_id", None)
+        if subscription_id is None or person_id is None:
+            logger.warning(
+                "Could not schedule POS renewal confirmation: missing person/subscription "
+                "(sale=%s, person=%s, subscription=%s)",
+                getattr(sale, "id", None),
+                person_id,
+                subscription_id,
+            )
+            continue
+
+        try:
+            asyncio.create_task(
+                dispatch_event_in_background(
+                    EVENT_RENEWAL_CONFIRMATION,
+                    person_id=person_id,
+                    subscription_id=subscription_id,
+                )
+            )
+        except Exception:  # noqa: BLE001 - a notification must never invalidate the sale
+            logger.warning(
+                "Could not schedule POS renewal confirmation "
+                "(sale=%s, person=%s, subscription=%s)",
+                getattr(sale, "id", None),
+                person_id,
+                subscription_id,
+                exc_info=True,
+            )
 
 
 @strawberry.type
@@ -157,6 +198,7 @@ class PosMutation:
                 sold_by=account_id,
                 note=input.note,
             )
+            _schedule_sale_renewal_confirmations(sale)
             return SaleResponse(
                 success=True,
                 sale=SaleType.from_model(sale),
