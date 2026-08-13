@@ -262,6 +262,7 @@ async def _process_membership_line(db, sale, li: SaleLineInput, primary_method, 
 
     line_total = _dec(payment.amount)
     meta = {
+        "person_id": subscription.person_id,
         "template_id": li.template_id,
         "seat_id": li.seat_id,
         "standing_booking_id": sb_id,
