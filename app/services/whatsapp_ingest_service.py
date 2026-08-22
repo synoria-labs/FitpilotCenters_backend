@@ -132,6 +132,16 @@ async def _process_message(
     except Exception as e:  # noqa: BLE001 - never let the hook break ingestion
         logger.warning("on_inbound_message hook failed: %s", e)
 
+    # A reply is the only source of the campaign 'replied' status (Meta callbacks stop at
+    # 'read'). Never let campaign tracking break webhook ingestion.
+    if msg_type != "reaction":
+        try:
+            await campaigns_crud.apply_inbound_reply(
+                db, wa_id=contact.wa_id, timestamp=ts
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("campaign reply-status update failed: %s", e)
+
     return message.id
 
 

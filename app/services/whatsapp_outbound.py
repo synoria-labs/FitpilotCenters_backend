@@ -84,17 +84,49 @@ async def _acquire_contact_lock(db: AsyncSession, wa_id: str) -> None:
     await db.execute(sa_text("SELECT pg_advisory_xact_lock(:k)"), {"k": _lock_key(wa_id)})
 
 
-def _in_quiet_hours() -> bool:
-    from datetime import datetime
+def _quiet_bounds():
+    """(start_hour, end_hour, tz) for marketing quiet hours. start == end disables them."""
     from zoneinfo import ZoneInfo
 
     from app.core.outbound_config import outbound_config
 
-    s, e = outbound_config.QUIET_HOURS_START, outbound_config.QUIET_HOURS_END
-    if s == e:
+    start = min(max(int(outbound_config.QUIET_HOURS_START), 0), 23)
+    end = min(max(int(outbound_config.QUIET_HOURS_END), 0), 23)
+    return start, end, ZoneInfo(outbound_config.QUIET_HOURS_TZ)
+
+
+def _in_quiet_hours(now: Optional["datetime"] = None) -> bool:
+    from datetime import datetime, timezone as _tz
+
+    start, end, zone = _quiet_bounds()
+    if start == end:
         return False
-    hour = datetime.now(ZoneInfo(outbound_config.QUIET_HOURS_TZ)).hour
-    return (s <= hour < e) if s < e else (hour >= s or hour < e)
+    local = (now or datetime.now(_tz.utc)).astimezone(zone)
+    hour = local.hour
+    return (start <= hour < end) if start < end else (hour >= start or hour < end)
+
+
+def next_allowed_send_at(now: Optional["datetime"] = None) -> "datetime":
+    """The next instant a MARKETING message may go out — ``now`` if already allowed.
+
+    Callers that would otherwise retry a quiet-hours deferral immediately should schedule
+    for this instant instead: retrying every few minutes until 09:00 burns a whole night of
+    sweeps and rewrites the whole audience on each pass.
+    """
+    from datetime import datetime, timedelta, timezone as _tz
+
+    start, end, zone = _quiet_bounds()
+    local = (now or datetime.now(_tz.utc)).astimezone(zone)
+    if start == end:
+        return local
+    hour = local.hour
+    in_quiet = (start <= hour < end) if start < end else (hour >= start or hour < end)
+    if not in_quiet:
+        return local
+    candidate = local.replace(hour=end, minute=0, second=0, microsecond=0)
+    if candidate <= local:
+        candidate += timedelta(days=1)
+    return candidate
 
 
 async def _marketing_gates(

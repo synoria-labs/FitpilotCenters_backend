@@ -111,6 +111,9 @@ class Campaign(Base):
 
     started_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
     finished_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
+    # Stamped periodically while a dispatch run is alive. A ``sending`` campaign whose
+    # heartbeat has gone stale was orphaned by a restart and is reclaimed by the sweep.
+    heartbeat_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
     created_by: Mapped[Optional[int]] = mapped_column(
         BigInteger, ForeignKey("accounts.id", ondelete="SET NULL")
     )
@@ -194,6 +197,15 @@ class CampaignRecipient(Base):
     )
     # Snapshot of the subscription that made this person eligible (conversion baseline).
     subscription_id: Mapped[Optional[int]] = mapped_column(BigInteger)
+    # The class this member books most, resolved once at build time (see
+    # ``attendance_profile_service``). Frozen here so the message can name it without an
+    # aggregate per recipient, and so results stay sliceable by class after the fact.
+    favorite_class_type_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("class_types.id", ondelete="SET NULL")
+    )
+    favorite_class_template_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("class_templates.id", ondelete="SET NULL")
+    )
     # Denormalized at snapshot time so the list survives later person edits.
     phone_e164: Mapped[Optional[str]] = mapped_column(String(32))
     wa_id: Mapped[Optional[str]] = mapped_column(String(100))
@@ -201,6 +213,9 @@ class CampaignRecipient(Base):
     dedup_key: Mapped[str] = mapped_column(String(140), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     skip_reason: Mapped[Optional[str]] = mapped_column(String(40))
+    # Not eligible for dispatch until this instant. NULL means "now". A quiet-hours deferral
+    # pushes this forward instead of marking the recipient failed and retrying every sweep.
+    send_after: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
 
     # Links to the persisted chat message + Meta delivery tracking (no FK: messages is an
     # externally-managed table, mirror notification_log which also stores ids loosely).
@@ -239,6 +254,9 @@ class CampaignRecipient(Base):
         ),
         Index("uq_campaign_recipient_dedup", "dedup_key", unique=True),
         Index("idx_campaign_recipient_campaign_status", "campaign_id", "status"),
+        Index("idx_campaign_recipient_dispatch", "campaign_id", "status", "send_after"),
+        Index("idx_campaign_recipient_conversion", "campaign_id", "converted", "sent_at"),
         Index("idx_campaign_recipient_person_targeted", "person_id", "targeted_at"),
         Index("idx_campaign_recipient_wa_message", "wa_message_id"),
+        Index("idx_campaign_recipient_favorite_class", "campaign_id", "favorite_class_type_id"),
     )

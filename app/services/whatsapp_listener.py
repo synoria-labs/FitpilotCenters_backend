@@ -10,9 +10,11 @@ import asyncio
 import json
 import logging
 import os
-from typing import Dict, Set
+import re
+from typing import TYPE_CHECKING, Dict, Set
 
-import asyncpg
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    import asyncpg
 
 logger = logging.getLogger("whatsapp.listener")
 
@@ -48,18 +50,22 @@ class Broadcaster:
 
 
 def _plain_dsn() -> str:
-    """asyncpg needs a plain DSN (strip the SQLAlchemy '+asyncpg' driver suffix)."""
+    """asyncpg needs a plain DSN, with the SQLAlchemy driver suffix removed.
+
+    Strips any ``+driver`` (``+asyncpg``, ``+psycopg``, ...), not just asyncpg's: a URL
+    naming a different driver used to pass straight through and fail at connect time.
+    """
     url = os.getenv(
         "DATABASE_URL",
         "postgresql+asyncpg://appuser:secret123@localhost:5432/defaultdb",
     )
-    return url.replace("+asyncpg", "")
+    return re.sub(r"^(postgres(?:ql)?)\+\w+://", r"\1://", url)
 
 
 class WhatsAppListener:
     def __init__(self, broadcaster: Broadcaster):
         self.broadcaster = broadcaster
-        self._conn: asyncpg.Connection = None
+        self._conn: "asyncpg.Connection" = None
         self._task: asyncio.Task = None
         self._stop = False
 
@@ -93,6 +99,8 @@ class WhatsAppListener:
         dsn = _plain_dsn()
         while not self._stop:
             try:
+                import asyncpg  # local: keeps the driver out of the schema import graph
+
                 self._conn = await asyncpg.connect(dsn)
                 await self._conn.add_listener(CHANNEL, self._on_notify)
                 logger.info("WhatsApp listener connected; LISTEN %s", CHANNEL)

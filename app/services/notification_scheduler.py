@@ -40,10 +40,16 @@ def _sweep_hour() -> int:
 
 
 def _campaign_interval_minutes() -> int:
+    """How often to advance in-flight campaigns.
+
+    One minute by default: a campaign now progresses in bounded slices rather than one long
+    run, so the sweep is the clock that drives it forward. ``campaign_service._batch_size``
+    reads the same variable to size a slice to roughly one tick.
+    """
     try:
-        minutes = int(os.getenv("CAMPAIGN_SWEEP_INTERVAL_MIN", "5"))
+        minutes = int(os.getenv("CAMPAIGN_SWEEP_INTERVAL_MIN", "1"))
     except ValueError:
-        minutes = 5
+        minutes = 1
     return min(max(minutes, 1), 60)
 
 
