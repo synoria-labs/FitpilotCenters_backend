@@ -1,0 +1,37 @@
+# Local development database.
+#
+# Only Postgres: the API itself runs from the host so you keep the fast edit/reload loop.
+# The container owns nothing but the data volume, so `docker compose -f docker-compose.dev.yml
+# down -v` gives you a clean slate whenever a migration test leaves the schema dirty.
+#
+#   docker compose -f docker-compose.dev.yml up -d
+#   DATABASE_URL=... alembic upgrade head
+#
+# Port 5433, not 5432, so this never collides with a Postgres already installed on the host —
+# and so a mistyped connection string cannot silently reach some other database.
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: fitpilot-dev-db
+    environment:
+      POSTGRES_USER: fitpilot
+      POSTGRES_PASSWORD: fitpilot_local
+      POSTGRES_DB: fitpilot
+      # Production runs in this zone and the code depends on it: `time_filters.py` buckets
+      # days by the session timezone, and the class-affinity queries read local hours
+      # straight out of `class_sessions.start_at`. A UTC dev database would quietly give
+      # different answers than production for the same data.
+      TZ: America/Mexico_City
+      PGTZ: America/Mexico_City
+    ports:
+      - "5433:5432"
+    volumes:
+      - fitpilot_dev_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fitpilot -d fitpilot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  fitpilot_dev_pgdata:

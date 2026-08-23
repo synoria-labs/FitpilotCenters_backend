@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -51,6 +52,7 @@ from app.models.campaignsModel import (
     STATUS_SCHEDULED,
     STATUS_SENDING,
 )
+from app.services import attendance_profile_service
 from app.services import segmentation_service
 from app.services import whatsapp_cloud_service as cloud
 from app.services import whatsapp_media_assets_service as media_service
@@ -70,6 +72,70 @@ logger = logging.getLogger(__name__)
 # Meta error codes that mean "back off" rather than "this recipient failed".
 _RATE_LIMIT_CODES = {130429, 131048, 131056, 80007}
 
+# How long a recipient deferred mid-purchase waits before the bot conversation is retried.
+_PENDING_ACTION_RETRY_MINUTES = 30
+
+# How long a rate-limited recipient waits before becoming eligible again.
+_RATE_LIMIT_BACKOFF_SECONDS = 120
+
+# Batches one direct ``run_campaign`` call will process before handing back to the sweep.
+# A cap, not a target: the loop stops as soon as nothing is due.
+_MAX_BATCHES_PER_RUN = 50
+
+
+def _env_int(name: str, default: int, *, low: int, high: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return min(max(value, low), high)
+
+
+def _concurrency() -> int:
+    """Sends in flight at once.
+
+    Kept small on purpose: each send holds a database session, and the engine pool is
+    5 + 10 overflow. Throughput comes from not sleeping between sends, not from a wide fan-out.
+    """
+    return _env_int("CAMPAIGN_SEND_CONCURRENCY", 5, low=1, high=10)
+
+
+def _batch_size(throttle_per_minute: Optional[int] = None) -> int:
+    """How many recipients one slice claims.
+
+    Capped by what the throttle can actually deliver in one sweep interval, so a slice takes
+    roughly one tick and the scheduler keeps its rhythm instead of one campaign sitting in
+    the single job slot for an hour.
+    """
+    configured = _env_int("CAMPAIGN_BATCH_SIZE", 200, low=1, high=2000)
+    rate = max(int(throttle_per_minute or 60), 1)
+    sweep_minutes = _env_int("CAMPAIGN_SWEEP_INTERVAL_MIN", 1, low=1, high=60)
+    return max(1, min(configured, rate * sweep_minutes))
+
+
+class _RateGate:
+    """Spaces out send starts so a batch honours ``throttle_per_minute``.
+
+    A plain ``sleep`` between sends would serialise the batch and make every message pay the
+    previous one's network latency. Handing out timed slots instead lets sends overlap while
+    the *rate* stays exactly where the campaign set it.
+    """
+
+    def __init__(self, per_minute: Optional[int]) -> None:
+        self._interval = 60.0 / max(int(per_minute or 60), 1)
+        self._lock = asyncio.Lock()
+        self._next_slot = 0.0
+
+    async def wait(self) -> None:
+        async with self._lock:
+            loop = asyncio.get_running_loop()
+            now = loop.time()
+            slot = max(now, self._next_slot)
+            self._next_slot = slot + self._interval
+            delay = slot - now
+        if delay > 0:
+            await asyncio.sleep(delay)
+
 
 class _RateLimited(Exception):
     """Raised mid-dispatch when Meta signals a rate limit; the run pauses and can resume."""
@@ -82,8 +148,17 @@ def _now() -> datetime:
 # ---------------------------------------------------------------------------
 # Catalog (single source of truth, shared with the frontend wizard)
 # ---------------------------------------------------------------------------
+# Variables only a campaign can resolve. They are NOT added to ``notification_service.VARIABLES``
+# because that catalog is shared with the event-driven notifications, which have no audience and
+# therefore no frozen class affinity. Values come from the snapshot taken at build time.
+CAMPAIGN_VARIABLES: Dict[str, Dict[str, str]] = {
+    "favorite_class_name": {"label": "Clase que más reserva", "sample": "Spinning"},
+    "favorite_class_day": {"label": "Día de esa clase", "sample": "lunes"},
+    "favorite_class_time": {"label": "Hora de esa clase", "sample": "7:00 a. m."},
+}
+
 # Every objective targets members and can resolve the same member-based variables.
-_MEMBER_VARIABLE_KEYS = list(VARIABLES.keys())
+_MEMBER_VARIABLE_KEYS = list(VARIABLES.keys()) + list(CAMPAIGN_VARIABLES.keys())
 
 CAMPAIGN_OBJECTIVES: Dict[str, Dict[str, Any]] = {
     OBJECTIVE_WIN_BACK: {
@@ -129,7 +204,31 @@ AUDIENCE_PREDICATES: List[Dict[str, Any]] = [
         "kind": "days_op",
         "hint": "older_than_days = inactivo desde hace N días.",
     },
+    {
+        "type": "class_affinity",
+        "label": "Clases que más reserva",
+        "kind": "class_affinity",
+        "modes": list(segmentation_service.CLASS_AFFINITY_MODES),
+        "hint": (
+            "groups: una entrada por actividad. Sin template_ids abarca la actividad completa "
+            "(incluidas sesiones sueltas sin plantilla); con template_ids se acota a horarios "
+            "concretos. mode=favorite exige que la selección concentre más reservas que "
+            "cualquier otra actividad del socio; mode=attended solo pide min_reservations."
+        ),
+    },
 ]
+
+
+def apply_favorite_class_variables(context: Dict[str, Any], favorite) -> Dict[str, Any]:
+    """Add the class-affinity variables to a variable context.
+
+    A member with no booking history resolves to empty strings rather than a placeholder:
+    inventing a class name would put a lie in a marketing message.
+    """
+    context["favorite_class_name"] = favorite.class_type_name if favorite else ""
+    context["favorite_class_day"] = favorite.day_label if favorite else ""
+    context["favorite_class_time"] = favorite.time_label if favorite else ""
+    return context
 
 
 def allowed_variables_for(objective: str) -> set:
@@ -199,7 +298,16 @@ async def build_campaign_audience(db: AsyncSession, campaign_id: int) -> Dict[st
     blocked = await crud.recently_targeted_person_ids(
         db, days=campaign.recency_block_days, exclude_campaign_id=campaign_id
     )
+    # Resolve the whole audience's favourite class in two set-based queries and freeze it on
+    # each row, so the message can name the class without an aggregate per recipient later.
+    favorites = await attendance_profile_service.favorite_classes_for(
+        db, [c.person.id for c in candidates]
+    )
 
+    # One consent query for the whole audience instead of one per candidate.
+    opted_out = await crud.opted_out_person_ids(db, [c.person.id for c in candidates])
+
+    rows: List[Dict[str, Any]] = []
     for cand in candidates:
         person = cand.person
         raw_phone = (person.phone_number or person.wa_id or "").strip()
@@ -211,25 +319,31 @@ async def build_campaign_audience(db: AsyncSession, campaign_id: int) -> Dict[st
             status, skip_reason = "skipped", "no_phone"
         elif person.id in blocked:
             status, skip_reason = "skipped", "recency_block"
-        elif await _is_opted_out(db, person.id):
+        elif person.id in opted_out:
             status, skip_reason = "skipped", "no_consent"
 
-        inserted = await crud.insert_recipient(
-            db,
-            campaign_id=campaign_id,
-            dedup_key=f"campaign:{campaign_id}:{person.id}",
-            variant_id=variant.id,
-            person_id=person.id,
-            subscription_id=cand.subscription.id if cand.subscription else None,
-            phone_e164=raw_phone or None,
-            wa_id=wa_id or None,
-            status=status,
-            skip_reason=skip_reason,
+        favorite = favorites.get(person.id)
+        rows.append(
+            {
+                "campaign_id": campaign_id,
+                "dedup_key": f"campaign:{campaign_id}:{person.id}",
+                "variant_id": variant.id,
+                "person_id": person.id,
+                "subscription_id": cand.subscription.id if cand.subscription else None,
+                "phone_e164": raw_phone or None,
+                "wa_id": wa_id or None,
+                "status": status,
+                "skip_reason": skip_reason,
+                "favorite_class_type_id": favorite.class_type_id if favorite else None,
+                "favorite_class_template_id": (
+                    favorite.class_template_id if favorite else None
+                ),
+            }
         )
-        if inserted is None:
-            continue  # already in the snapshot
-        stats["targeted"] += 1
         stats["skipped" if status == "skipped" else "pending"] += 1
+
+    # Rows already in the snapshot are ignored (ON CONFLICT), so re-building is idempotent.
+    stats["targeted"] = await crud.insert_recipients_bulk(db, rows)
 
     await db.commit()
     return stats
@@ -243,6 +357,7 @@ async def _send_to_recipient(
     campaign: Campaign,
     variant: Optional[CampaignVariant],
     recipient: CampaignRecipient,
+    favorite=None,
 ) -> str:
     """Send the campaign template to one claimed recipient. Returns 'sent' | 'failed' | 'opted_out'.
 
@@ -282,7 +397,9 @@ async def _send_to_recipient(
         else None
     )
     plan = subscription.plan if subscription is not None else None
-    context = build_variable_context(person, subscription, plan)
+    context = apply_favorite_class_variables(
+        build_variable_context(person, subscription, plan), favorite
+    )
     body_params = _resolve_body_params(_variant_param_mapping(campaign, variant), context)
     header_text_key, button_url_key, location_param = _variant_extra_params(campaign, variant)
     header_text_param = _resolve_param_key(header_text_key, context)
@@ -342,8 +459,17 @@ async def _send_to_recipient(
         if gw.reason == "rate_limited":
             await db.rollback()
             raise _RateLimited("rate limited")
-        # quiet_hours / pending_action: retry on a later sweep (failed is the retryable state).
-        await crud.mark_recipient_failed(db, recipient, error=f"deferred:{gw.reason}")
+        # quiet_hours / pending_action: nothing failed, the moment was just not allowed. Park
+        # the recipient until it is, instead of marking it failed (which both misreports the
+        # campaign and makes the very next sweep retry it into the same wall).
+        if gw.reason == "quiet_hours":
+            eligible_at = outbound.next_allowed_send_at()
+        else:
+            # Mid-purchase with the bot: give the conversation room to finish.
+            eligible_at = _now() + timedelta(minutes=_PENDING_ACTION_RETRY_MINUTES)
+        await crud.defer_recipient(
+            db, recipient, send_after=eligible_at, reason=gw.reason or "deferred"
+        )
         return "deferred"
     if gw.status is outbound.SendStatus.FAILED:
         await crud.mark_recipient_failed(db, recipient, error=gw.reason or "Error al enviar.")
@@ -387,10 +513,19 @@ async def _current_status(db: AsyncSession, campaign_id: int) -> Optional[str]:
     ).scalar_one_or_none()
 
 
-async def run_campaign(campaign_id: int, *, dry_run: bool = False) -> Dict[str, Any]:
-    """Build (if needed) and dispatch a campaign in its own session.
+async def run_campaign(
+    campaign_id: int, *, dry_run: bool = False, max_batches: Optional[int] = None
+) -> Dict[str, Any]:
+    """Build (if needed) and dispatch a campaign in bounded, resumable slices.
 
-    ``dry_run`` renders a sample and sends nothing. Safe to re-run (idempotent resume).
+    Each slice claims a batch of recipients that are due *now*, sends them with bounded
+    concurrency under the campaign throttle, and returns. Nothing here loops for the length
+    of the audience, so a restart costs at most one in-flight batch and the next sweep picks
+    the campaign straight back up.
+
+    ``max_batches`` caps how many batches a single call processes — the scheduler passes 1 so
+    one large campaign cannot monopolise the sweep. ``dry_run`` renders a sample and sends
+    nothing. Safe to re-run: every recipient is claimed with a compare-and-set.
     """
     async with async_session_factory() as db:
         campaign = await crud.get_campaign_model(db, campaign_id)
@@ -410,62 +545,170 @@ async def run_campaign(campaign_id: int, *, dry_run: bool = False) -> Dict[str, 
         await crud.set_campaign_status(
             db, campaign, status=STATUS_SENDING, started_at=campaign.started_at or _now()
         )
+        # Detached copies: each send worker opens its own session and only reads these.
+        db.expunge(campaign)
+        if variant is not None:
+            db.expunge(variant)
 
-        interval = 60.0 / max(int(campaign.throttle_per_minute or 60), 1)
-        stats = {"sent": 0, "failed": 0, "skipped": 0}
-        ids = await crud.list_sendable_recipient_ids(db, campaign_id)
-        paused = False
-        deferred = False  # a recipient was deferred (quiet hours / mid-purchase) -> retry later
+    stats = {"sent": 0, "failed": 0, "skipped": 0, "deferred": 0, "batches": 0}
+    gate = _RateGate(campaign.throttle_per_minute)
+    limit = _batch_size(campaign.throttle_per_minute)
+    paused = False
+    budget = max_batches if max_batches is not None else _MAX_BATCHES_PER_RUN
 
-        for index, rid in enumerate(ids):
-            status_now = await _current_status(db, campaign_id)
-            if status_now in (STATUS_PAUSED, STATUS_CANCELED):
-                paused = status_now == STATUS_PAUSED
-                break
+    while stats["batches"] < budget:
+        outcome = await _dispatch_slice(campaign, variant, gate, limit)
+        stats["batches"] += 1
+        for key in ("sent", "failed", "skipped", "deferred"):
+            stats[key] += outcome[key]
+        if outcome["paused"]:
+            paused = True
+            break
+        if outcome["stopped"] or outcome["claimed"] == 0:
+            break
 
-            claimed = await crud.claim_recipient_for_send(db, rid)
-            await db.commit()
-            if not claimed:
-                continue
+    await _settle_campaign(campaign_id, paused=paused)
+    # One structured line per run: enough to explain a slow or stalled campaign without
+    # having to reconstruct it from per-message logs.
+    logger.info(
+        "campaign %s run: batches=%s sent=%s failed=%s skipped=%s deferred=%s paused=%s",
+        campaign_id,
+        stats["batches"],
+        stats["sent"],
+        stats["failed"],
+        stats["skipped"],
+        stats["deferred"],
+        paused,
+    )
+    return {"ok": True, "paused": paused, "deferred": bool(stats["deferred"]), **stats}
 
-            recipient = await crud.get_recipient_model(db, rid)
+
+async def _dispatch_slice(
+    campaign: Campaign,
+    variant: Optional[CampaignVariant],
+    gate: "_RateGate",
+    limit: int,
+) -> Dict[str, Any]:
+    """Claim one batch of due recipients and send it. Returns per-batch counters."""
+    result = {
+        "claimed": 0, "sent": 0, "failed": 0, "skipped": 0, "deferred": 0,
+        "paused": False, "stopped": False,
+    }
+    async with async_session_factory() as db:
+        status_now = await _current_status(db, campaign.id)
+        if status_now in (STATUS_PAUSED, STATUS_CANCELED):
+            result["stopped"] = True
+            result["paused"] = status_now == STATUS_PAUSED
+            return result
+
+        claimed = await crud.claim_recipient_batch(db, campaign.id, limit)
+        await crud.touch_campaign_heartbeat(db, campaign.id)
+        await db.commit()
+        if not claimed:
+            return result
+        result["claimed"] = len(claimed)
+
+        # Class labels for the whole batch in one pass, never per message.
+        claimed_ids = set(claimed)
+        refs = [
+            row
+            for row in await crud.list_recipient_favorite_refs(db, campaign.id)
+            if row.id in claimed_ids
+        ]
+        favorites = await attendance_profile_service.favorite_class_for_recipients(db, refs)
+
+    semaphore = asyncio.Semaphore(_concurrency())
+    outcomes = await asyncio.gather(
+        *(
+            _send_one(campaign, variant, rid, favorites.get(rid), gate, semaphore)
+            for rid in claimed
+        )
+    )
+    for outcome in outcomes:
+        if outcome == "sent":
+            result["sent"] += 1
+        elif outcome == "failed":
+            result["failed"] += 1
+        elif outcome == "rate_limited":
+            result["paused"] = True
+        else:
+            result["skipped"] += 1
+            if outcome == "deferred":
+                result["deferred"] += 1
+    return result
+
+
+async def _send_one(
+    campaign: Campaign,
+    variant: Optional[CampaignVariant],
+    recipient_id: int,
+    favorite,
+    gate: "_RateGate",
+    semaphore: asyncio.Semaphore,
+) -> str:
+    """Send to one already-claimed recipient, in its own short-lived session."""
+    async with semaphore:
+        await gate.wait()
+        async with async_session_factory() as db:
+            recipient = await crud.get_recipient_model(db, recipient_id)
+            if recipient is None:
+                return "skipped"
             try:
-                outcome = await _send_to_recipient(db, campaign, variant, recipient)
+                return await _send_to_recipient(db, campaign, variant, recipient, favorite)
             except _RateLimited as exc:
-                logger.warning("campaign %s paused (rate limit): %s", campaign_id, exc)
-                recipient = await crud.get_recipient_model(db, rid)
-                await crud.mark_recipient_failed(db, recipient, error=f"rate_limited: {exc}")
-                paused = True
-                break
+                logger.warning("campaign %s rate limited: %s", campaign.id, exc)
+                # Not this recipient's fault: put it back in the queue, due after a backoff.
+                await db.rollback()
+                recipient = await crud.get_recipient_model(db, recipient_id)
+                if recipient is not None:
+                    await crud.defer_recipient(
+                        db,
+                        recipient,
+                        send_after=_now() + timedelta(seconds=_RATE_LIMIT_BACKOFF_SECONDS),
+                        reason="rate_limited",
+                    )
+                return "rate_limited"
+            except Exception:  # noqa: BLE001 - one bad recipient must not kill the batch
+                logger.exception(
+                    "campaign %s: send failed for recipient %s", campaign.id, recipient_id
+                )
+                await db.rollback()
+                recipient = await crud.get_recipient_model(db, recipient_id)
+                if recipient is not None:
+                    await crud.mark_recipient_failed(db, recipient, error="Error interno.")
+                return "failed"
 
-            if outcome == "sent":
-                stats["sent"] += 1
-            elif outcome == "failed":
-                stats["failed"] += 1
-            else:
-                stats["skipped"] += 1
-                if outcome == "deferred":
-                    deferred = True
 
-            if index < len(ids) - 1:
-                await asyncio.sleep(interval)
-
+async def _settle_campaign(campaign_id: int, *, paused: bool) -> None:
+    """Decide what a campaign's status should be now that a run has stopped."""
+    async with async_session_factory() as db:
         fresh = await crud.get_campaign_model(db, campaign_id)
-        if fresh is not None and fresh.status == STATUS_SENDING:
-            if deferred and not paused:
-                # Recipients deferred (quiet hours / mid-purchase). Re-schedule (due now) so a later
-                # sweep retries them, instead of completing and silently dropping the audience.
-                await crud.set_campaign_status(
-                    db, fresh, status=STATUS_SCHEDULED, scheduled_at=_now()
-                )
-            else:
-                await crud.set_campaign_status(
-                    db,
-                    fresh,
-                    status=STATUS_PAUSED if paused else STATUS_COMPLETED,
-                    finished_at=None if paused else _now(),
-                )
-        return {"ok": True, "paused": paused, "deferred": deferred, **stats}
+        if fresh is None or fresh.status != STATUS_SENDING:
+            return
+        if paused:
+            await crud.set_campaign_status(db, fresh, status=STATUS_PAUSED)
+            return
+
+        # Anyone still due right now means the run was cut short by its batch budget, not
+        # finished: leave it scheduled so the next sweep continues immediately.
+        if await crud.list_sendable_recipient_ids(db, campaign_id):
+            await crud.set_campaign_status(
+                db, fresh, status=STATUS_SCHEDULED, scheduled_at=_now()
+            )
+            return
+
+        waiting_at = await crud.next_send_after(db, campaign_id)
+        if waiting_at is not None:
+            # Deferred recipients (quiet hours / mid-purchase / backoff) are neither failures
+            # nor losses: reschedule for the instant the first of them becomes eligible.
+            await crud.set_campaign_status(
+                db, fresh, status=STATUS_SCHEDULED, scheduled_at=waiting_at
+            )
+            return
+
+        await crud.set_campaign_status(
+            db, fresh, status=STATUS_COMPLETED, finished_at=_now()
+        )
 
 
 async def _dry_run_preview(
@@ -476,7 +719,10 @@ async def _dry_run_preview(
     if template_id:
         tpl = await templates_crud.get_template_model(db, template_id)
         if tpl is not None:
-            sample_context = {key: meta.get("sample", "") for key, meta in VARIABLES.items()}
+            sample_context = {
+                key: meta.get("sample", "")
+                for key, meta in {**VARIABLES, **CAMPAIGN_VARIABLES}.items()
+            }
             body_params = _resolve_body_params(
                 _variant_param_mapping(campaign, variant), sample_context
             )
@@ -504,8 +750,14 @@ async def trigger_in_background(campaign_id: int) -> None:
 # Scheduled sweeps (piggyback the notification APScheduler)
 # ---------------------------------------------------------------------------
 async def run_campaign_sweep() -> Dict[str, int]:
-    """Dispatch every scheduled campaign whose time has arrived."""
-    stats = {"campaigns": 0, "sent": 0, "failed": 0}
+    """Advance every campaign that is due — one bounded slice each.
+
+    Each campaign gets a single batch per tick rather than being run to completion, so a
+    10,000-recipient blast cannot sit in the scheduler's only job slot while every other
+    campaign waits. A campaign that still has work left re-schedules itself for now and is
+    picked up again on the next tick.
+    """
+    stats = {"campaigns": 0, "sent": 0, "failed": 0, "deferred": 0}
     async with async_session_factory() as db:
         due = await crud.campaigns_due_for_send(db, _now())
         due_ids = []
@@ -517,10 +769,11 @@ async def run_campaign_sweep() -> Dict[str, int]:
             due_ids.append(campaign.id)
 
     for campaign_id in due_ids:
-        result = await run_campaign(campaign_id)
+        result = await run_campaign(campaign_id, max_batches=1)
         stats["campaigns"] += 1
         stats["sent"] += int(result.get("sent", 0))
         stats["failed"] += int(result.get("failed", 0))
+        stats["deferred"] += int(result.get("deferred", 0))
     return stats
 
 
@@ -556,11 +809,26 @@ async def _check_conversion(
 
 
 async def run_conversion_sweep() -> Dict[str, int]:
-    """Attribute conversions (payments) to recipients still inside their window."""
-    stats = {"checked": 0, "converted": 0}
+    """Attribute conversions to recipients still inside their window.
+
+    The common case — ``conversion_metric == 'payment'`` — is a single UPDATE per campaign
+    rather than one or two queries per recipient. The reservation/renewal metrics still walk
+    their recipients, because both need a second table checked per person; they are the rare
+    configurations, so the loop stays where it is genuinely needed.
+    """
+    stats = {"checked": 0, "converted": 0, "campaigns": 0}
     async with async_session_factory() as db:
         campaigns = await crud.campaigns_with_open_conversion_window(db)
         for campaign in campaigns:
+            stats["campaigns"] += 1
+            metric = (campaign.conversion_metric or "payment").lower()
+
+            if metric == "payment":
+                stats["converted"] += await crud.attribute_payment_conversions(
+                    db, campaign.id, window_days=campaign.conversion_window_days
+                )
+                continue
+
             recipients = await crud.list_recipients_pending_conversion(
                 db, campaign.id, window_days=campaign.conversion_window_days
             )
@@ -574,16 +842,21 @@ async def run_conversion_sweep() -> Dict[str, int]:
                     )
                     stats["converted"] += 1
         await db.commit()
+    logger.info("campaign conversion sweep: %s", stats)
     return stats
 
 
 # ---------------------------------------------------------------------------
 # Metrics
 # ---------------------------------------------------------------------------
-async def get_metrics(db: AsyncSession, campaign_id: int) -> Dict[str, Any]:
-    """Single-table aggregation over ``campaign_recipients`` + attributed revenue."""
-    counts = await crud.recipient_status_counts(db, campaign_id)
+def _metrics_from(
+    counts: Dict[str, int], converted: int, revenue: Optional[Decimal]
+) -> Dict[str, Any]:
+    """Shape one campaign's metrics from its status histogram.
 
+    Pure, so the single-campaign and whole-page paths cannot drift apart in how they define
+    "sent" or compute a rate.
+    """
     skipped = counts.get("skipped", 0)
     # Anyone who was actually contacted (claimed and not skipped/pending).
     sent = sum(counts.get(s, 0) for s in ("sent", "delivered", "read", "replied"))
@@ -594,16 +867,11 @@ async def get_metrics(db: AsyncSession, campaign_id: int) -> Dict[str, Any]:
     opted_out = counts.get("opted_out", 0)
     pending = counts.get("pending", 0) + counts.get("sending", 0)
 
-    # Conversions are tracked on the recipient rows regardless of current delivery status.
-    converted = await _count_converted(db, campaign_id)
-    revenue = await crud.conversion_revenue(db, campaign_id)
-
     def rate(numerator: int, denominator: int) -> float:
         return round(numerator / denominator, 4) if denominator else 0.0
 
-    targeted = sum(counts.values())
     return {
-        "targeted": targeted,
+        "targeted": sum(counts.values()),
         "pending": pending,
         "sent": sent,
         "delivered": delivered,
@@ -618,6 +886,35 @@ async def get_metrics(db: AsyncSession, campaign_id: int) -> Dict[str, Any]:
         "reply_rate": rate(replied, sent),
         "conversion_rate": rate(converted, sent),
         "revenue_recovered": float(revenue or Decimal(0)),
+    }
+
+
+async def get_metrics(db: AsyncSession, campaign_id: int) -> Dict[str, Any]:
+    """Single-table aggregation over ``campaign_recipients`` + attributed revenue."""
+    counts = await crud.recipient_status_counts(db, campaign_id)
+    # Conversions are tracked on the recipient rows regardless of current delivery status.
+    converted = await _count_converted(db, campaign_id)
+    revenue = await crud.conversion_revenue(db, campaign_id)
+    return _metrics_from(counts, converted, revenue)
+
+
+async def get_metrics_batch(
+    db: AsyncSession, campaign_ids: List[int]
+) -> Dict[int, Dict[str, Any]]:
+    """Metrics for many campaigns in three queries, not three per campaign.
+
+    This is what lets the campaign list show real numbers: before, every row rendered "—"
+    because there was no way to ask for the whole page at once.
+    """
+    ids = [int(c) for c in campaign_ids if c is not None]
+    if not ids:
+        return {}
+    counts = await crud.recipient_status_counts_for(db, ids)
+    converted = await crud.converted_counts_for(db, ids)
+    revenue = await crud.conversion_revenue_for(db, ids)
+    return {
+        cid: _metrics_from(counts.get(cid, {}), converted.get(cid, 0), revenue.get(cid))
+        for cid in ids
     }
 
 
