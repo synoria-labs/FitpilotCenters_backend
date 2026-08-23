@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import String, and_, case, cast, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only, selectinload
 
@@ -167,6 +167,9 @@ CLASS_AFFINITY_LEVELS = ("class_type", "class_template")
 CLASS_AFFINITY_MODES = ("favorite", "attended")
 DEFAULT_AFFINITY_LOOKBACK_DAYS = 180
 
+# Bucket label for bookings that fall inside the campaign's class selection.
+SELECTED_BUCKET = "selected"
+
 
 def _affinity_key_column(level: str):
     """The column that identifies 'a class' at the requested granularity.
@@ -255,20 +258,145 @@ def favorite_class_subquery(
     return select(ranked.c.person_id, ranked.c.class_key).where(ranked.c.rn == 1).subquery()
 
 
+def _normalize_groups(predicate: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Read the selection out of a predicate, accepting both spec shapes.
+
+    Current shape — one entry per activity, optionally narrowed to specific scheduled
+    classes::
+
+        {"groups": [{"class_type_id": 3},
+                    {"class_type_id": 7, "template_ids": [11, 14]}]}
+
+    Legacy shape, still accepted so a campaign saved before the grid picker keeps working::
+
+        {"level": "class_type" | "class_template", "in": [ids]}
+    """
+    raw_groups = predicate.get("groups")
+    if raw_groups is None:
+        # Legacy {level, in}: a class_type list becomes one whole-activity group each; a
+        # class_template list becomes a single group with no activity of its own.
+        level = str(predicate.get("level") or "class_type").lower()
+        if level not in CLASS_AFFINITY_LEVELS:
+            raise SegmentationError(f"Nivel de afinidad de clase no soportado: {level}")
+        try:
+            ids = [int(v) for v in (predicate.get("in") or [])]
+        except (TypeError, ValueError) as exc:
+            raise SegmentationError("class_affinity 'in' debe ser una lista de ids.") from exc
+        if not ids:
+            return []
+        if level == "class_type":
+            return [{"class_type_id": i, "template_ids": None} for i in ids]
+        return [{"class_type_id": None, "template_ids": ids}]
+
+    if not isinstance(raw_groups, list):
+        raise SegmentationError("class_affinity 'groups' debe ser una lista.")
+
+    groups: List[Dict[str, Any]] = []
+    for entry in raw_groups:
+        if not isinstance(entry, dict):
+            raise SegmentationError("Cada grupo de class_affinity debe ser un objeto.")
+        raw_type = entry.get("class_type_id")
+        raw_templates = entry.get("template_ids")
+        if raw_type is None and not raw_templates:
+            raise SegmentationError(
+                "Cada grupo necesita class_type_id, o una lista de template_ids."
+            )
+        try:
+            class_type_id = None if raw_type is None else int(raw_type)
+            template_ids = (
+                None if raw_templates is None else [int(t) for t in raw_templates]
+            )
+        except (TypeError, ValueError) as exc:
+            raise SegmentationError(
+                "class_type_id y template_ids deben ser numericos."
+            ) from exc
+        # An explicit empty list is not the same as "the whole activity": it means the user
+        # narrowed to nothing, which cannot match anyone. Treat it as the whole activity only
+        # when the key is absent.
+        if template_ids is not None and not template_ids:
+            template_ids = None
+        groups.append({"class_type_id": class_type_id, "template_ids": template_ids})
+    return groups
+
+
+def _group_conditions(groups: List[Dict[str, Any]]):
+    """One SQL condition per group: 'this booking belongs to that selection'."""
+    conditions = []
+    for group in groups:
+        template_ids = group.get("template_ids")
+        if template_ids:
+            conditions.append(ClassSession.template_id.in_(template_ids))
+        elif group.get("class_type_id") is not None:
+            # No narrowing: the whole activity, including ad-hoc sessions that have no
+            # template and which a template list could never reach.
+            conditions.append(ClassSession.class_type_id == group["class_type_id"])
+    return conditions
+
+
+def _selection_bucket(groups: List[Dict[str, Any]]):
+    """Label every booking either ``selected`` or ``type:<class_type_id>``.
+
+    This is what makes a grouped selection compete as one block. Ranking by individual
+    class would ask "is their single most-booked class in the list?", which fails exactly
+    where grouping is most useful: a member spreading bookings across Monday, Wednesday and
+    Friday at 08:00 has no dominant single class, so their argmax can land on something
+    unrelated and drop them from an audience they obviously belong to.
+
+    Bucketing also gives the right answer in the opposite direction. Someone who mostly does
+    Spinning at 19:00 and occasionally at 08:00 does *not* match a selection of just 08:00,
+    because their 19:00 bookings land in the competing ``type:spinning`` bucket.
+    """
+    return case(
+        (or_(*_group_conditions(groups)), literal(SELECTED_BUCKET)),
+        else_=literal("type:") + cast(ClassSession.class_type_id, String),
+    )
+
+
+def _selected_is_dominant_subquery(
+    groups: List[Dict[str, Any]], now: datetime, lookback_days: int
+):
+    """Members whose top-weighted bucket is the selection."""
+    bucket = _selection_bucket(groups).label("bucket")
+    floor = now - timedelta(days=lookback_days)
+    ranked = (
+        select(
+            Reservation.person_id.label("person_id"),
+            bucket,
+            func.row_number()
+            .over(
+                partition_by=Reservation.person_id,
+                # Most booked wins; most recent breaks a tie, so a member whose habits
+                # changed is segmented by what they do now.
+                order_by=(
+                    _affinity_weight().desc(),
+                    func.max(ClassSession.start_at).desc(),
+                ),
+            )
+            .label("rn"),
+        )
+        .join(ClassSession, ClassSession.id == Reservation.session_id)
+        .where(
+            Reservation.status.in_(_ATTENDANCE_STATUSES),
+            ClassSession.start_at >= floor,
+        )
+        .group_by(Reservation.person_id, bucket)
+        .subquery()
+    )
+    return select(ranked.c.person_id).where(
+        ranked.c.rn == 1, ranked.c.bucket == SELECTED_BUCKET
+    )
+
+
 def _class_affinity_condition(predicate: Dict[str, Any], now: datetime):
-    level = str(predicate.get("level") or "class_type").lower()
-    if level not in CLASS_AFFINITY_LEVELS:
-        raise SegmentationError(f"Nivel de afinidad de clase no soportado: {level}")
     mode = str(predicate.get("mode") or "favorite").lower()
     if mode not in CLASS_AFFINITY_MODES:
         raise SegmentationError(f"Modo de afinidad de clase no soportado: {mode}")
 
-    try:
-        class_ids = [int(v) for v in (predicate.get("in") or [])]
-    except (TypeError, ValueError) as exc:
-        raise SegmentationError("class_affinity 'in' debe ser una lista de ids.") from exc
-    if not class_ids:
+    groups = _normalize_groups(predicate)
+    if not groups:
         return None  # nothing selected == no constraint, same as the other predicates
+    if not _group_conditions(groups):
+        raise SegmentationError("La seleccion de clases no identifica ninguna clase.")
 
     # `or` would swallow an explicit 0 into the default; a caller asking for a zero-day
     # window has made a mistake and should hear about it, not get 180 days silently.
@@ -280,17 +408,13 @@ def _class_affinity_condition(predicate: Dict[str, Any], now: datetime):
         raise SegmentationError("class_affinity 'lookback_days' debe ser mayor que cero.")
 
     if mode == "favorite":
-        favorites = favorite_class_subquery(level, now, lookback)
-        return People.id.in_(
-            select(favorites.c.person_id).where(favorites.c.class_key.in_(class_ids))
-        )
+        return People.id.in_(_selected_is_dominant_subquery(groups, now, lookback))
 
-    # mode == "attended": booked the selected classes at least N times.
+    # mode == "attended": booked inside the selection at least N times.
     raw_min = predicate.get("min_reservations")
     min_reservations = 1 if raw_min is None else int(raw_min)
     if min_reservations < 1:
         raise SegmentationError("class_affinity 'min_reservations' debe ser al menos 1.")
-    key = _affinity_key_column(level)
     floor = now - timedelta(days=lookback)
     attended = (
         select(Reservation.person_id)
@@ -298,7 +422,7 @@ def _class_affinity_condition(predicate: Dict[str, Any], now: datetime):
         .where(
             Reservation.status.in_(_ATTENDANCE_STATUSES),
             ClassSession.start_at >= floor,
-            key.in_(class_ids),
+            or_(*_group_conditions(groups)),
         )
         .group_by(Reservation.person_id)
         .having(func.count() >= min_reservations)

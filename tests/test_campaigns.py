@@ -331,23 +331,73 @@ def _audience_sql(*predicates) -> str:
     )
 
 
-def test_favorite_class_keeps_only_each_members_top_class():
+def test_grouped_schedules_compete_as_one_block():
+    """The whole point of the grid picker.
+
+    Selecting Monday, Wednesday and Friday at 08:00 must put those three bookings in ONE
+    bucket. Ranking them individually asks "is their single most-booked class in the list?",
+    which drops a member who spreads their habit across the week — the exact case the grid is
+    for.
+    """
     sql = _audience_sql(
-        {"type": "class_affinity", "level": "class_type", "mode": "favorite", "in": [3, 7]}
+        {
+            "type": "class_affinity",
+            "mode": "favorite",
+            "groups": [{"class_type_id": 7, "template_ids": [11, 14, 19]}],
+        }
     )
-    assert "row_number() over (partition by" in sql.lower()
-    assert "rn = 1" in sql          # one winner per member, not "booked it at all"
-    assert "class_key IN (3, 7)" in sql
+    assert "template_id IN (11, 14, 19)) THEN 'selected'" in sql
+    assert "GROUP BY app.reservations.person_id, CASE" in sql   # bucketed, not per class
+    assert "bucket = 'selected'" in sql
+    assert "rn = 1" in sql
 
 
-def test_favorite_class_weights_attendance_above_intent():
+def test_bookings_outside_the_selection_stay_in_their_own_activity_bucket():
+    """So a mostly-19:00 Spinning member does not match a selection of just 08:00."""
+    sql = _audience_sql(
+        {
+            "type": "class_affinity",
+            "mode": "favorite",
+            "groups": [{"class_type_id": 7, "template_ids": [11]}],
+        }
+    )
+    assert "ELSE 'type:' || CAST(app.class_sessions.class_type_id AS VARCHAR)" in sql
+
+
+def test_whole_activity_group_matches_by_class_type():
+    """No narrowing means the whole activity — including ad-hoc sessions with no template,
+    which a list of template ids could never reach."""
+    sql = _audience_sql(
+        {"type": "class_affinity", "mode": "favorite", "groups": [{"class_type_id": 7}]}
+    )
+    assert "class_type_id = 7) THEN 'selected'" in sql
+    assert "template_id IN" not in sql
+
+
+def test_several_activities_share_one_selected_bucket():
+    sql = _audience_sql(
+        {
+            "type": "class_affinity",
+            "mode": "favorite",
+            "groups": [{"class_type_id": 7}, {"class_type_id": 9, "template_ids": [31]}],
+        }
+    )
+    assert "class_type_id = 7 OR app.class_sessions.template_id IN (31)" in sql
+    assert sql.count("'selected'") >= 2   # one CASE in the select list, one in GROUP BY
+
+
+def test_class_affinity_weights_attendance_above_intent():
     """Showing up must outrank merely booking, or a no-show decides the segment."""
-    sql = _audience_sql({"type": "class_affinity", "mode": "favorite", "in": [3]})
+    sql = _audience_sql(
+        {"type": "class_affinity", "mode": "favorite", "groups": [{"class_type_id": 7}]}
+    )
     assert "WHEN (app.reservations.status = 'checked_in') THEN 3 ELSE 1" in sql
 
 
 def test_class_affinity_ignores_cancellations_and_no_shows():
-    sql = _audience_sql({"type": "class_affinity", "mode": "favorite", "in": [3]})
+    sql = _audience_sql(
+        {"type": "class_affinity", "mode": "favorite", "groups": [{"class_type_id": 7}]}
+    )
     assert "status IN ('checked_in', 'reserved')" in sql
     assert "no_show" not in sql
     assert "canceled" not in sql
@@ -357,51 +407,74 @@ def test_attended_mode_requires_a_minimum_number_of_bookings():
     sql = _audience_sql(
         {
             "type": "class_affinity",
-            "level": "class_template",
             "mode": "attended",
-            "in": [11, 12],
+            "groups": [{"class_type_id": 7, "template_ids": [11, 14]}],
             "min_reservations": 3,
         }
     )
     assert "HAVING count(*) >= 3" in sql
-    assert "row_number()" not in sql.lower()  # attended is not an argmax
+    assert "row_number()" not in sql.lower()   # attended is not a ranking
 
 
-def test_class_template_level_ignores_ad_hoc_sessions():
-    """A session with no template is not a scheduled class and cannot be attributed."""
-    sql = _audience_sql(
-        {"type": "class_affinity", "level": "class_template", "mode": "favorite", "in": [11]}
-    )
-    assert "template_id IS NOT NULL" in sql
-
-
-def test_empty_class_selection_is_not_a_filter():
+def test_empty_selection_is_not_a_filter():
     """Selecting no classes must widen to 'everyone', never narrow to 'nobody'."""
-    assert "class_key" not in _audience_sql({"type": "class_affinity", "in": []})
+    assert "selected" not in _audience_sql({"type": "class_affinity", "groups": []})
 
 
 def test_class_affinity_combines_with_membership_predicates():
-    """The real win-back case: expired members whose favourite class was X."""
+    """The real win-back case: expired members whose habit is Spinning at 08:00."""
     sql = _audience_sql(
         {"type": "membership_status", "in": ["expired"]},
         {"type": "membership_end_at", "op": "between", "days_from_now": [-90, -7]},
-        {"type": "class_affinity", "mode": "favorite", "in": [3]},
+        {
+            "type": "class_affinity",
+            "mode": "favorite",
+            "groups": [{"class_type_id": 7, "template_ids": [11, 14, 19]}],
+        },
     )
-    assert "class_key IN (3)" in sql
+    assert "bucket = 'selected'" in sql
     assert "membership_subscriptions" in sql
+
+
+def test_legacy_level_and_in_spec_still_compiles():
+    """A campaign saved before the grid picker must keep working."""
+    by_type = _audience_sql(
+        {"type": "class_affinity", "level": "class_type", "mode": "favorite", "in": [3, 7]}
+    )
+    assert "class_type_id = 3 OR app.class_sessions.class_type_id = 7" in by_type
+
+    by_template = _audience_sql(
+        {
+            "type": "class_affinity",
+            "level": "class_template",
+            "mode": "favorite",
+            "in": [11, 14],
+        }
+    )
+    assert "template_id IN (11, 14)" in by_template
 
 
 @pytest.mark.parametrize(
     "predicate,message",
     [
-        ({"type": "class_affinity", "level": "instructor", "in": [1]}, "Nivel"),
-        ({"type": "class_affinity", "mode": "loyal", "in": [1]}, "Modo"),
-        ({"type": "class_affinity", "in": ["x"]}, "lista de ids"),
-        ({"type": "class_affinity", "in": [1], "lookback_days": 0}, "lookback_days"),
+        ({"type": "class_affinity", "mode": "loyal", "groups": [{"class_type_id": 1}]}, "Modo"),
+        ({"type": "class_affinity", "groups": "spinning"}, "lista"),
+        ({"type": "class_affinity", "groups": [{"template_ids": []}]}, "class_type_id"),
+        ({"type": "class_affinity", "groups": [{"class_type_id": "x"}]}, "numericos"),
         (
-            {"type": "class_affinity", "in": [1], "mode": "attended", "min_reservations": 0},
+            {"type": "class_affinity", "groups": [{"class_type_id": 1}], "lookback_days": 0},
+            "lookback_days",
+        ),
+        (
+            {
+                "type": "class_affinity",
+                "mode": "attended",
+                "groups": [{"class_type_id": 1}],
+                "min_reservations": 0,
+            },
             "min_reservations",
         ),
+        ({"type": "class_affinity", "level": "instructor", "in": [1]}, "Nivel"),
     ],
 )
 def test_class_affinity_rejects_malformed_specs(predicate, message):

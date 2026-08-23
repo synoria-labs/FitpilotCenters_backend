@@ -7,10 +7,20 @@ into a SAVEPOINT release, so nothing actually persists to defaultdb.
 """
 from __future__ import annotations
 
+import asyncio
+import sys
+
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app.db.postgresql import engine
+# Windows defaults to the Proactor event loop, which psycopg3 refuses to run async on.
+# Local development uses psycopg (asyncpg has no Python 3.14 build yet); production and CI
+# run asyncpg on 3.12, where this policy is simply unused. Set before the engine is imported
+# so the pool never binds to a loop the driver rejects.
+if sys.platform.startswith("win"):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+from app.db.postgresql import engine  # noqa: E402 - must follow the policy above
 
 
 @pytest_asyncio.fixture

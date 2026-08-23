@@ -208,12 +208,12 @@ AUDIENCE_PREDICATES: List[Dict[str, Any]] = [
         "type": "class_affinity",
         "label": "Clases que más reserva",
         "kind": "class_affinity",
-        "levels": list(segmentation_service.CLASS_AFFINITY_LEVELS),
         "modes": list(segmentation_service.CLASS_AFFINITY_MODES),
         "hint": (
-            "level=class_type agrupa por actividad (Spinning); level=class_template apunta a "
-            "la clase con horario (Spinning, lunes 07:00). mode=favorite exige que sea SU clase "
-            "más reservada; mode=attended solo pide min_reservations reservas."
+            "groups: una entrada por actividad. Sin template_ids abarca la actividad completa "
+            "(incluidas sesiones sueltas sin plantilla); con template_ids se acota a horarios "
+            "concretos. mode=favorite exige que la selección concentre más reservas que "
+            "cualquier otra actividad del socio; mode=attended solo pide min_reservations."
         ),
     },
 ]
