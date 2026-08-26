@@ -69,6 +69,7 @@ def build_system_prompt(
     member_id: Optional[int],
     pending_note: Optional[str] = None,
     member_note: Optional[str] = None,
+    campaign_note: Optional[str] = None,
 ) -> str:
     parts: List[str] = []
     if config.system_prompt:
@@ -83,6 +84,8 @@ def build_system_prompt(
     )
     if pending_note:
         parts.append(pending_note)
+    if campaign_note:
+        parts.append(campaign_note)
     parts.append(_TOOL_RULES)
     parts.append(_PURCHASE_RULES)
     parts.append(_CONFIRM_RULES_STRICT if config.require_confirmation else _CONFIRM_RULES_RELAXED)
@@ -128,11 +131,12 @@ async def run_agent(
     user_text: str,
     pending_note: Optional[str] = None,
     member_note: Optional[str] = None,
+    campaign_note: Optional[str] = None,
 ) -> Optional[str]:
     """Run one agent turn and return the reply text (or None if nothing to say)."""
     llm = build_llm(config)
     system_prompt = build_system_prompt(
-        config, business_info, member_id, pending_note, member_note
+        config, business_info, member_id, pending_note, member_note, campaign_note
     )
     agent = create_react_agent(llm, tools, prompt=system_prompt)
 

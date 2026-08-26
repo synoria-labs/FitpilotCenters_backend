@@ -24,6 +24,10 @@ SENSITIVE = {
         "create_subscription", "create_member_enrollment", "renew_subscription",
         "update_payment", "delete_payment",
     ],
+    "campaigns/queries.py": [
+        "campaigns", "campaign", "campaign_recipients", "campaign_metrics",
+        "preview_audience", "campaign_metrics_batch",
+    ],
     "campaigns/mutations.py": [
         "create_campaign", "update_campaign", "delete_campaign",
         "build_campaign_audience", "schedule_campaign", "trigger_campaign",

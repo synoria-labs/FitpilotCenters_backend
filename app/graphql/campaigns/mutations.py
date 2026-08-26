@@ -37,13 +37,25 @@ from app.models.campaignsModel import (
 )
 from app.services import campaign_service
 from app.services.campaign_service import CAMPAIGN_OBJECTIVES, allowed_variables_for
-from app.services.whatsapp_template_components import parse_components, placeholder_count
+from app.services.whatsapp_template_components import (
+    buttons_from_components,
+    dynamic_url_button_index,
+    header_text_var_count,
+    parse_components,
+    placeholder_count,
+)
 
 logger = logging.getLogger(__name__)
 
 
 async def _validate_template_mapping(
-    db: AsyncSession, objective: str, template_id: Optional[int], mapping: list
+    db: AsyncSession,
+    objective: str,
+    template_id: Optional[int],
+    mapping: list,
+    *,
+    header_text_param_key: Optional[str] = None,
+    button_url_param_key: Optional[str] = None,
 ) -> Optional[str]:
     if not template_id:
         if mapping:
@@ -63,6 +75,25 @@ async def _validate_template_mapping(
     invalid = [key for key in mapping if key not in allowed]
     if invalid:
         return f"Variable(s) no válida(s) para este objetivo: {', '.join(invalid)}."
+
+    # A TEXT header with a placeholder needs its own variable; without it Meta rejects the
+    # send — for every recipient — and the campaign fails wholesale rather than partially.
+    if header_text_var_count(tpl.components):
+        if not header_text_param_key:
+            return "La plantilla tiene un encabezado con variable; elige qué dato usar."
+        if header_text_param_key not in allowed:
+            return f"Variable de encabezado no válida: {header_text_param_key}."
+    elif header_text_param_key:
+        return "La plantilla no tiene un encabezado con variable."
+
+    has_dynamic_button = (
+        dynamic_url_button_index(buttons_from_components(tpl.components)) is not None
+    )
+    if button_url_param_key:
+        if not has_dynamic_button:
+            return "La plantilla no tiene un botón con URL dinámica."
+        if button_url_param_key not in allowed:
+            return f"Variable de botón no válida: {button_url_param_key}."
     return None
 
 
@@ -106,7 +137,14 @@ class CampaignsMutation:
             return CampaignResult(success=False, error="La campaña necesita un nombre.")
 
         mapping = [str(v) for v in (input.param_mapping or [])]
-        err = await _validate_template_mapping(db, input.objective, input.template_id, mapping)
+        err = await _validate_template_mapping(
+            db,
+            input.objective,
+            input.template_id,
+            mapping,
+            header_text_param_key=input.header_text_param_key,
+            button_url_param_key=input.button_url_param_key,
+        )
         if err:
             return CampaignResult(success=False, error=err)
 
@@ -122,6 +160,9 @@ class CampaignsMutation:
                 param_mapping=mapping,
                 header_media_url=input.header_media_url,
                 header_media_asset_id=input.header_media_asset_id,
+                header_text_param_key=input.header_text_param_key,
+                button_url_param_key=input.button_url_param_key,
+                location_param=input.location_param,
                 marketing_campaign_id=input.marketing_campaign_id,
                 conversion_window_days=input.conversion_window_days,
                 conversion_metric=input.conversion_metric,
@@ -157,7 +198,8 @@ class CampaignsMutation:
         fields = {}
         for key in (
             "name", "description", "objective", "audience_spec", "template_id",
-            "header_media_url", "header_media_asset_id", "marketing_campaign_id",
+            "header_media_url", "header_media_asset_id", "header_text_param_key",
+            "button_url_param_key", "location_param", "marketing_campaign_id",
             "conversion_window_days", "conversion_metric", "recency_block_days",
             "throttle_per_minute",
         ):
@@ -172,7 +214,18 @@ class CampaignsMutation:
             "param_mapping",
             [str(v) for v in (campaign.param_mapping or [])],
         )
-        err = await _validate_template_mapping(db, objective, template_id, mapping)
+        err = await _validate_template_mapping(
+            db,
+            objective,
+            template_id,
+            mapping,
+            header_text_param_key=fields.get(
+                "header_text_param_key", campaign.header_text_param_key
+            ),
+            button_url_param_key=fields.get(
+                "button_url_param_key", campaign.button_url_param_key
+            ),
+        )
         if err:
             return CampaignResult(success=False, error=err)
 

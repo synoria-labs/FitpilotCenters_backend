@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.chatbot_env import chatbot_env
 from app.core.mercadopago_config import mercadopago_config
+from app.crud import campaignsCrud as campaigns_crud
 from app.crud import chatbotConfigCrud
 from app.crud import chatbotPendingCrud
 from app.crud import membersCrud
@@ -168,12 +169,52 @@ def _build_member_note(member) -> Optional[str]:
     return f"Socio identificado: {name}. No tiene una membresía activa. Salúdalo por su nombre."
 
 
+async def _build_campaign_context_note(
+    db: AsyncSession,
+    context_message_id: Optional[str],
+    message_type: str,
+    user_text: str,
+) -> Optional[str]:
+    """Tell the agent which campaign/template this turn is replying to, when known.
+
+    ``context_message_id`` is WhatsApp's ``context.id`` — populated both for a tap on a
+    template QUICK_REPLY button (message_type "button"/"interactive") and for a plain text
+    message the customer sent as a quoted/swipe-reply. Either way it matches
+    ``CampaignRecipient.wa_message_id`` exactly (the id of the outbound template send), the
+    same lookup ``campaignsCrud.apply_delivery_status`` already uses for Meta status callbacks.
+    Without this, the agent only sees a generic "[mensaje automático/campaña]" tag on the
+    OUTBOUND side of the history (see ``_load_history``) and has no idea which campaign or
+    button prompted the customer's reply.
+    """
+    if not context_message_id:
+        return None
+    recipient = await campaigns_crud.get_recipient_by_wa_message_id(db, context_message_id)
+    if recipient is None:
+        return None
+    campaign, template = await campaigns_crud.get_campaign_and_template(db, recipient.campaign_id)
+    if campaign is None:
+        return None
+    label = template.template_name if template else "plantilla desconocida"
+    if message_type in ("button", "interactive"):
+        return (
+            f"📣 El cliente tocó el botón \"{user_text}\" del mensaje de la campaña "
+            f"\"{campaign.name}\" (plantilla {label}). Responde en función de esa intención "
+            "específica en vez de una respuesta genérica."
+        )
+    return (
+        f"📣 El cliente respondió citando el mensaje de la campaña \"{campaign.name}\" "
+        f"(plantilla {label})."
+    )
+
+
 async def _run_agent_reply(
     conversation_id: int,
     contact_id: int,
     contact_wa_id: str,
     message_id: int,
     text: str,
+    message_type: str = "text",
+    context_message_id: Optional[str] = None,
 ) -> None:
     """Run the agent for one inbound message and reply. Uses its own DB session."""
     if not chatbot_env.is_configured() or not chatbot_env.ENABLED:
@@ -198,6 +239,9 @@ async def _run_agent_reply(
             require_mp = bool(config.require_mp_payment) and mercadopago_config.is_configured()
             pending_note = await _build_pending_note(db, conversation_id)
             member_note = _build_member_note(member)
+            campaign_note = await _build_campaign_context_note(
+                db, context_message_id, message_type, text
+            )
 
             ctx = ChatbotContext(
                 db=db,
@@ -210,6 +254,7 @@ async def _run_agent_reply(
             reply = await run_agent(
                 config, tools, business_info, member_id, history, text,
                 pending_note=pending_note, member_note=member_note,
+                campaign_note=campaign_note,
             )
             if not reply:
                 return
@@ -250,11 +295,16 @@ def schedule_agent_reply(
     contact_wa_id: str,
     message_id: int,
     text: str,
+    message_type: str = "text",
+    context_message_id: Optional[str] = None,
 ) -> None:
     """Fire-and-forget the agent reply on the running event loop (non-blocking webhook)."""
     try:
         task = asyncio.create_task(
-            _run_agent_reply(conversation_id, contact_id, contact_wa_id, message_id, text)
+            _run_agent_reply(
+                conversation_id, contact_id, contact_wa_id, message_id, text,
+                message_type=message_type, context_message_id=context_message_id,
+            )
         )
     except RuntimeError:
         # No running loop (e.g. called from a sync context outside the app) — skip.

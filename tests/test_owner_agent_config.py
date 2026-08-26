@@ -37,7 +37,8 @@ async def test_whatsapp_hook_routes_authorized_owner_to_owner_agent(monkeypatch)
     monkeypatch.setattr(owner_reply_service, "schedule_agent_reply", fake_schedule_agent_reply)
 
     message = SimpleNamespace(
-        id=10, direction="inbound", message_type="text", text_content="reporte de hoy"
+        id=10, direction="inbound", message_type="text", text_content="reporte de hoy",
+        context_message_id=None,
     )
     contact = SimpleNamespace(id=20, wa_id="5218719708890")
     conversation = SimpleNamespace(id=30, bot_enabled=True, bot_paused_until=None)
@@ -71,7 +72,10 @@ async def test_whatsapp_hook_keeps_customer_chatbot_for_non_owner(monkeypatch):
     monkeypatch.setattr(chatbot_pkg, "reply_service", fake_reply_service, raising=False)
     monkeypatch.setattr("app.services.whatsapp_optout.handle_keyword", fake_keyword)
 
-    message = SimpleNamespace(id=11, direction="inbound", message_type="text", text_content="hola")
+    message = SimpleNamespace(
+        id=11, direction="inbound", message_type="text", text_content="hola",
+        context_message_id=None,
+    )
     contact = SimpleNamespace(id=21, wa_id="5215555555555")
     conversation = SimpleNamespace(id=31, bot_enabled=True, bot_paused_until=None)
 
@@ -80,6 +84,43 @@ async def test_whatsapp_hook_keeps_customer_chatbot_for_non_owner(monkeypatch):
     assert customer_scheduled["conversation_id"] == 31
     assert customer_scheduled["contact_wa_id"] == "5215555555555"
     assert customer_scheduled["text"] == "hola"
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_hook_forwards_button_tap_to_chatbot(monkeypatch):
+    """A tap on a template QUICK_REPLY button must reach the chatbot too, with its text and
+    the id of the template message it replies to — not be dropped like before."""
+    customer_scheduled = {}
+
+    async def fake_resolve(_db, _wa_id):
+        return None
+
+    async def fake_keyword(*_args, **_kwargs):
+        return False
+
+    fake_reply_service = SimpleNamespace(
+        schedule_agent_reply=lambda **kwargs: customer_scheduled.update(kwargs)
+    )
+
+    monkeypatch.setattr(ownerAgentCrud, "resolve_authorized_phone", fake_resolve)
+    monkeypatch.setitem(sys.modules, "app.services.chatbot.reply_service", fake_reply_service)
+    import app.services.chatbot as chatbot_pkg
+
+    monkeypatch.setattr(chatbot_pkg, "reply_service", fake_reply_service, raising=False)
+    monkeypatch.setattr("app.services.whatsapp_optout.handle_keyword", fake_keyword)
+
+    message = SimpleNamespace(
+        id=12, direction="inbound", message_type="button", text_content="Quiero reservar",
+        context_message_id="wamid.template_out_1",
+    )
+    contact = SimpleNamespace(id=22, wa_id="5215555555556")
+    conversation = SimpleNamespace(id=32, bot_enabled=True, bot_paused_until=None)
+
+    await whatsapp_hooks.on_inbound_message(object(), message, contact, conversation)
+
+    assert customer_scheduled["text"] == "Quiero reservar"
+    assert customer_scheduled["message_type"] == "button"
+    assert customer_scheduled["context_message_id"] == "wamid.template_out_1"
 
 
 @pytest.mark.asyncio

@@ -101,6 +101,18 @@ async def _process_message(
         reaction = msg.get("reaction") or {}
         text_content = reaction.get("emoji")
         context_message_id = reaction.get("message_id")
+    elif msg_type == "button":
+        # A tap on a template QUICK_REPLY button. ``context.id`` (captured above) already
+        # points at the outbound template message, which is how a campaign recipient gets
+        # matched back up (see campaignsCrud.get_recipient_by_wa_message_id).
+        text_content = (msg.get("button") or {}).get("text")
+    elif msg_type == "interactive":
+        # Generic reply-button/list message (not sent by this app today, but Meta uses the
+        # same envelope for both — handle it so a future interactive send is not silently
+        # dropped like the "button" type used to be).
+        interactive = msg.get("interactive") or {}
+        reply = interactive.get("button_reply") or interactive.get("list_reply") or {}
+        text_content = reply.get("title")
 
     message = await crud.insert_inbound_message(
         db,
@@ -131,6 +143,16 @@ async def _process_message(
         await on_inbound_message(db, message, contact, conversation)
     except Exception as e:  # noqa: BLE001 - never let the hook break ingestion
         logger.warning("on_inbound_message hook failed: %s", e)
+
+    # A reply is the only source of the campaign 'replied' status (Meta callbacks stop at
+    # 'read'). Never let campaign tracking break webhook ingestion.
+    if msg_type != "reaction":
+        try:
+            await campaigns_crud.apply_inbound_reply(
+                db, wa_id=contact.wa_id, timestamp=ts
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("campaign reply-status update failed: %s", e)
 
     return message.id
 

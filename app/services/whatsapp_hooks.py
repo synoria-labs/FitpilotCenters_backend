@@ -15,6 +15,11 @@ from app.models import Message, Contact, Conversation
 
 logger = logging.getLogger(__name__)
 
+# Message types the agent can act on: plain text, and a tap on a template QUICK_REPLY button
+# (delivered by Meta as "button", or "interactive" for a generic reply-button/list message).
+# Media/reactions/statuses stay ignored.
+_AGENT_MESSAGE_TYPES = {"text", "button", "interactive"}
+
 
 async def on_inbound_message(
     db: AsyncSession,
@@ -24,12 +29,11 @@ async def on_inbound_message(
 ) -> None:
     """Called after each inbound message is persisted.
 
-    Schedules the chatbot agent to reply in the background. Only inbound text messages are
-    handled; media/reactions/statuses are ignored. We pass plain values (not ORM objects) into
-    the background task because the ingest session is committed and closed right after this
-    hook returns.
+    Schedules the chatbot agent to reply in the background. We pass plain values (not ORM
+    objects) into the background task because the ingest session is committed and closed right
+    after this hook returns.
     """
-    if message.direction != "inbound" or message.message_type != "text":
+    if message.direction != "inbound" or message.message_type not in _AGENT_MESSAGE_TYPES:
         return None
 
     text = (message.text_content or "").strip()
@@ -95,5 +99,7 @@ async def on_inbound_message(
         contact_wa_id=contact.wa_id,
         message_id=message.id,
         text=text,
+        message_type=message.message_type,
+        context_message_id=message.context_message_id,
     )
     return None
