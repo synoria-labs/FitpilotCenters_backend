@@ -151,16 +151,61 @@ def _now() -> datetime:
 # Variables only a campaign can resolve. They are NOT added to ``notification_service.VARIABLES``
 # because that catalog is shared with the event-driven notifications, which have no audience and
 # therefore no frozen class affinity. Values come from the snapshot taken at build time.
+_FAVORITE_CLASS_SOURCE = (
+    "Si el socio tiene una reserva fija (standing booking) activa, se usa ese horario aunque "
+    "no sea el que más domina su historial. Si no tiene una, solo se llena cuando un horario "
+    "puntual domina claramente sus reservas; si reserva la misma actividad en horarios "
+    "distintos sin una reserva fija, queda vacío en vez de inventar uno."
+)
+
 CAMPAIGN_VARIABLES: Dict[str, Dict[str, str]] = {
-    "favorite_class_name": {"label": "Clase que más reserva", "sample": "Spinning"},
-    "favorite_class_day": {"label": "Día de esa clase", "sample": "lunes"},
-    "favorite_class_time": {"label": "Hora de esa clase", "sample": "7:00 a. m."},
-    "favorite_class_schedule": {
-        "label": "Horario habitual (día y hora)", "sample": "lunes a las 7:00 a. m.",
+    "favorite_class_name": {
+        "label": "Clase que más reserva",
+        "sample": "Spinning",
+        "description": (
+            "Actividad que más reserva el socio (ej. Spinning), sin importar el horario. "
+            "Vacío si no tiene historial de reservas."
+        ),
     },
-    "days_inactive": {"label": "Días de inactividad (vencida)", "sample": "84"},
-    "kcal_not_burned": {"label": "Kcal no quemadas (estimado)", "sample": "8,700"},
-    "kg_fat_equivalent": {"label": "Kg de grasa (equivalente estimado)", "sample": "1.1"},
+    "favorite_class_day": {
+        "label": "Día de esa clase",
+        "sample": "lunes",
+        "description": f"Día de la semana de su horario habitual. {_FAVORITE_CLASS_SOURCE}",
+    },
+    "favorite_class_time": {
+        "label": "Hora de esa clase",
+        "sample": "7:00 a. m.",
+        "description": f"Hora de su horario habitual. {_FAVORITE_CLASS_SOURCE}",
+    },
+    "favorite_class_schedule": {
+        "label": "Horario habitual (día y hora)",
+        "sample": "lunes a las 7:00 a. m.",
+        "description": f"Día y hora juntos, en un solo texto. {_FAVORITE_CLASS_SOURCE}",
+    },
+    "days_inactive": {
+        "label": "Días de inactividad (vencida)",
+        "sample": "84",
+        "description": (
+            "Días desde que venció la membresía. Vacío si la membresía sigue vigente o el "
+            "socio no tiene una."
+        ),
+    },
+    "kcal_not_burned": {
+        "label": "Kcal no quemadas (estimado)",
+        "sample": "8,700",
+        "description": (
+            "Estimación motivacional (no un dato médico): días de inactividad × calorías "
+            "promedio por sesión perdida. Vacío junto con días de inactividad."
+        ),
+    },
+    "kg_fat_equivalent": {
+        "label": "Kg de grasa (equivalente estimado)",
+        "sample": "1.1",
+        "description": (
+            "La misma estimación de kcal no quemadas, convertida a kg de grasa equivalente. "
+            "No es el peso corporal del socio — el sistema no lo trackea."
+        ),
+    },
 }
 
 # Estimación deliberadamente simple: no hay dato de intensidad/MET en class_types ni
@@ -227,7 +272,9 @@ AUDIENCE_PREDICATES: List[Dict[str, Any]] = [
             "groups: una entrada por actividad. Sin template_ids abarca la actividad completa "
             "(incluidas sesiones sueltas sin plantilla); con template_ids se acota a horarios "
             "concretos. mode=favorite exige que la selección concentre más reservas que "
-            "cualquier otra actividad del socio; mode=attended solo pide min_reservations."
+            "cualquier otra actividad del socio; mode=attended solo pide min_reservations. En "
+            "ambos modos, un socio con una reserva fija (standing booking) activa que matchea "
+            "la selección siempre entra, sin importar su historial de reservas."
         ),
     },
 ]

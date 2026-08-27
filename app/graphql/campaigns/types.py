@@ -183,6 +183,7 @@ class CampaignVariableInfo:
     key: str
     label: str
     sample: str
+    description: str = ""
 
 
 @strawberry.type
