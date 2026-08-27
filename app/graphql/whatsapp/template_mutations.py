@@ -281,6 +281,7 @@ class WhatsAppTemplateMutation:
                     input.body_examples,
                     input.footer_text,
                     carousel_cards=card_defs,
+                    category=input.category,
                 )
                 local_components = embed_carousel_card_assets(components, card_asset_ids)
             else:
@@ -299,6 +300,7 @@ class WhatsAppTemplateMutation:
                     header_text=input.header_text,
                     header_text_example=input.header_text_example,
                     buttons=_buttons_to_dicts(input.buttons),
+                    category=input.category,
                 )
                 local_components = components
         except (media_service.MediaAssetError, cloud.WhatsAppError, ValueError) as exc:
@@ -395,6 +397,7 @@ class WhatsAppTemplateMutation:
                 header_text=header_text,
                 header_text_example=header_text_example,
                 buttons=buttons,
+                category=tpl.category,
             )
         except (media_service.MediaAssetError, cloud.WhatsAppError, ValueError) as exc:
             await db.rollback()

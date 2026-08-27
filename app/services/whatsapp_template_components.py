@@ -15,8 +15,21 @@ _PLACEHOLDER_RE = re.compile(r"\{\{\s*(\d+)\s*\}\}")
 _MEDIA_HEADER_FORMATS = {"IMAGE", "VIDEO", "DOCUMENT"}
 # Header formats Meta allows inside a CAROUSEL card (no DOCUMENT/TEXT/LOCATION).
 _CAROUSEL_HEADER_FORMATS = {"IMAGE", "VIDEO"}
-_BUTTON_TYPES = {"QUICK_REPLY", "URL", "PHONE_NUMBER", "COPY_CODE"}
-_UNSUPPORTED_BUTTON_TYPES = {"VOICE_CALL"}
+_BUTTON_TYPES = {
+    "QUICK_REPLY",
+    "URL",
+    "PHONE_NUMBER",
+    "COPY_CODE",
+    "VOICE_CALL",
+    "REQUEST_CONTACT_INFO",
+}
+# Per Meta's docs, these two button types cannot be combined with any other button
+# (including each other): each must be the template's only button.
+_EXCLUSIVE_BUTTON_TYPES = {"VOICE_CALL", "REQUEST_CONTACT_INFO"}
+# Meta rejects any other value for this button's label (verified against the live Graph API).
+_REQUEST_CONTACT_INFO_TEXT = "Compartir información de contacto"
+# Meta only allows VOICE_CALL/REQUEST_CONTACT_INFO in MARKETING or UTILITY templates.
+_EXCLUSIVE_BUTTON_CATEGORIES = {"MARKETING", "UTILITY"}
 _HEADER_TEXT_MAX = 60
 _BUTTON_TEXT_MAX = 25
 _BUTTON_URL_MAX = 2000
@@ -181,13 +194,14 @@ def _build_text_header(header_text: Optional[str], header_text_example: Optional
     return header
 
 
-def _build_buttons(buttons: List[dict]) -> List[dict]:
+def _build_buttons(buttons: List[dict], category: Optional[str] = None) -> List[dict]:
     """Build a Meta ``buttons`` array and enforce Meta's structural limits.
 
     Each input button is ``{type, text, url?, phone_number?, offer_code?, payload?, example?}``.
     A URL whose value ends in ``{{1}}`` is a dynamic URL button and carries an ``example`` list
     (Meta needs a sample suffix). Meta allows at most one dynamic URL variable across the whole
-    template.
+    template. ``category`` (MARKETING/UTILITY/AUTHENTICATION), when given, is used to reject
+    VOICE_CALL/REQUEST_CONTACT_INFO outside the categories Meta allows them in.
     """
     cleaned = [b for b in (buttons or []) if isinstance(b, dict)]
     if not cleaned:
@@ -195,16 +209,36 @@ def _build_buttons(buttons: List[dict]) -> List[dict]:
     if len(cleaned) > _MAX_BUTTONS:
         raise ValueError(f"Máximo {_MAX_BUTTONS} botones por plantilla.")
 
+    exclusive_types = {
+        str(b.get("type") or "").strip().upper()
+        for b in cleaned
+        if str(b.get("type") or "").strip().upper() in _EXCLUSIVE_BUTTON_TYPES
+    }
+    if exclusive_types and len(cleaned) > 1:
+        label = next(iter(exclusive_types))
+        raise ValueError(f"El botón {label} debe ser el único botón de la plantilla.")
+    if exclusive_types and category and category.strip().upper() not in _EXCLUSIVE_BUTTON_CATEGORIES:
+        label = next(iter(exclusive_types))
+        raise ValueError(
+            f"El botón {label} solo se permite en plantillas de categoría MARKETING o UTILITY."
+        )
+
     result: List[dict] = []
     url_count = phone_count = copy_code_count = 0
     dynamic_url_seen = False
     for button in cleaned:
         btype = str(button.get("type") or "").strip().upper()
-        text = str(button.get("text") or "").strip()
-        if btype in _UNSUPPORTED_BUTTON_TYPES:
-            raise ValueError(f"Tipo de botón no soportado: {btype}.")
         if btype not in _BUTTON_TYPES:
             raise ValueError(f"Tipo de botón no soportado: {btype or '(vacío)'}.")
+
+        if btype == "REQUEST_CONTACT_INFO":
+            # Meta rechaza cualquier otro texto para este tipo (confirmado contra la API real:
+            # error_subcode 2388153, "no se puede modificar y siempre debe ser..."). Se ignora
+            # lo que venga del formulario y se usa siempre la etiqueta fija.
+            result.append({"type": "REQUEST_CONTACT_INFO", "text": _REQUEST_CONTACT_INFO_TEXT})
+            continue
+
+        text = str(button.get("text") or "").strip()
         if not text:
             raise ValueError("Cada botón requiere un texto visible.")
         if len(text) > _BUTTON_TEXT_MAX:
@@ -212,6 +246,8 @@ def _build_buttons(buttons: List[dict]) -> List[dict]:
 
         if btype == "QUICK_REPLY":
             result.append({"type": "QUICK_REPLY", "text": text})
+        elif btype == "VOICE_CALL":
+            result.append({"type": "VOICE_CALL", "text": text})
         elif btype == "PHONE_NUMBER":
             phone_count += 1
             phone = str(button.get("phone_number") or "").strip()
@@ -256,7 +292,7 @@ def _build_buttons(buttons: List[dict]) -> List[dict]:
     return result
 
 
-def _build_carousel(carousel_cards: List[dict]) -> dict:
+def _build_carousel(carousel_cards: List[dict], category: Optional[str] = None) -> dict:
     cards = [c for c in (carousel_cards or []) if isinstance(c, dict)]
     if not cards:
         raise ValueError("El carrusel requiere al menos una tarjeta.")
@@ -278,7 +314,7 @@ def _build_carousel(carousel_cards: List[dict]) -> dict:
             _build_media_header(card_format, card.get("header_handle")),
             _build_body(card.get("body_text") or "", card.get("body_examples")),
         ]
-        card_buttons = _build_buttons(card.get("buttons") or [])
+        card_buttons = _build_buttons(card.get("buttons") or [], category=category)
         if card_buttons:
             card_components.append({"type": "BUTTONS", "buttons": card_buttons})
         built_cards.append({"components": card_components})
@@ -297,6 +333,7 @@ def build_components(
     header_text_example: Optional[str] = None,
     buttons: Optional[List[dict]] = None,
     carousel_cards: Optional[List[dict]] = None,
+    category: Optional[str] = None,
 ) -> List[dict]:
     """Assemble a Meta ``components`` array from the simplified editor fields.
 
@@ -305,17 +342,20 @@ def build_components(
     matches the placeholders (Meta rejects a mismatch).
 
     ``header_format`` accepts IMAGE/VIDEO/DOCUMENT (needs ``header_handle``), TEXT (needs
-    ``header_text``) or LOCATION. ``buttons`` is a list of QUICK_REPLY/URL/PHONE_NUMBER/COPY_CODE
-    button dicts. ``carousel_cards`` builds a CAROUSEL template: per Meta, such a template's
+    ``header_text``) or LOCATION. ``buttons`` is a list of QUICK_REPLY/URL/PHONE_NUMBER/COPY_CODE/
+    VOICE_CALL/REQUEST_CONTACT_INFO button dicts (the last two must be the template's only
+    button per Meta's rules). ``carousel_cards`` builds a CAROUSEL template: per Meta, such a template's
     bubble can only carry a BODY (no top-level header/footer/buttons), so those are ignored when
     cards are given and each card supplies its own media header (handle), body and optional buttons.
+    ``category`` (MARKETING/UTILITY/AUTHENTICATION) is optional; when given, VOICE_CALL/
+    REQUEST_CONTACT_INFO buttons are rejected outside MARKETING/UTILITY per Meta's rules.
     """
     components: List[dict] = []
     header_format = (header_format or "").strip().upper()
 
     if carousel_cards:
         components.append(_build_body(body_text, body_examples))
-        components.append(_build_carousel(carousel_cards))
+        components.append(_build_carousel(carousel_cards, category=category))
         return components
 
     if header_format:
@@ -336,7 +376,7 @@ def build_components(
     if footer_text:
         components.append({"type": "FOOTER", "text": footer_text})
 
-    built_buttons = _build_buttons(buttons or [])
+    built_buttons = _build_buttons(buttons or [], category=category)
     if built_buttons:
         components.append({"type": "BUTTONS", "buttons": built_buttons})
 

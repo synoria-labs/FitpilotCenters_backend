@@ -104,7 +104,7 @@ class WhatsAppTemplate:
 
 @strawberry.input
 class TemplateButtonInput:
-    type: str  # QUICK_REPLY | URL | PHONE_NUMBER | COPY_CODE
+    type: str  # QUICK_REPLY | URL | PHONE_NUMBER | COPY_CODE | VOICE_CALL | REQUEST_CONTACT_INFO
     text: str
     url: Optional[str] = None
     phone_number: Optional[str] = None

@@ -234,12 +234,85 @@ def test_build_components_copy_code_rejects_multiple():
         build_components("Cuerpo", buttons=buttons)
 
 
-def test_build_components_rejects_voice_call_button():
-    with pytest.raises(ValueError, match="VOICE_CALL"):
+def test_build_components_voice_call_button():
+    components = build_components(
+        "Cuerpo",
+        buttons=[{"type": "VOICE_CALL", "text": "Llamar en WhatsApp"}],
+    )
+    assert components[-1] == {
+        "type": "BUTTONS",
+        "buttons": [{"type": "VOICE_CALL", "text": "Llamar en WhatsApp"}],
+    }
+
+
+def test_build_components_voice_call_rejects_combination():
+    buttons = [
+        {"type": "VOICE_CALL", "text": "Llamar en WhatsApp"},
+        {"type": "QUICK_REPLY", "text": "Sí"},
+    ]
+    with pytest.raises(ValueError, match="único botón"):
+        build_components("Cuerpo", buttons=buttons)
+
+
+def test_build_components_request_contact_info_button():
+    # Meta rejects any text other than its fixed label for this button type (verified against
+    # the live Graph API: error_subcode 2388153), so whatever the caller sends is ignored.
+    components = build_components(
+        "Cuerpo",
+        buttons=[{"type": "REQUEST_CONTACT_INFO", "text": "texto cualquiera"}],
+    )
+    assert components[-1] == {
+        "type": "BUTTONS",
+        "buttons": [{"type": "REQUEST_CONTACT_INFO", "text": "Compartir información de contacto"}],
+    }
+
+
+def test_build_components_request_contact_info_works_without_text():
+    components = build_components(
+        "Cuerpo",
+        buttons=[{"type": "REQUEST_CONTACT_INFO"}],
+    )
+    assert components[-1]["buttons"][0] == {
+        "type": "REQUEST_CONTACT_INFO",
+        "text": "Compartir información de contacto",
+    }
+
+
+def test_build_components_request_contact_info_rejects_combination():
+    buttons = [
+        {"type": "REQUEST_CONTACT_INFO"},
+        {"type": "URL", "text": "Ver", "url": "https://fit.com"},
+    ]
+    with pytest.raises(ValueError, match="único botón"):
+        build_components("Cuerpo", buttons=buttons)
+
+
+def test_build_components_voice_call_rejects_authentication_category():
+    with pytest.raises(ValueError, match="MARKETING o UTILITY"):
         build_components(
             "Cuerpo",
-            buttons=[{"type": "VOICE_CALL", "text": "Llamar en WhatsApp"}],
+            buttons=[{"type": "VOICE_CALL", "text": "Llamar"}],
+            category="AUTHENTICATION",
         )
+
+
+def test_build_components_request_contact_info_rejects_authentication_category():
+    with pytest.raises(ValueError, match="MARKETING o UTILITY"):
+        build_components(
+            "Cuerpo",
+            buttons=[{"type": "REQUEST_CONTACT_INFO"}],
+            category="authentication",
+        )
+
+
+def test_build_components_voice_call_allows_marketing_and_utility_category():
+    for category in ("MARKETING", "UTILITY"):
+        components = build_components(
+            "Cuerpo",
+            buttons=[{"type": "VOICE_CALL", "text": "Llamar"}],
+            category=category,
+        )
+        assert components[-1]["buttons"][0]["type"] == "VOICE_CALL"
 
 
 def test_build_components_carousel_with_per_card_handles():

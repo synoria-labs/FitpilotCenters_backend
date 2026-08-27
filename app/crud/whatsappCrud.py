@@ -336,8 +336,17 @@ def _membership_data(
 
     remaining_days = None
     if end_at is not None:
-        end_date = end_at.astimezone().date() if end_at.tzinfo else end_at.date()
-        remaining_days = (end_date - date.today()).days
+        # Bare ``.astimezone()`` converts using the *host's* local timezone, which is wrong on
+        # a server that doesn't run in America/Mexico_City (see time_filters.py) and, for a
+        # far-future ``end_at``, raises OSError on Windows (its libc can't represent the host
+        # offset that far out). Anchor to the app's business timezone explicitly instead, same
+        # as count_marketing_sends_today() elsewhere in this module.
+        from zoneinfo import ZoneInfo
+        from app.core.outbound_config import outbound_config
+
+        tz = ZoneInfo(outbound_config.QUIET_HOURS_TZ)
+        end_date = end_at.astimezone(tz).date() if end_at.tzinfo else end_at.date()
+        remaining_days = (end_date - datetime.now(tz).date()).days
 
     if status in {"pending", "canceled"}:
         effective_status = status
