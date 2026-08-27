@@ -260,3 +260,75 @@ async def test_no_standing_booking_keeps_existing_dominant_slot_behavior(db):
     favorite = result[person.id]
     assert favorite.class_template_id == monday.id
     assert favorite.day_label == "lunes"
+
+
+async def test_standing_booking_ranking_ignores_another_members_classes(db):
+    """Two members with multiple standing bookings, one dropping in on the other's slot.
+
+    The attendance-weight query filters people and templates independently, so it also
+    returns (member, someone else's template) rows. Ranking those picked a template the
+    member has no standing booking on, and resolving it raised StopIteration inside the
+    coroutine — which took the whole campaign audience build down with it.
+    """
+    role = await _ensure_member_role(db)
+    venue = await _get_or_make_venue(db)
+    dropper = await _make_member(db, role=role, full_name="Cross Attendance Member")
+    other = await _make_member(db, role=role, full_name="Popular Slot Owner")
+    dropper_sub = await _make_plan_and_subscription(db, dropper)
+    other_sub = await _make_plan_and_subscription(db, other)
+
+    spinning = await _make_class_type(db, code="test_spin_cross", name="Spinning")
+    yoga = await _make_class_type(db, code="test_yoga_cross", name="Yoga")
+    boxing = await _make_class_type(db, code="test_box_cross", name="Boxeo")
+    hiit = await _make_class_type(db, code="test_hiit_cross", name="HIIT")
+
+    monday_spin = await _make_template(
+        db, class_type=spinning, venue=venue, weekday=1, start_time_local=time(7, 0)
+    )
+    wednesday_yoga = await _make_template(
+        db, class_type=yoga, venue=venue, weekday=3, start_time_local=time(18, 0)
+    )
+    friday_box = await _make_template(
+        db, class_type=boxing, venue=venue, weekday=5, start_time_local=time(19, 0)
+    )
+    saturday_hiit = await _make_template(
+        db, class_type=hiit, venue=venue, weekday=6, start_time_local=time(9, 0)
+    )
+
+    for template in (monday_spin, wednesday_yoga):
+        await _make_standing_booking(
+            db, person=dropper, subscription=dropper_sub, template=template
+        )
+    for template in (friday_box, saturday_hiit):
+        await _make_standing_booking(
+            db, person=other, subscription=other_sub, template=template
+        )
+
+    # Where this member actually shows up most is HIIT — but that is the *other* member's
+    # standing booking, so it can never be this member's standing-booking answer.
+    for i in range(4):
+        sess = await _make_session(
+            db, template=saturday_hiit, class_type=hiit, venue=venue,
+            start_at=_NOW - timedelta(days=7 * i, hours=-1),
+        )
+        await _reserve(db, session=sess, person=dropper, status="checked_in")
+    # Of their own two standing bookings, Yoga is the one they attend.
+    sess = await _make_session(
+        db, template=wednesday_yoga, class_type=yoga, venue=venue,
+        start_at=_NOW - timedelta(days=2),
+    )
+    await _reserve(db, session=sess, person=dropper, status="checked_in")
+    # The other member attends their own Boxing slot and never the HIIT one.
+    for i in range(2):
+        sess = await _make_session(
+            db, template=friday_box, class_type=boxing, venue=venue,
+            start_at=_NOW - timedelta(days=7 * i + 1),
+        )
+        await _reserve(db, session=sess, person=other, status="checked_in")
+
+    result = await attendance.favorite_classes_for(db, [dropper.id, other.id])
+
+    assert result[dropper.id].class_template_id == wednesday_yoga.id
+    assert result[dropper.id].class_type_name == "Yoga"
+    assert result[other.id].class_template_id == friday_box.id
+    assert result[other.id].class_type_name == "Boxeo"
