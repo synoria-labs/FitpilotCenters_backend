@@ -158,9 +158,10 @@ async def favorite_classes_for(
     # attend most, weighted the same way as everywhere else (checked_in > reserved).
     multi_person_ids = [pid for pid, rows in standing_by_person.items() if len(rows) > 1]
     if multi_person_ids:
-        template_ids = list(
-            {row[1] for pid in multi_person_ids for row in standing_by_person[pid]}
-        )
+        own_templates = {
+            pid: {row[1] for row in standing_by_person[pid]} for pid in multi_person_ids
+        }
+        template_ids = list({tid for tids in own_templates.values() for tid in tids})
         weight_rows = (
             await db.execute(
                 segmentation_service.attendance_weight_for_templates(
@@ -170,6 +171,12 @@ async def favorite_classes_for(
         ).all()
         best: Dict[int, tuple] = {}  # person_id -> ((weight, last_seen), template_id)
         for person_id, template_id, weight, last_seen in weight_rows:
+            # The weight query filters people and templates independently, so it also
+            # returns the classes this member attends that are *someone else's* standing
+            # booking. Ranking those would choose a template they have no standing booking
+            # on, which is not an answer this branch can give.
+            if template_id not in own_templates.get(person_id, ()):
+                continue
             key = (weight or 0, last_seen)
             if person_id not in best or key > best[person_id][0]:
                 best[person_id] = (key, template_id)
@@ -178,7 +185,7 @@ async def favorite_classes_for(
             # No attendance evidence yet for any of them (e.g. brand new standing
             # bookings): fall back to the first rather than drop the person entirely.
             chosen_template_id = best.get(person_id, (None, rows[0][1]))[1]
-            match = next(row for row in rows if row[1] == chosen_template_id)
+            match = next((row for row in rows if row[1] == chosen_template_id), rows[0])
             resolved[person_id] = _favorite_from_row(match)
 
     remaining_ids = [pid for pid in ids if pid not in resolved]
