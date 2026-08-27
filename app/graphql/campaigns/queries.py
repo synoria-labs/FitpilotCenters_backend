@@ -165,6 +165,7 @@ class CampaignsQuery:
                 key=key,
                 label=meta.get("label", key),
                 sample=meta.get("sample", ""),
+                description=meta.get("description", ""),
             )
             for key, meta in {**VARIABLES, **CAMPAIGN_VARIABLES}.items()
         ]

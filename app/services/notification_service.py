@@ -64,14 +64,46 @@ GYM_NAME = os.getenv("NOTIFICATION_GYM_NAME", os.getenv("GYM_NAME", "FitPilot"))
 # Variable catalog (single source of truth, shared with the frontend)
 # ---------------------------------------------------------------------------
 VARIABLES: Dict[str, Dict[str, str]] = {
-    "member_name": {"label": "Nombre completo del socio", "sample": "Juan Pérez"},
-    "member_first_name": {"label": "Primer nombre del socio", "sample": "Juan"},
-    "plan_name": {"label": "Nombre del plan", "sample": "Mensualidad"},
-    "end_date": {"label": "Fecha de vencimiento", "sample": "15/07/2026"},
-    "start_date": {"label": "Fecha de inicio", "sample": "15/06/2026"},
-    "amount": {"label": "Monto del plan", "sample": "$500.00"},
-    "days_left": {"label": "Días restantes", "sample": "7"},
-    "gym_name": {"label": "Nombre del gimnasio", "sample": GYM_NAME},
+    "member_name": {
+        "label": "Nombre completo del socio",
+        "sample": "Juan Pérez",
+        "description": "Nombre y apellido tal como están registrados en el sistema.",
+    },
+    "member_first_name": {
+        "label": "Primer nombre del socio",
+        "sample": "Juan",
+        "description": "Solo el primer nombre — para un tono más cercano/informal.",
+    },
+    "plan_name": {
+        "label": "Nombre del plan",
+        "sample": "Mensualidad",
+        "description": "Nombre del plan de membresía activo o de referencia del socio.",
+    },
+    "end_date": {
+        "label": "Fecha de vencimiento",
+        "sample": "15/07/2026",
+        "description": "Fecha en que vence (o venció) la membresía del socio.",
+    },
+    "start_date": {
+        "label": "Fecha de inicio",
+        "sample": "15/06/2026",
+        "description": "Fecha en que empezó la membresía o suscripción del socio.",
+    },
+    "amount": {
+        "label": "Monto del plan",
+        "sample": "$500.00",
+        "description": "Precio del plan de membresía, formateado como moneda.",
+    },
+    "days_left": {
+        "label": "Días restantes",
+        "sample": "7",
+        "description": "Días que faltan para el vencimiento (0 si ya venció o vence hoy).",
+    },
+    "gym_name": {
+        "label": "Nombre del gimnasio",
+        "sample": GYM_NAME,
+        "description": "Nombre del gimnasio/sede, configurado en el sistema.",
+    },
 }
 
 EVENT_TYPES: Dict[str, Dict[str, Any]] = {

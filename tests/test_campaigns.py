@@ -457,6 +457,47 @@ def test_legacy_level_and_in_spec_still_compiles():
     assert "template_id IN (11, 14)" in by_template
 
 
+# ---------------------------------------------------------------------------
+# class_affinity + standing bookings (SQL shape)
+# ---------------------------------------------------------------------------
+def test_favorite_mode_also_matches_an_active_standing_booking():
+    """A standing booking counts even when it is not the statistically dominant bucket —
+    it is an explicit commitment, not an inference."""
+    sql = _audience_sql(
+        {"type": "class_affinity", "mode": "favorite", "groups": [{"class_type_id": 7}]}
+    )
+    assert "app.standing_bookings.status = 'active'" in sql
+    assert "app.class_templates.class_type_id = 7" in sql
+    assert "bucket = 'selected'" in sql  # the statistical path is still there too
+
+
+def test_attended_mode_also_matches_an_active_standing_booking():
+    """A brand new standing booking, with no sessions materialized yet, still counts."""
+    sql = _audience_sql(
+        {
+            "type": "class_affinity",
+            "mode": "attended",
+            "groups": [{"class_type_id": 7}],
+            "min_reservations": 2,
+        }
+    )
+    assert "app.standing_bookings.status = 'active'" in sql
+    assert "HAVING count(*) >= 2" in sql  # the attended-count path is still there too
+
+
+def test_standing_booking_condition_respects_template_narrowing():
+    """Selecting specific horarios must narrow the standing-booking match the same way."""
+    sql = _audience_sql(
+        {
+            "type": "class_affinity",
+            "mode": "favorite",
+            "groups": [{"class_type_id": 7, "template_ids": [11, 14]}],
+        }
+    )
+    assert "app.class_templates.id IN (11, 14)" in sql
+    assert "app.class_templates.class_type_id = 7" not in sql
+
+
 @pytest.mark.parametrize(
     "predicate,message",
     [

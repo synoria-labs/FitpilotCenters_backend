@@ -19,7 +19,9 @@ Example spec::
 ``class_affinity`` answers "which classes does this member actually book?" — at the level of
 the activity (``class_type``) or of the scheduled class itself (``class_template``: Spinning,
 Mondays 07:00). ``favorite`` keeps only members whose single most-booked class is in the
-selection; ``attended`` keeps anyone who booked it at least ``min_reservations`` times.
+selection; ``attended`` keeps anyone who booked it at least ``min_reservations`` times. Either
+way, a member with an *active standing booking* matching the selection always counts too — an
+explicit recurring commitment, not an inference (see ``_standing_booking_condition``).
 
 Consent, recency-blocking, phone reachability and variant assignment are NOT applied here —
 they belong to the build phase in ``campaign_service`` (which records skips honestly). This
@@ -39,11 +41,13 @@ from sqlalchemy.orm import load_only, selectinload
 
 from app.models import (
     ClassSession,
+    ClassTemplate,
     MembershipSubscription,
     People,
     PersonRole,
     Reservation,
     Role,
+    StandingBooking,
 )
 
 logger = logging.getLogger(__name__)
@@ -258,6 +262,24 @@ def favorite_class_subquery(
     return select(ranked.c.person_id, ranked.c.class_key).where(ranked.c.rn == 1).subquery()
 
 
+def attendance_weight_for_templates(
+    person_ids: List[int],
+    template_ids: List[int],
+    now: Optional[datetime] = None,
+    lookback_days: int = DEFAULT_AFFINITY_LOOKBACK_DAYS,
+):
+    """``(person_id, class_key=template_id, weight, last_seen)`` restricted to ``template_ids``.
+
+    For callers that already know which templates matter (e.g. a member's own standing
+    bookings) and just need to rank them by the same checked_in/reserved weighting as
+    ``favorite_class_subquery``, instead of finding the single dominant class overall.
+    """
+    now = now or _now()
+    return _affinity_base("class_template", now, lookback_days, person_ids).where(
+        ClassSession.template_id.in_(template_ids)
+    )
+
+
 def _normalize_groups(predicate: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Read the selection out of a predicate, accepting both spec shapes.
 
@@ -319,17 +341,25 @@ def _normalize_groups(predicate: Dict[str, Any]) -> List[Dict[str, Any]]:
     return groups
 
 
-def _group_conditions(groups: List[Dict[str, Any]]):
-    """One SQL condition per group: 'this booking belongs to that selection'."""
+def _group_conditions(
+    groups: List[Dict[str, Any]],
+    template_id_col=ClassSession.template_id,
+    class_type_id_col=ClassSession.class_type_id,
+):
+    """One SQL condition per group: 'this booking belongs to that selection'.
+
+    Columns default to ``ClassSession``; pass ``ClassTemplate.id``/``ClassTemplate.class_type_id``
+    to match the same groups against standing bookings instead of actual reservations.
+    """
     conditions = []
     for group in groups:
         template_ids = group.get("template_ids")
         if template_ids:
-            conditions.append(ClassSession.template_id.in_(template_ids))
+            conditions.append(template_id_col.in_(template_ids))
         elif group.get("class_type_id") is not None:
             # No narrowing: the whole activity, including ad-hoc sessions that have no
             # template and which a template list could never reach.
-            conditions.append(ClassSession.class_type_id == group["class_type_id"])
+            conditions.append(class_type_id_col == group["class_type_id"])
     return conditions
 
 
@@ -387,6 +417,27 @@ def _selected_is_dominant_subquery(
     )
 
 
+def _standing_booking_condition(groups: List[Dict[str, Any]]):
+    """Members with an active standing booking matching the selection.
+
+    An explicit recurring commitment counts as affinity regardless of whether it happens to
+    be the statistically dominant bucket, or whether enough sessions have materialized yet
+    to satisfy an ``attended`` count — the same priority attendance_profile_service gives
+    standing bookings when personalizing a message.
+    """
+    conditions = _group_conditions(
+        groups,
+        template_id_col=ClassTemplate.id,
+        class_type_id_col=ClassTemplate.class_type_id,
+    )
+    matching = (
+        select(StandingBooking.person_id)
+        .join(ClassTemplate, ClassTemplate.id == StandingBooking.template_id)
+        .where(StandingBooking.status == "active", or_(*conditions))
+    )
+    return People.id.in_(matching)
+
+
 def _class_affinity_condition(predicate: Dict[str, Any], now: datetime):
     mode = str(predicate.get("mode") or "favorite").lower()
     if mode not in CLASS_AFFINITY_MODES:
@@ -407,8 +458,12 @@ def _class_affinity_condition(predicate: Dict[str, Any], now: datetime):
     if lookback <= 0:
         raise SegmentationError("class_affinity 'lookback_days' debe ser mayor que cero.")
 
+    standing = _standing_booking_condition(groups)
+
     if mode == "favorite":
-        return People.id.in_(_selected_is_dominant_subquery(groups, now, lookback))
+        return or_(
+            People.id.in_(_selected_is_dominant_subquery(groups, now, lookback)), standing
+        )
 
     # mode == "attended": booked inside the selection at least N times.
     raw_min = predicate.get("min_reservations")
@@ -427,7 +482,7 @@ def _class_affinity_condition(predicate: Dict[str, Any], now: datetime):
         .group_by(Reservation.person_id)
         .having(func.count() >= min_reservations)
     )
-    return People.id.in_(attended)
+    return or_(People.id.in_(attended), standing)
 
 
 _PREDICATE_BUILDERS = {
