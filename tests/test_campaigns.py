@@ -31,9 +31,12 @@ from app.services import segmentation_service as seg
 from app.services import whatsapp_outbound as outbound
 from app.services import campaign_service as dispatch
 from app.services.campaign_service import (
+    AVG_KCAL_PER_SESSION,
     CAMPAIGN_VARIABLES,
+    KCAL_PER_KG_FAT,
     allowed_variables_for,
     apply_favorite_class_variables,
+    apply_inactivity_variables,
 )
 
 TZ = ZoneInfo("America/Mexico_City")
@@ -505,6 +508,7 @@ def test_favorite_class_variables_resolve_from_the_snapshot():
     assert context["favorite_class_name"] == "Spinning"
     assert context["favorite_class_day"] == "lunes"
     assert context["favorite_class_time"] == "7:00 a. m."
+    assert context["favorite_class_schedule"] == "lunes a las 7:00 a. m."
 
 
 def test_member_without_history_gets_empty_strings_not_a_placeholder():
@@ -514,7 +518,54 @@ def test_member_without_history_gets_empty_strings_not_a_placeholder():
         "favorite_class_name": "",
         "favorite_class_day": "",
         "favorite_class_time": "",
+        "favorite_class_schedule": "",
     }
+
+
+# ---------------------------------------------------------------------------
+# Derived variables: inactivity days + motivational kcal/kg-fat translation
+# ---------------------------------------------------------------------------
+def test_inactivity_variables_computed_from_lapsed_subscription():
+    subscription = SimpleNamespace(end_at=datetime.now(timezone.utc) - timedelta(days=84))
+    context = apply_inactivity_variables({}, subscription)
+
+    assert context["days_inactive"] == "84"
+    expected_kcal = round(84 * AVG_KCAL_PER_SESSION / 50) * 50
+    assert context["kcal_not_burned"] == f"{expected_kcal:,}"
+    assert context["kg_fat_equivalent"] == f"{expected_kcal / KCAL_PER_KG_FAT:.1f}"
+
+
+def test_inactivity_variables_are_empty_without_a_lapsed_subscription():
+    """No subscription, or one that hasn't actually expired, is not 'inactive' — never invent
+    a number just because a placeholder wants one."""
+    assert apply_inactivity_variables({}, None) == {
+        "days_inactive": "", "kcal_not_burned": "", "kg_fat_equivalent": "",
+    }
+
+    still_active = SimpleNamespace(end_at=datetime.now(timezone.utc) + timedelta(days=10))
+    assert apply_inactivity_variables({}, still_active) == {
+        "days_inactive": "", "kcal_not_burned": "", "kg_fat_equivalent": "",
+    }
+
+
+def test_inactivity_variables_use_naive_end_at_as_utc():
+    """Membership dates come back naive from some code paths; must not crash comparing to
+    an aware 'now'."""
+    naive_end_at = datetime.utcnow() - timedelta(days=10)
+    subscription = SimpleNamespace(end_at=naive_end_at)
+    context = apply_inactivity_variables({}, subscription)
+    assert context["days_inactive"] == "10"
+
+
+def test_favorite_class_schedule_falls_back_to_whichever_half_is_known():
+    only_day = attendance.FavoriteClass(weekday=1)
+    assert only_day.schedule_text == "lunes"
+
+    only_time = attendance.FavoriteClass(start_time_local=time(7, 0))
+    assert only_time.schedule_text == "7:00 a. m."
+
+    neither = attendance.FavoriteClass()
+    assert neither.schedule_text == ""
 
 
 @pytest.mark.parametrize(

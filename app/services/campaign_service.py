@@ -155,7 +155,21 @@ CAMPAIGN_VARIABLES: Dict[str, Dict[str, str]] = {
     "favorite_class_name": {"label": "Clase que más reserva", "sample": "Spinning"},
     "favorite_class_day": {"label": "Día de esa clase", "sample": "lunes"},
     "favorite_class_time": {"label": "Hora de esa clase", "sample": "7:00 a. m."},
+    "favorite_class_schedule": {
+        "label": "Horario habitual (día y hora)", "sample": "lunes a las 7:00 a. m.",
+    },
+    "days_inactive": {"label": "Días de inactividad (vencida)", "sample": "84"},
+    "kcal_not_burned": {"label": "Kcal no quemadas (estimado)", "sample": "8,700"},
+    "kg_fat_equivalent": {"label": "Kg de grasa (equivalente estimado)", "sample": "1.1"},
 }
+
+# Estimación deliberadamente simple: no hay dato de intensidad/MET en class_types ni
+# class_templates para derivar algo más preciso, y presentarlo como si lo hubiera violaría
+# la propia advertencia de "no dar datos médicos/científicos exactos" que acompaña este tipo
+# de mensaje motivacional. Un día inactivo se cuenta como una sesión perdida (aproximación,
+# no la frecuencia real de asistencia del socio).
+AVG_KCAL_PER_SESSION = 900
+KCAL_PER_KG_FAT = 7700
 
 # Every objective targets members and can resolve the same member-based variables.
 _MEMBER_VARIABLE_KEYS = list(VARIABLES.keys()) + list(CAMPAIGN_VARIABLES.keys())
@@ -228,6 +242,39 @@ def apply_favorite_class_variables(context: Dict[str, Any], favorite) -> Dict[st
     context["favorite_class_name"] = favorite.class_type_name if favorite else ""
     context["favorite_class_day"] = favorite.day_label if favorite else ""
     context["favorite_class_time"] = favorite.time_label if favorite else ""
+    context["favorite_class_schedule"] = favorite.schedule_text if favorite else ""
+    return context
+
+
+def apply_inactivity_variables(
+    context: Dict[str, Any], subscription, *, now: Optional[datetime] = None
+) -> Dict[str, Any]:
+    """Days since the membership lapsed, plus its motivational kcal/kg-fat translation.
+
+    Same rule as ``apply_favorite_class_variables``: no real data means empty strings, never
+    an invented number. A member whose subscription hasn't actually expired yet (or has none)
+    isn't "inactive" in this sense.
+    """
+    now = now or _now()
+    end_at = getattr(subscription, "end_at", None)
+    days_inactive: Optional[int] = None
+    if end_at is not None:
+        end_aware = end_at if end_at.tzinfo else end_at.replace(tzinfo=timezone.utc)
+        delta = (now - end_aware).days
+        if delta > 0:
+            days_inactive = delta
+
+    if days_inactive is None:
+        context["days_inactive"] = ""
+        context["kcal_not_burned"] = ""
+        context["kg_fat_equivalent"] = ""
+        return context
+
+    kcal = days_inactive * AVG_KCAL_PER_SESSION
+    kg_fat = kcal / KCAL_PER_KG_FAT
+    context["days_inactive"] = str(days_inactive)
+    context["kcal_not_burned"] = f"{round(kcal / 50) * 50:,}"
+    context["kg_fat_equivalent"] = f"{kg_fat:.1f}"
     return context
 
 
@@ -400,6 +447,7 @@ async def _send_to_recipient(
     context = apply_favorite_class_variables(
         build_variable_context(person, subscription, plan), favorite
     )
+    context = apply_inactivity_variables(context, subscription)
     body_params = _resolve_body_params(_variant_param_mapping(campaign, variant), context)
     header_text_key, button_url_key, location_param = _variant_extra_params(campaign, variant)
     header_text_param = _resolve_param_key(header_text_key, context)

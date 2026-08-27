@@ -16,7 +16,7 @@ documented inline; the campaign_service generally commits.
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 import logging
 import re
@@ -32,6 +32,7 @@ from app.models import (
     MembershipSubscription,
     Payment,
     Reservation,
+    WhatsAppTemplate,
 )
 from app.models.campaignsModel import STATUS_SCHEDULED, STATUS_SENDING
 
@@ -926,6 +927,44 @@ async def apply_inbound_reply(
     recipient.updated_at = _utcnow()
     await db.flush()
     return True
+
+
+async def get_recipient_by_wa_message_id(
+    db: AsyncSession, wa_message_id: str
+) -> Optional[CampaignRecipient]:
+    """Exact match on the outbound template message id.
+
+    Same lookup ``apply_delivery_status`` uses for Meta status callbacks, reused here to
+    resolve an inbound message's ``context.id`` (a button tap, or a quoted reply) back to the
+    campaign that sent the original message — precise, unlike ``apply_inbound_reply``'s
+    wa_id + recency heuristic.
+    """
+    if not wa_message_id:
+        return None
+    return (
+        await db.execute(
+            select(CampaignRecipient).where(CampaignRecipient.wa_message_id == wa_message_id)
+        )
+    ).scalars().first()
+
+
+async def get_campaign_and_template(
+    db: AsyncSession, campaign_id: int
+) -> Tuple[Optional[Campaign], Optional[WhatsAppTemplate]]:
+    """Campaign + the template it currently points at, for AI-facing context notes."""
+    campaign = (
+        await db.execute(select(Campaign).where(Campaign.id == campaign_id))
+    ).scalars().first()
+    if campaign is None:
+        return None, None
+    template = None
+    if campaign.template_id:
+        template = (
+            await db.execute(
+                select(WhatsAppTemplate).where(WhatsAppTemplate.id == campaign.template_id)
+            )
+        ).scalars().first()
+    return campaign, template
 
 
 # ---------------------------------------------------------------------------

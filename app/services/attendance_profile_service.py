@@ -78,6 +78,19 @@ class FavoriteClass:
     def time_label(self) -> str:
         return format_time(self.start_time_local)
 
+    @property
+    def schedule_text(self) -> str:
+        """'lunes a las 7:00 a. m.' — one placeholder for the whole usual slot.
+
+        Only the single dominant day/time this module already tracks; not "lunes y
+        miércoles" — combining multiple attended days would need new aggregation in
+        ``favorite_classes_for``/``segmentation_service.favorite_class_subquery``.
+        """
+        day, time_str = self.day_label, self.time_label
+        if day and time_str:
+            return f"{day} a las {time_str}"
+        return day or time_str
+
 
 async def favorite_classes_for(
     db: AsyncSession,
