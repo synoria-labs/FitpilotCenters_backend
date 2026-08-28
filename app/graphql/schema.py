@@ -40,6 +40,8 @@ from app.graphql.notifications.queries import NotificationSettingsQuery
 from app.graphql.notifications.mutations import NotificationSettingsMutation
 from app.graphql.chatbot.queries import ChatbotConfigQuery
 from app.graphql.chatbot.mutations import ChatbotConfigMutation
+from app.graphql.fitness_estimation.queries import FitnessEstimationQuery
+from app.graphql.fitness_estimation.mutations import FitnessEstimationMutation
 from app.graphql.campaigns.queries import CampaignsQuery
 from app.graphql.campaigns.mutations import CampaignsMutation
 from app.graphql.permissions.queries import PermissionsQuery
@@ -71,13 +73,13 @@ except ImportError as e:
         pass
 
 @strawberry.type
-class Query(UserQuery, MembersQuery, MembershipsQuery, ReservationQuery, StandingBookingQuery, SessionQuery, ClassSessionQueries, DashboardQuery, WhatsAppChatQuery, WhatsAppTemplateQuery, NotificationSettingsQuery, ChatbotConfigQuery, CampaignsQuery, PermissionsQuery, OwnerAgentQuery, PosQuery):
+class Query(UserQuery, MembersQuery, MembershipsQuery, ReservationQuery, StandingBookingQuery, SessionQuery, ClassSessionQueries, DashboardQuery, WhatsAppChatQuery, WhatsAppTemplateQuery, NotificationSettingsQuery, ChatbotConfigQuery, FitnessEstimationQuery, CampaignsQuery, PermissionsQuery, OwnerAgentQuery, PosQuery):
     @strawberry.field
     def hello(self) -> str:
         return "Hello from GraphQL!"
 
 @strawberry.type
-class Mutation(AuthMutation, UserMutation, MemberMutation, MembershipMutation, ReservationMutation, StandingBookingMutation, SessionMutation, ClassSessionMutations, WhatsAppChatMutation, WhatsAppTemplateMutation, NotificationSettingsMutation, ChatbotConfigMutation, CampaignsMutation, PermissionsMutation, OwnerAgentMutation, PosMutation, StepUpMutation):
+class Mutation(AuthMutation, UserMutation, MemberMutation, MembershipMutation, ReservationMutation, StandingBookingMutation, SessionMutation, ClassSessionMutations, WhatsAppChatMutation, WhatsAppTemplateMutation, NotificationSettingsMutation, ChatbotConfigMutation, FitnessEstimationMutation, CampaignsMutation, PermissionsMutation, OwnerAgentMutation, PosMutation, StepUpMutation):
     pass
 
 

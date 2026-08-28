@@ -709,15 +709,16 @@ async def list_recipients(
 
 
 async def list_recipient_favorite_refs(db: AsyncSession, campaign_id: int) -> List:
-    """(id, favorite_class_type_id, favorite_class_template_id) for a campaign's recipients.
+    """The per-recipient values frozen at build time, for a whole campaign.
 
-    Three narrow columns, fetched once per run, so a dispatch can resolve every recipient's
-    class labels in one pass instead of joining per message.
+    Four narrow columns, fetched once per run, so a dispatch can resolve every recipient's
+    class labels and booking cadence in one pass instead of joining per message.
     """
     stmt = select(
         CampaignRecipient.id,
         CampaignRecipient.favorite_class_type_id,
         CampaignRecipient.favorite_class_template_id,
+        CampaignRecipient.sessions_per_week,
     ).where(CampaignRecipient.campaign_id == campaign_id)
     return list((await db.execute(stmt)).all())
 

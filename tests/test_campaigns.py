@@ -30,13 +30,13 @@ from app.services import attendance_profile_service as attendance
 from app.services import segmentation_service as seg
 from app.services import whatsapp_outbound as outbound
 from app.services import campaign_service as dispatch
+from app.services import fitness_estimation_service as estimation
 from app.services.campaign_service import (
-    AVG_KCAL_PER_SESSION,
     CAMPAIGN_VARIABLES,
-    KCAL_PER_KG_FAT,
     allowed_variables_for,
     apply_favorite_class_variables,
     apply_inactivity_variables,
+    variable_samples,
 )
 
 TZ = ZoneInfo("America/Mexico_City")
@@ -566,27 +566,315 @@ def test_member_without_history_gets_empty_strings_not_a_placeholder():
 # ---------------------------------------------------------------------------
 # Derived variables: inactivity days + motivational kcal/kg-fat translation
 # ---------------------------------------------------------------------------
+def _spin_profile(**overrides):
+    """A gym like Love Fitness: Monday-Friday, one-hour spinning."""
+    config = estimation.EstimationConfig(**overrides)
+    schedule = estimation.GymSchedule(
+        open_weekdays=frozenset({1, 2, 3, 4, 5}),
+        duration_by_template={11: 60},
+        duration_by_class_type={1: 60},
+        met_by_class_type={1: 8.5},
+        mean_duration_min=60,
+    )
+    return estimation.EstimationProfile(config=config, schedule=schedule)
+
+
 def test_inactivity_variables_computed_from_lapsed_subscription():
     subscription = SimpleNamespace(end_at=datetime.now(timezone.utc) - timedelta(days=84))
-    context = apply_inactivity_variables({}, subscription)
+    context = apply_inactivity_variables(
+        {},
+        subscription,
+        profile=_spin_profile(),
+        favorite=SimpleNamespace(class_type_id=1, class_template_id=11),
+        sessions_per_week=3.0,
+    )
 
     assert context["days_inactive"] == "84"
-    expected_kcal = round(84 * AVG_KCAL_PER_SESSION / 50) * 50
-    assert context["kcal_not_burned"] == f"{expected_kcal:,}"
-    assert context["kg_fat_equivalent"] == f"{expected_kcal / KCAL_PER_KG_FAT:.1f}"
+    # 12 weeks x 3 sessions x (8.5-1) MET x 70 kg x 1 h = 18,900 kcal.
+    assert context["kcal_not_burned"] == "18,900"
+    # 225 kcal/day removed -> 10.1 kg steady state, ~15% of it reached in 84 days.
+    assert context["kg_fat_equivalent"] == "1.5"
+    assert context["kcal_window_label"] == "los últimos 3 meses"
+
+
+def test_the_old_constant_would_have_sent_an_impossible_number():
+    """Regression guard for the bug this replaced.
+
+    ``days_inactive * 900`` told the median lapsed member (349 days out) that they had
+    accumulated 40.8 kg of fat. Whatever the configuration, a win-back message has to stay
+    in a range a person can believe, or it costs the gym the number it was sent from.
+    """
+    subscription = SimpleNamespace(end_at=datetime.now(timezone.utc) - timedelta(days=349))
+    context = apply_inactivity_variables(
+        {},
+        subscription,
+        profile=_spin_profile(),
+        favorite=SimpleNamespace(class_type_id=1, class_template_id=11),
+        sessions_per_week=2.7,
+    )
+
+    assert context["days_inactive"] == "349"
+    assert float(context["kg_fat_equivalent"]) < 5.0
+    assert 349 * 900 / 7700 > 40  # what the old formula produced
+
+
+def test_estimate_never_counts_more_sessions_than_the_gym_is_open():
+    """A member cannot miss six classes a week at a gym that opens five days.
+
+    Cadence is measured per *active* week, so a burst of bookings in one week can exceed
+    what the schedule offers; the schedule is the ceiling.
+    """
+    result = estimation.estimate_inactivity(
+        _spin_profile(), days_inactive=70, sessions_per_week=9.0, class_type_id=1
+    )
+    assert result.sessions_per_week == 5.0
+
+    seven_days = estimation.EstimationProfile(
+        config=estimation.EstimationConfig(),
+        schedule=estimation.GymSchedule(
+            open_weekdays=frozenset(range(7)),
+            met_by_class_type={1: 8.5},
+            mean_duration_min=60,
+        ),
+    )
+    assert (
+        estimation.estimate_inactivity(
+            seven_days, days_inactive=70, sessions_per_week=9.0, class_type_id=1
+        ).sessions_per_week
+        == 7.0
+    )
+
+
+def test_weekend_gym_earns_a_bigger_estimate_than_a_weekday_one():
+    """The whole point of deriving the schedule: a gym open seven days a week has more
+    classes to miss, and nobody had to configure that."""
+    weekday = estimation.estimate_inactivity(
+        _spin_profile(), days_inactive=84, sessions_per_week=6.0, class_type_id=1
+    )
+    weekend_profile = estimation.EstimationProfile(
+        config=estimation.EstimationConfig(),
+        schedule=estimation.GymSchedule(
+            open_weekdays=frozenset(range(7)),
+            met_by_class_type={1: 8.5},
+            mean_duration_min=60,
+        ),
+    )
+    weekend = estimation.estimate_inactivity(
+        weekend_profile, days_inactive=84, sessions_per_week=6.0, class_type_id=1
+    )
+    assert weekend.kcal > weekday.kcal
+
+
+def test_class_duration_scales_the_estimate():
+    """A 30-minute express class is worth half an hour-long one, read from the same
+    schedule rows the session generator already uses."""
+    profile = _spin_profile()
+    hour = estimation.estimate_inactivity(
+        profile, days_inactive=84, sessions_per_week=3.0, class_type_id=1, class_template_id=11
+    )
+    half_profile = estimation.EstimationProfile(
+        config=profile.config,
+        schedule=estimation.GymSchedule(
+            open_weekdays=frozenset({1, 2, 3, 4, 5}),
+            duration_by_template={12: 30},
+            met_by_class_type={1: 8.5},
+            mean_duration_min=30,
+        ),
+    )
+    half = estimation.estimate_inactivity(
+        half_profile, days_inactive=84, sessions_per_week=3.0, class_type_id=1,
+        class_template_id=12,
+    )
+    assert half.kcal == pytest.approx(hour.kcal / 2, rel=0.01)
+
+
+def test_intensity_comes_from_the_activity():
+    """Yoga and spinning must not be quoted the same calories."""
+    profile = estimation.EstimationProfile(
+        config=estimation.EstimationConfig(),
+        schedule=estimation.GymSchedule(
+            open_weekdays=frozenset({1, 2, 3, 4, 5}),
+            met_by_class_type={1: 8.5, 2: 3.0},
+            mean_duration_min=60,
+        ),
+    )
+    spin = estimation.estimate_inactivity(
+        profile, days_inactive=84, sessions_per_week=3.0, class_type_id=1
+    )
+    yoga = estimation.estimate_inactivity(
+        profile, days_inactive=84, sessions_per_week=3.0, class_type_id=2
+    )
+    assert spin.kcal > yoga.kcal * 3
+
+
+def test_the_horizon_rails_the_calorie_total_without_shaping_the_normal_case():
+    """The rail is protection against a pathological outlier, not the mechanism.
+
+    Set where it bites the normal case, it reproduces the bug it was meant to fix at a new
+    offset: everyone past it receives an identical figure. The default sits past the oldest
+    member in the real audience (714 days), so it only engages for someone who left years ago.
+    """
+    profile = _spin_profile()
+    oldest_real_member = estimation.estimate_inactivity(
+        profile, days_inactive=714, sessions_per_week=2.5, class_type_id=1
+    )
+    assert oldest_real_member.horizon_reached is False
+
+    ancient = estimation.estimate_inactivity(
+        profile, days_inactive=3650, sessions_per_week=2.5, class_type_id=1
+    )
+    assert ancient.horizon_reached is True
+    assert ancient.weeks_counted == 104.0
+
+
+def test_a_longer_absence_always_says_more():
+    """The failure that made the first fix wrong: a fixed horizon flattened everyone past it,
+    so a two-year lapse read exactly like a three-month one — in a campaign whose entire
+    purpose is to be more urgent the longer someone has been gone."""
+    profile = _spin_profile()
+    figures = [
+        estimation.estimate_inactivity(
+            profile, days_inactive=days, sessions_per_week=2.5, class_type_id=1
+        ).kg_fat
+        for days in (84, 122, 349, 463, 673, 714)
+    ]
+    assert figures == sorted(figures)
+    assert len(set(figures)) == len(figures)  # strictly increasing, never a plateau
+
+
+def test_kilograms_saturate_instead_of_accumulating():
+    """Bodies compensate: appetite and non-exercise activity adapt, and a heavier body costs
+    more to maintain. Twice the absence is therefore well under twice the weight, and no
+    absence ever passes the steady state — which is what removes the need for a ceiling."""
+    profile = _spin_profile()
+    one_year = estimation.estimate_inactivity(
+        profile, days_inactive=365, sessions_per_week=2.5, class_type_id=1
+    )
+    two_years = estimation.estimate_inactivity(
+        profile, days_inactive=730, sessions_per_week=2.5, class_type_id=1
+    )
+    assert two_years.kg_fat > one_year.kg_fat
+    assert two_years.kg_fat < one_year.kg_fat * 2
+    assert two_years.kg_fat < two_years.kg_steady_state
+    # Half the steady state after roughly one half-life.
+    assert one_year.kg_fat == pytest.approx(one_year.kg_steady_state / 2, rel=0.02)
+
+
+def test_no_absence_however_long_exceeds_the_steady_state():
+    profile = _spin_profile()
+    for days in (365, 730, 3650, 36500):
+        result = estimation.estimate_inactivity(
+            profile, days_inactive=days, sessions_per_week=2.5, class_type_id=1
+        )
+        assert result.kg_fat < result.kg_steady_state
+
+
+def test_turning_off_adaptation_returns_to_the_linear_rule():
+    """The escape hatch for a gym that wants the familiar 7700 kcal/kg — which overpredicts
+    long-run weight change roughly twofold, hence the default being off."""
+    linear = estimation.estimate_inactivity(
+        _spin_profile(metabolic_adaptation=False),
+        days_inactive=349,
+        sessions_per_week=2.5,
+        class_type_id=1,
+    )
+    saturating = estimation.estimate_inactivity(
+        _spin_profile(), days_inactive=349, sessions_per_week=2.5, class_type_id=1
+    )
+    assert linear.kg_fat == pytest.approx(linear.kcal / 7700, rel=0.01)
+    assert linear.kg_steady_state == 0.0
+    assert linear.kg_fat > saturating.kg_fat * 1.8
+
+
+def test_calories_stay_linear_because_they_actually_are():
+    """The distinction the first fix missed: energy not spent really is additive, so doubling
+    the absence doubles the calories even though it does not double the kilograms."""
+    profile = _spin_profile()
+    one = estimation.estimate_inactivity(
+        profile, days_inactive=182, sessions_per_week=2.5, class_type_id=1
+    )
+    two = estimation.estimate_inactivity(
+        profile, days_inactive=364, sessions_per_week=2.5, class_type_id=1
+    )
+    assert two.kcal == pytest.approx(one.kcal * 2, rel=0.01)
+
+
+def test_members_without_history_fall_back_to_the_configured_default():
+    """About a third of the lapsed audience never booked a class. They get the configured
+    assumption, flagged as such, not a number invented from nothing."""
+    result = estimation.estimate_inactivity(
+        _spin_profile(), days_inactive=84, sessions_per_week=None, class_type_id=1
+    )
+    assert result.cadence_from_history is False
+    assert result.sessions_per_week == 2.5
+
+
+def test_estimate_is_net_of_resting_metabolism():
+    """The claim is the extra burn over sitting still, not the gross total."""
+    net = estimation.estimate_inactivity(
+        _spin_profile(), days_inactive=84, sessions_per_week=3.0, class_type_id=1
+    )
+    gross = estimation.estimate_inactivity(
+        _spin_profile(net_of_resting=False),
+        days_inactive=84,
+        sessions_per_week=3.0,
+        class_type_id=1,
+    )
+    assert net.kcal_per_session == pytest.approx(7.5 * 70, rel=0.01)
+    assert gross.kcal_per_session == pytest.approx(8.5 * 70, rel=0.01)
+
+
+def test_wizard_samples_are_produced_by_the_engine():
+    """The preview has to show what the send will show.
+
+    The catalog used to carry hand-written samples ("8,700" kcal) that the formula could
+    not produce for any input, so the operator approved one message and members received
+    another roughly 36x larger.
+    """
+    profile = _spin_profile()
+    samples = variable_samples(profile)
+    expected = estimation.estimate_inactivity(profile, days_inactive=365)
+    assert samples["kcal_not_burned"] == estimation.format_kcal(expected.kcal)
+    assert samples["kg_fat_equivalent"] == estimation.format_kg_fat(expected.kg_fat)
+    assert samples["kcal_window_label"] == "los últimos 12 meses"
+
+
+def test_the_sample_previews_a_typical_member_not_the_horizon():
+    """Quoting the rail would preview the most extreme member the system can produce; the
+    operator needs to see what the bulk of the audience will actually receive."""
+    samples = variable_samples(_spin_profile())
+    assert samples["days_inactive"] == "365"
+    assert float(samples["kg_fat_equivalent"]) < 5.0
+
+
+def test_days_since_last_class_is_only_filled_from_real_attendance():
+    """"Hace X días que no te vemos" is an attendance claim, so a member who never booked
+    gets a blank rather than the membership figure wearing an attendance label."""
+    subscription = SimpleNamespace(end_at=datetime.now(timezone.utc) - timedelta(days=349))
+    never_booked = apply_inactivity_variables({}, subscription, profile=_spin_profile())
+    assert never_booked["days_inactive"] == "349"
+    assert never_booked["days_since_last_class"] == ""
+
+    booked = apply_inactivity_variables(
+        {}, subscription, profile=_spin_profile(), days_since_last_class=185
+    )
+    assert booked["days_since_last_class"] == "185"
 
 
 def test_inactivity_variables_are_empty_without_a_lapsed_subscription():
     """No subscription, or one that hasn't actually expired, is not 'inactive' — never invent
     a number just because a placeholder wants one."""
-    assert apply_inactivity_variables({}, None) == {
-        "days_inactive": "", "kcal_not_burned": "", "kg_fat_equivalent": "",
+    blank = {
+        "days_inactive": "",
+        "days_since_last_class": "",
+        "kcal_not_burned": "",
+        "kg_fat_equivalent": "",
+        "kcal_window_label": "",
     }
+    assert apply_inactivity_variables({}, None) == blank
 
     still_active = SimpleNamespace(end_at=datetime.now(timezone.utc) + timedelta(days=10))
-    assert apply_inactivity_variables({}, still_active) == {
-        "days_inactive": "", "kcal_not_burned": "", "kg_fat_equivalent": "",
-    }
+    assert apply_inactivity_variables({}, still_active) == blank
 
 
 def test_inactivity_variables_use_naive_end_at_as_utc():
