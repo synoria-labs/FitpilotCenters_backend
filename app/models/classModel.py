@@ -5,7 +5,7 @@ Based on the modern schema with English naming
 from datetime import datetime, date, time
 from typing import Optional, List, TYPE_CHECKING
 from sqlalchemy import (
-    Date, Time, ForeignKey, Integer, BigInteger, String, Text,
+    Date, Time, ForeignKey, Integer, BigInteger, Numeric, String, Text,
     Boolean, CheckConstraint, UniqueConstraint, Index
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -28,6 +28,12 @@ class ClassType(Base):
     code: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text)
+    # Metabolic equivalent of the activity, used only by the motivational calorie estimate
+    # in campaigns. Intensity is the one input no query can derive: the schedule knows when
+    # and for how long a class runs, never how hard it is. NULL is the normal state — it
+    # falls back to a per-``code`` default (see ``fitness_estimation_service.DEFAULT_METS``)
+    # and then to the configured global default, so an existing catalog needs no backfill.
+    met_value: Mapped[Optional[float]] = mapped_column(Numeric(4, 2))
 
     # Relationships
     class_templates: Mapped[List["ClassTemplate"]] = relationship(back_populates="class_type")

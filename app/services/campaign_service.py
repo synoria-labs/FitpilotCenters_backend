@@ -53,6 +53,7 @@ from app.models.campaignsModel import (
     STATUS_SENDING,
 )
 from app.services import attendance_profile_service
+from app.services import fitness_estimation_service as estimation
 from app.services import segmentation_service
 from app.services import whatsapp_cloud_service as cloud
 from app.services import whatsapp_media_assets_service as media_service
@@ -190,31 +191,60 @@ CAMPAIGN_VARIABLES: Dict[str, Dict[str, str]] = {
             "socio no tiene una."
         ),
     },
+    "days_since_last_class": {
+        "label": "Días desde su última clase",
+        "sample": "84",
+        "description": (
+            "Días desde la última clase a la que asistió. Es el dato correcto para «hace X "
+            "días que no te vemos»: un socio suele dejar de venir antes de dejar de pagar, "
+            "así que este número y el de membresía vencida rara vez coinciden. Vacío si "
+            "nunca reservó una clase."
+        ),
+    },
     "kcal_not_burned": {
         "label": "Kcal no quemadas (estimado)",
-        "sample": "8,700",
+        "sample": "",
         "description": (
-            "Estimación motivacional (no un dato médico): días de inactividad × calorías "
-            "promedio por sesión perdida. Vacío junto con días de inactividad."
+            "Estimación motivacional, no un dato médico: sesiones perdidas × calorías por "
+            "sesión. Las sesiones perdidas salen del ritmo real del socio (sus reservas por "
+            "semana) acotado a los días que abre el gimnasio; las calorías por sesión salen "
+            "del MET de la actividad, la duración real de la clase y el peso de referencia "
+            "configurado. Se calcula sobre una ventana máxima (ver «Ventana del cálculo»). "
+            "Ajustable en Configuración → Estimaciones. Vacío junto con días de inactividad."
         ),
     },
     "kg_fat_equivalent": {
         "label": "Kg de grasa (equivalente estimado)",
-        "sample": "1.1",
+        "sample": "",
         "description": (
             "La misma estimación de kcal no quemadas, convertida a kg de grasa equivalente. "
             "No es el peso corporal del socio — el sistema no lo trackea."
         ),
     },
+    "kcal_window_label": {
+        "label": "Ventana del cálculo",
+        "sample": "",
+        "description": (
+            "Periodo que cubre la estimación de kcal, en texto («los últimos 3 meses»). "
+            "Úsalo junto a las kcal para no dar a entender que el total abarca toda la "
+            "ausencia cuando el horizonte configurado la recorta."
+        ),
+    },
 }
 
-# Estimación deliberadamente simple: no hay dato de intensidad/MET en class_types ni
-# class_templates para derivar algo más preciso, y presentarlo como si lo hubiera violaría
-# la propia advertencia de "no dar datos médicos/científicos exactos" que acompaña este tipo
-# de mensaje motivacional. Un día inactivo se cuenta como una sesión perdida (aproximación,
-# no la frecuencia real de asistencia del socio).
-AVG_KCAL_PER_SESSION = 900
-KCAL_PER_KG_FAT = 7700
+# Claves que se llenan o se vacían juntas: si no sabemos hace cuánto se fue, no hay nada
+# honesto que decir sobre calorías, y media frase con un hueco es peor que ninguna frase.
+# The absence the wizard preview is quoted for. One year: near this audience's median and a
+# period a reader can picture, unlike the horizon rail.
+_SAMPLE_ABSENCE_DAYS = 365
+
+_INACTIVITY_KEYS = (
+    "days_inactive",
+    "days_since_last_class",
+    "kcal_not_burned",
+    "kg_fat_equivalent",
+    "kcal_window_label",
+)
 
 # Every objective targets members and can resolve the same member-based variables.
 _MEMBER_VARIABLE_KEYS = list(VARIABLES.keys()) + list(CAMPAIGN_VARIABLES.keys())
@@ -294,9 +324,22 @@ def apply_favorite_class_variables(context: Dict[str, Any], favorite) -> Dict[st
 
 
 def apply_inactivity_variables(
-    context: Dict[str, Any], subscription, *, now: Optional[datetime] = None
+    context: Dict[str, Any],
+    subscription,
+    *,
+    profile: Optional["estimation.EstimationProfile"] = None,
+    favorite=None,
+    sessions_per_week: Optional[float] = None,
+    days_since_last_class: Optional[int] = None,
+    now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """Days since the membership lapsed, plus its motivational kcal/kg-fat translation.
+
+    The translation is delegated to ``fitness_estimation_service`` so the gym's own schedule
+    drives it: how many days a week it actually opens, how long its classes actually run and
+    how hard the member's own activity actually is. What used to be
+    ``days_inactive * 900`` told the median lapsed member here that they had accumulated
+    40.8 kg of fat.
 
     Same rule as ``apply_favorite_class_variables``: no real data means empty strings, never
     an invented number. A member whose subscription hasn't actually expired yet (or has none)
@@ -311,18 +354,60 @@ def apply_inactivity_variables(
         if delta > 0:
             days_inactive = delta
 
-    if days_inactive is None:
-        context["days_inactive"] = ""
-        context["kcal_not_burned"] = ""
-        context["kg_fat_equivalent"] = ""
+    profile = profile or estimation.default_profile()
+    result = estimation.estimate_inactivity(
+        profile,
+        days_inactive=days_inactive,
+        sessions_per_week=sessions_per_week,
+        class_type_id=getattr(favorite, "class_type_id", None),
+        class_template_id=getattr(favorite, "class_template_id", None),
+    )
+
+    if result is None:
+        for key in _INACTIVITY_KEYS:
+            context[key] = ""
         return context
 
-    kcal = days_inactive * AVG_KCAL_PER_SESSION
-    kg_fat = kcal / KCAL_PER_KG_FAT
-    context["days_inactive"] = str(days_inactive)
-    context["kcal_not_burned"] = f"{round(kcal / 50) * 50:,}"
-    context["kg_fat_equivalent"] = f"{kg_fat:.1f}"
+    context["days_inactive"] = str(result.days_inactive)
+    # Only filled from real attendance. A member who never booked gets a blank rather than
+    # the membership figure wearing an attendance label.
+    context["days_since_last_class"] = (
+        str(days_since_last_class) if days_since_last_class is not None else ""
+    )
+    context["kcal_not_burned"] = estimation.format_kcal(result.kcal)
+    context["kg_fat_equivalent"] = estimation.format_kg_fat(result.kg_fat)
+    context["kcal_window_label"] = estimation.format_window_label(result.weeks_counted)
     return context
+
+
+def variable_samples(profile: Optional["estimation.EstimationProfile"] = None) -> Dict[str, str]:
+    """Catalog samples for the estimated variables, produced by the engine itself.
+
+    The wizard preview renders these strings. They used to be hand-written literals
+    ("8,700" kcal, "1.1" kg) that the formula could not produce for any input, so the
+    operator approved one message and the members received another, 36x larger. Deriving
+    them here means the preview cannot drift from the send again: change the config and both
+    move together.
+
+    The scenario is a member gone one year with the configured default cadence — close to
+    this audience's real median (349 days) and a shape anyone recognises. Deliberately not
+    the horizon: that is a rail against a pathological outlier, so quoting it would preview
+    the most extreme member rather than the typical one.
+    """
+    profile = profile or estimation.default_profile()
+    horizon_days = max(1, int(profile.config.horizon_weeks)) * 7
+    result = estimation.estimate_inactivity(
+        profile, days_inactive=min(_SAMPLE_ABSENCE_DAYS, horizon_days)
+    )
+    if result is None:
+        return {}
+    return {
+        "days_inactive": str(result.days_inactive),
+        "days_since_last_class": str(result.days_inactive),
+        "kcal_not_burned": estimation.format_kcal(result.kcal),
+        "kg_fat_equivalent": estimation.format_kg_fat(result.kg_fat),
+        "kcal_window_label": estimation.format_window_label(result.weeks_counted),
+    }
 
 
 def allowed_variables_for(objective: str) -> set:
@@ -397,6 +482,16 @@ async def build_campaign_audience(db: AsyncSession, campaign_id: int) -> Dict[st
     favorites = await attendance_profile_service.favorite_classes_for(
         db, [c.person.id for c in candidates]
     )
+    # Same reasoning for the member's booking cadence: the calorie estimate needs "sessions
+    # per week", which is a GROUP BY over reservations. Resolving it at send time would mean
+    # one aggregate per message; freezing it here means one for the whole audience.
+    profile = await estimation.load_profile(db)
+    cadences = await estimation.cadence_for(
+        db,
+        [c.person.id for c in candidates],
+        lookback_days=profile.config.cadence_lookback_days,
+        min_bookings=profile.config.min_bookings_for_history,
+    )
 
     # One consent query for the whole audience instead of one per candidate.
     opted_out = await crud.opted_out_person_ids(db, [c.person.id for c in candidates])
@@ -432,6 +527,9 @@ async def build_campaign_audience(db: AsyncSession, campaign_id: int) -> Dict[st
                 "favorite_class_template_id": (
                     favorite.class_template_id if favorite else None
                 ),
+                # None = too little history to measure; the estimate then uses the
+                # configured default rather than extrapolating from one booking.
+                "sessions_per_week": cadences.get(person.id),
             }
         )
         stats["skipped" if status == "skipped" else "pending"] += 1
@@ -452,6 +550,9 @@ async def _send_to_recipient(
     variant: Optional[CampaignVariant],
     recipient: CampaignRecipient,
     favorite=None,
+    *,
+    profile: Optional["estimation.EstimationProfile"] = None,
+    sessions_per_week: Optional[float] = None,
 ) -> str:
     """Send the campaign template to one claimed recipient. Returns 'sent' | 'failed' | 'opted_out'.
 
@@ -494,7 +595,26 @@ async def _send_to_recipient(
     context = apply_favorite_class_variables(
         build_variable_context(person, subscription, plan), favorite
     )
-    context = apply_inactivity_variables(context, subscription)
+    # ``days_since_last_class`` is the one estimate input that is not frozen on the row: it
+    # moves every day, and a recipient deferred overnight by quiet hours should not send a
+    # figure that was true when the audience was built.
+    last_class = await estimation.days_since_last_class_for(db, [person.id])
+    context = apply_inactivity_variables(
+        context,
+        subscription,
+        profile=profile,
+        favorite=favorite,
+        sessions_per_week=(
+            sessions_per_week
+            if sessions_per_week is not None
+            else (
+                float(recipient.sessions_per_week)
+                if recipient.sessions_per_week is not None
+                else None
+            )
+        ),
+        days_since_last_class=last_class.get(person.id),
+    )
     body_params = _resolve_body_params(_variant_param_mapping(campaign, variant), context)
     header_text_key, button_url_key, location_param = _variant_extra_params(campaign, variant)
     header_text_param = _resolve_param_key(header_text_key, context)
@@ -711,11 +831,28 @@ async def _dispatch_slice(
             if row.id in claimed_ids
         ]
         favorites = await attendance_profile_service.favorite_class_for_recipients(db, refs)
+        # Gym-wide and identical across every batch of this run, so it is memoised for a
+        # minute inside the service rather than re-derived per slice.
+        profile = await estimation.load_profile(db)
+        cadences = {
+            row.id: float(row.sessions_per_week)
+            for row in refs
+            if row.sessions_per_week is not None
+        }
 
     semaphore = asyncio.Semaphore(_concurrency())
     outcomes = await asyncio.gather(
         *(
-            _send_one(campaign, variant, rid, favorites.get(rid), gate, semaphore)
+            _send_one(
+                campaign,
+                variant,
+                rid,
+                favorites.get(rid),
+                gate,
+                semaphore,
+                profile=profile,
+                sessions_per_week=cadences.get(rid),
+            )
             for rid in claimed
         )
     )
@@ -740,6 +877,9 @@ async def _send_one(
     favorite,
     gate: "_RateGate",
     semaphore: asyncio.Semaphore,
+    *,
+    profile: Optional["estimation.EstimationProfile"] = None,
+    sessions_per_week: Optional[float] = None,
 ) -> str:
     """Send to one already-claimed recipient, in its own short-lived session."""
     async with semaphore:
@@ -749,7 +889,15 @@ async def _send_one(
             if recipient is None:
                 return "skipped"
             try:
-                return await _send_to_recipient(db, campaign, variant, recipient, favorite)
+                return await _send_to_recipient(
+                    db,
+                    campaign,
+                    variant,
+                    recipient,
+                    favorite,
+                    profile=profile,
+                    sessions_per_week=sessions_per_week,
+                )
             except _RateLimited as exc:
                 logger.warning("campaign %s rate limited: %s", campaign.id, exc)
                 # Not this recipient's fault: put it back in the queue, due after a backoff.

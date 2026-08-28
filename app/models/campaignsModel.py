@@ -26,7 +26,7 @@ from typing import Optional
 
 from sqlalchemy import (
     BigInteger, Boolean, CheckConstraint, ForeignKey, Index, Integer, JSON,
-    String, Text, TIMESTAMP, UniqueConstraint,
+    Numeric, String, Text, TIMESTAMP, UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -206,6 +206,11 @@ class CampaignRecipient(Base):
     favorite_class_template_id: Mapped[Optional[int]] = mapped_column(
         BigInteger, ForeignKey("class_templates.id", ondelete="SET NULL")
     )
+    # The member's own booking cadence, frozen at build time like the favourite class above.
+    # The calorie estimate needs "sessions per week", which is a per-person aggregate over
+    # reservations; resolving it during dispatch would mean one GROUP BY per message. NULL
+    # means "not enough history" and falls back to the configured default.
+    sessions_per_week: Mapped[Optional[float]] = mapped_column(Numeric(5, 2))
     # Denormalized at snapshot time so the list survives later person edits.
     phone_e164: Mapped[Optional[str]] = mapped_column(String(32))
     wa_id: Mapped[Optional[str]] = mapped_column(String(100))

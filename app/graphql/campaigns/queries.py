@@ -25,6 +25,8 @@ from app.graphql.campaigns.types import (
 )
 from app.graphql.whatsapp.template_types import WhatsAppTemplate
 from app.services import segmentation_service
+from app.services import campaign_service
+from app.services import fitness_estimation_service
 from app.services.campaign_service import (
     AUDIENCE_PREDICATES,
     CAMPAIGN_OBJECTIVES,
@@ -160,11 +162,21 @@ class CampaignsQuery:
         ]
         # Member variables plus the campaign-only class-affinity ones, in that order so the
         # picker lists the familiar fields first.
+        #
+        # The estimated variables (kcal, kg of fat, the window label) get their sample from
+        # the same engine that will send them, against this gym's real schedule and config.
+        # They used to be literals in the catalog, which is how the wizard came to preview
+        # "8,700 kcal" for a message that would have gone out saying 314,100: the operator
+        # approved one number and the members received another.
+        db: AsyncSession = info.context.db
+        samples = campaign_service.variable_samples(
+            await fitness_estimation_service.load_profile(db)
+        )
         variables = [
             CampaignVariableInfo(
                 key=key,
                 label=meta.get("label", key),
-                sample=meta.get("sample", ""),
+                sample=samples.get(key, meta.get("sample", "")),
                 description=meta.get("description", ""),
             )
             for key, meta in {**VARIABLES, **CAMPAIGN_VARIABLES}.items()

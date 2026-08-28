@@ -18,6 +18,7 @@ from app.models.whatsappModel import (
 )
 from app.models.notificationModel import NotificationSetting, NotificationLog
 from app.models.chatbotModel import ChatbotConfig, ChatbotPendingAction
+from app.models.estimationModel import FitnessEstimationConfig
 from app.models.campaignsModel import Campaign, CampaignVariant, CampaignRecipient
 from app.models.posModel import (
     Product, CashSession, CashMovement, Sale, SaleLineItem, SalePayment
@@ -42,6 +43,7 @@ __all__ = [
     "WhatsAppTemplate", "WhatsAppMediaAsset",
     "NotificationSetting", "NotificationLog",
     "ChatbotConfig", "ChatbotPendingAction",
+    "FitnessEstimationConfig",
     "Campaign", "CampaignVariant", "CampaignRecipient",
     "Product", "CashSession", "CashMovement", "Sale", "SaleLineItem", "SalePayment",
     "OwnerAgentConfig", "OwnerAgentAuthorizedPhone", "OwnerAgentPendingAction",
