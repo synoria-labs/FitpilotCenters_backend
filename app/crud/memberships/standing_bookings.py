@@ -14,6 +14,7 @@ from app.crud.standing_bookings.utils import (
     _resolve_group_seat,
 )
 from .utils import _align_date_to_weekday, _calculate_window_end_for_plan
+from app.core.timezones import local_date
 
 
 try:
@@ -78,8 +79,8 @@ async def _create_standing_bookings_for_group(
         [t.id for t in templates],
     )
 
-    membership_start = subscription.start_at.date()
-    membership_end = subscription.end_at.date()
+    membership_start = local_date(subscription.start_at)
+    membership_end = local_date(subscription.end_at)
 
     # Resolve the seat across the WHOLE group/window so an occupied bike is swapped for a free
     # one (instead of every per-template create raising "Seat already reserved" -> refund).
@@ -90,6 +91,7 @@ async def _create_standing_bookings_for_group(
         membership_end,
         subscription.person_id,
         seat_id,
+        start_at=subscription.start_at, end_at=subscription.end_at,
     )
     if seat_id is not None and resolved_seat_id != seat_id:
         logger.info(
@@ -99,6 +101,13 @@ async def _create_standing_bookings_for_group(
             assigned_seat_label,
         )
     seat_id = resolved_seat_id
+    if seat_id is None:
+        from app.models import Seat
+        has_seats = await db.scalar(select(Seat.id).where(
+            Seat.venue_id == templates[0].venue_id, Seat.is_active.is_(True),
+        ).limit(1))
+        if has_seats:
+            raise ValueError("No hay bicicleta/asiento disponible para todo el grupo del horario.")
 
     standing_booking_ids: List[int] = []
     template_ids_used: List[int] = []
@@ -142,10 +151,10 @@ async def _create_standing_bookings_for_group(
                     aligned_start,
                 )
             else:
-                logger.warning("Failed to create standing booking for template %s", template.id)
+                raise ValueError(f"No se pudo reservar el día del horario #{template.id}.")
         except Exception as exc:
             logger.error("Error creating standing booking for template %s: %s", template.id, exc)
-            continue
+            raise ValueError("No se pudo reservar el grupo completo del horario; revisa la disponibilidad.") from exc
 
     logger.info(
         "Successfully created %s standing bookings for templates %s",
@@ -285,7 +294,7 @@ async def _create_reservations_for_subscription(
         # Calculate window_weeks based on subscription duration if not provided
         if weeks_ahead is None:
             # Calculate weeks from subscription start to end (add 1 week buffer)
-            duration_days = (subscription.end_at.date() - subscription.start_at.date()).days
+            duration_days = (local_date(subscription.end_at) - local_date(subscription.start_at)).days
             weeks_ahead = max(1, (duration_days // 7) + 1)
 
         # Create reservations only for this specific subscription.
@@ -293,7 +302,7 @@ async def _create_reservations_for_subscription(
         stats = await materialize_standing_bookings(
             db=db,
             window_weeks=weeks_ahead,
-            start_date=start_date if start_date else subscription.start_at.date(),
+            start_date=start_date if start_date else local_date(subscription.start_at),
             subscription_id=subscription_id,
         )
         return stats
@@ -366,10 +375,10 @@ async def _handle_fixed_timeslot_effects(
     primary_id = standing_booking_ids[0] if standing_booking_ids else None
 
     template_start_dates = template_start_dates or {}
-    earliest_template_start = min(template_start_dates.values(), default=subscription.start_at.date())
-    window_start = min(subscription.start_at.date(), earliest_template_start)
+    earliest_template_start = min(template_start_dates.values(), default=local_date(subscription.start_at))
+    window_start = min(local_date(subscription.start_at), earliest_template_start)
 
-    subscription_end = subscription.end_at.date()
+    subscription_end = local_date(subscription.end_at)
     window_end = _calculate_window_end_for_plan(
         plan=plan,
         window_start=window_start,
@@ -414,4 +423,8 @@ async def _handle_fixed_timeslot_effects(
         "weeks_ahead": weeks_ahead,
         "coverage_days": coverage_days,
     }
+    from .coverage import subscription_coverage
+    coverage = await subscription_coverage(db, subscription)
+    materialization_stats["included_classes"] = coverage.included_classes
+    materialization_stats["schedule"] = coverage.schedule
     return primary_id, materialization_stats

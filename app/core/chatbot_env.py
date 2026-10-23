@@ -14,6 +14,7 @@ The Anthropic API key is read by ``ChatAnthropic`` directly from
 import os
 
 from app.core.env import load_environment
+from app.core.ai_models import DEFAULT_AI_MODEL
 
 load_environment()
 
@@ -28,7 +29,7 @@ class ChatbotEnv:
     # Anthropic credentials (consumed by ChatAnthropic via the environment).
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
     # Default model id; the DB config row can override per deployment.
-    MODEL: str = os.getenv("CHATBOT_MODEL", "claude-sonnet-4-6")
+    MODEL: str = os.getenv("CHATBOT_MODEL", DEFAULT_AI_MODEL)
     # Deploy-level kill-switch (the DB row's `enabled` is the operational toggle).
     ENABLED: bool = _as_bool(os.getenv("CHATBOT_ENABLED"), default=False)
     # Upper bound on a single reply's length.

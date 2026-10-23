@@ -14,8 +14,10 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langgraph.prebuilt import create_react_agent
 
 from app.core.chatbot_env import chatbot_env
+from app.core.ai_models import model_request_options
 from app.crud.chatbotConfigCrud import ChatbotConfigData
 from app.services.chatbot.timefmt import fmt_now_es
+from app.services.chatbot.image_context import VISION_RULES
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +42,17 @@ _PURCHASE_RULES = (
     "- PASE DIARIO (1 día): usa propose_day_pass(plan_id, session_id, full_name si es nuevo). Muestra "
     "el plan diario con get_membership_plans y las clases con list_available_classes (cada clase tiene "
     "un id=session). Reserva ese día.\n"
-    "El asiento/bici se asigna automáticamente; no le pidas el número al cliente."
+    "El asiento/bici se asigna automáticamente; no le pidas el número al cliente.\n"
+    "COBERTURA: un template identifica un GRUPO de horario (misma hora, sede, disciplina e instructor), "
+    "no solo su día. Incluye TODOS los días configurados del grupo dentro de la vigencia: una semana "
+    "puede incluir 5 o 7 clases; un mes depende del calendario. Nunca deduzcas 4–5 clases por mes "
+    "a partir de un miércoles ni uses un class_limit histórico para recortar un horario fijo. "
+    "Para explicar días, cantidad de clases o inicio del periodo consulta get_membership_coverage y "
+    "responde con kind=membership_information, plan_id y template_id del grupo.\n"
+    "ACCESO LIBRE: propose_membership sin template_id; sin límite de clases durante la vigencia, "
+    "cada reserva depende del cupo y no se genera automáticamente. CRÉDITOS: el número contratado "
+    "limita las reservas. Si la clase está cubierta por una membresía usa reserve_with_membership, "
+    "sin cobrar otro pase; luego confirma con reservation_confirmation."
 )
 
 _EVENT_RULES = (
@@ -75,6 +87,7 @@ def build_llm(config: ChatbotConfigData) -> ChatAnthropic:
         max_tokens=chatbot_env.MAX_TOKENS,
         api_key=chatbot_env.ANTHROPIC_API_KEY,
         timeout=60,
+        **model_request_options(model),
     )
 
 
@@ -105,6 +118,18 @@ def build_system_prompt(
     if event_note:
         parts.append(event_note)
     parts.append(_TOOL_RULES)
+    parts.append(VISION_RULES)
+    parts.append(
+        "OBLIGATORIO: toda respuesta final se entrega con respond_to_customer. Usa kind=purchase "
+        "para compras y links, clarification para aclaraciones, information para información general. "
+        "Para decir que ya tiene lugar usa exclusivamente kind=reservation_confirmation con "
+        "session_id, reservation_id y requested_date (YYYY-MM-DD). Una membresía activa NO es "
+        "evidencia de reserva. Consulta list_my_reservations y verifica fecha y hora solicitadas, "
+        "no reutilices confirmaciones históricas. Si se rechaza, consulta datos y continúa la compra "
+        "correcta o aclara la fecha/hora. Nunca confirmes en texto libre. No omitas la herramienta "
+        "aunque solo quieras saludar. Los mensajes históricos conservan la fecha en que se enviaron; "
+        "'hoy' en un mensaje anterior se refiere a ESA fecha, no a la fecha actual."
+    )
     parts.append(_PURCHASE_RULES)
     parts.append(_EVENT_RULES)
     parts.append(_CONFIRM_RULES_STRICT if config.require_confirmation else _CONFIRM_RULES_RELAXED)
@@ -152,6 +177,7 @@ async def run_agent(
     member_note: Optional[str] = None,
     campaign_note: Optional[str] = None,
     event_note: Optional[str] = None,
+    image_content: Optional[list] = None,
 ) -> Optional[str]:
     """Run one agent turn and return the reply text (or None if nothing to say)."""
     llm = build_llm(config)
@@ -160,7 +186,7 @@ async def run_agent(
     )
     agent = create_react_agent(llm, tools, prompt=system_prompt)
 
-    messages: List[BaseMessage] = list(history) + [HumanMessage(content=user_text)]
+    messages: List[BaseMessage] = list(history) + [HumanMessage(content=image_content if image_content is not None else user_text)]
     result = await agent.ainvoke(
         {"messages": messages},
         config={"recursion_limit": _RECURSION_LIMIT},

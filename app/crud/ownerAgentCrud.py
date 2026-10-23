@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.core.ai_models import DEFAULT_AI_MODEL, normalize_model_id
 
 from app.models import (
     OwnerAgentAuditLog,
@@ -154,7 +155,7 @@ async def get_or_create_config_model(db: AsyncSession) -> OwnerAgentConfig:
     config = OwnerAgentConfig(
         enabled=False,
         require_confirmation=True,
-        model="claude-sonnet-4-6",
+        model=DEFAULT_AI_MODEL,
         system_prompt=DEFAULT_OWNER_SYSTEM_PROMPT,
         history_limit=30,
         max_tokens=1024,
@@ -173,7 +174,7 @@ async def get_config(db: AsyncSession) -> OwnerAgentConfigData:
             id=None,
             enabled=False,
             require_confirmation=True,
-            model="claude-sonnet-4-6",
+            model=DEFAULT_AI_MODEL,
             system_prompt=DEFAULT_OWNER_SYSTEM_PROMPT,
             history_limit=30,
             max_tokens=1024,
@@ -190,7 +191,7 @@ async def upsert_config(db: AsyncSession, *, commit: bool = True, **fields) -> O
         config = OwnerAgentConfig(
             enabled=False,
             require_confirmation=True,
-            model="claude-sonnet-4-6",
+            model=DEFAULT_AI_MODEL,
             system_prompt=DEFAULT_OWNER_SYSTEM_PROMPT,
             history_limit=30,
             max_tokens=1024,
@@ -204,9 +205,7 @@ async def upsert_config(db: AsyncSession, *, commit: bool = True, **fields) -> O
     if "require_confirmation" in fields and fields["require_confirmation"] is not None:
         config.require_confirmation = bool(fields["require_confirmation"])
     if "model" in fields and fields["model"] is not None:
-        model = str(fields["model"]).strip()
-        if model:
-            config.model = model[:80]
+        config.model = normalize_model_id(fields["model"])
     if "system_prompt" in fields and fields["system_prompt"] is not None:
         config.system_prompt = str(fields["system_prompt"]).strip() or None
     if "history_limit" in fields and fields["history_limit"] is not None:

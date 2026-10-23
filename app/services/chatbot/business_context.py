@@ -1,7 +1,7 @@
 """Read-only business context shared by chatbot and template-writing AI."""
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.crud import usersCrud, venuesCrud
 from app.crud.chatbotConfigCrud import ChatbotConfigData
 from app.crud.memberships import plans as plans_crud
+from app.crud.memberships.day_passes import is_day_pass
 from app.crud.standing_bookings import catalog as class_catalog
 from app.models import Venue
 
@@ -52,7 +53,7 @@ async def build_template_writer_context(db: AsyncSession, config: ChatbotConfigD
     if plans:
         lines = []
         for plan in plans[:20]:
-            if plan.duration_unit == "day":
+            if is_day_pass(plan):
                 kind = "pase diario"
             elif plan.fixed_time_slot:
                 kind = "paquete con horario fijo"

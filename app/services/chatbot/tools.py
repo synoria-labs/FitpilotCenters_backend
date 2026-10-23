@@ -17,7 +17,8 @@ can relay or react to.
 """
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from functools import wraps
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import List, Optional
@@ -32,10 +33,10 @@ from app.crud import membersCrud
 from app.crud import reservationsCrud
 from app.crud import usersCrud
 from app.crud import venuesCrud
-from app.crud.memberships import payments as payments_crud
 from app.crud.memberships import plans as plans_crud
 from app.crud.memberships import enrollment as enrollment_crud
-from app.crud.memberships import subscriptions as subscriptions_crud
+from app.crud.memberships.day_passes import is_day_pass, purchase_day_pass
+from app.crud.memberships.coverage import package_facts, schedule_key, schedule_label
 from app.crud.standing_bookings import catalog as class_catalog
 from app.crud.special_events import events as special_events_crud
 from app.crud.special_events import orders as special_event_orders_crud
@@ -84,6 +85,13 @@ class ChatbotContext:
     # The business requires Mercado Pago (chatbot_config). When it is required but the gateway
     # is not configured, purchases must be refused — never downgraded to "confirm by text".
     mp_required: bool = False
+    user_text: str = ""
+    validated_reply: Optional[str] = None
+    verification_result: str = "not_called"
+    tools_used: list = field(default_factory=list)
+    reply_request: Optional[dict] = None
+    checked_payment_reference: Optional[str] = None
+    provider_payment_status: Optional[str] = None
 
 
 def _to_decimal(value) -> Optional[Decimal]:
@@ -202,12 +210,14 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
             return "No hay planes de membresía configurados."
         out = []
         for p in plans:
-            if p.duration_unit == "day":
+            if is_day_pass(p):
                 tipo = "pase diario"
             elif p.fixed_time_slot:
-                tipo = "paquete con horario fijo"
+                tipo = "horario fijo; clases según todos los días del grupo y la vigencia"
+            elif p.plan_type == "credit_pack":
+                tipo = f"paquete de {p.class_limit} créditos/clases"
             else:
-                tipo = "membresía"
+                tipo = "acceso libre sin límite de clases, sujeto a disponibilidad"
             desc = f" — {p.description}" if p.description else ""
             out.append(
                 f"#{p.id} {p.name} ({tipo}): ${p.price:.2f} por {p.duration_value} {p.duration_unit}(s){desc}"
@@ -278,7 +288,7 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
                 if r.status == "displaced"
                 else r.status
             )
-            out.append(f"Reserva #{r.id}: {name} — {_fmt_dt(r.session_start)}{seat} ({status})")
+            out.append(f"Reserva #{r.id} (session_id={r.session_id}): {name} — {_fmt_dt(r.session_start)}{seat} ({status})")
         return "\n".join(out)
 
     async def get_weekly_schedule() -> str:
@@ -286,20 +296,48 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         templates = await class_catalog.get_class_templates(db, active_only=True)
         if not templates:
             return "Aún no hay un horario de clases configurado."
-        by_day: dict = {}
+        groups: dict = {}
         for t in templates:
-            by_day.setdefault(t.weekday, []).append(t)
+            groups.setdefault(schedule_key(t), []).append(t)
         lines: List[str] = []
-        for wd in sorted(by_day.keys()):
-            day = _WEEKDAYS_ES[wd] if 0 <= wd < 7 else f"Día {wd}"
-            lines.append(f"*{day}*")
-            for t in sorted(by_day[wd], key=lambda x: x.start_time_local or ""):
-                hhmm = (t.start_time_local or "")[:5]
-                cls = t.class_type_name or t.name or "Clase"
-                venue = f" en {t.venue_name}" if t.venue_name else ""
-                instr = f" (con {t.instructor_name})" if t.instructor_name else ""
-                lines.append(f"  {hhmm} — {cls}{venue}{instr}")
+        for group in groups.values():
+            t = group[0]
+            cls = t.class_type_name or t.name or "Clase"
+            venue = f" en {t.venue_name}" if t.venue_name else ""
+            instr = f" (con {t.instructor_name})" if t.instructor_name else ""
+            lines.append(f"template_id={t.id}: {schedule_label(group)} — {cls}{venue}{instr}. "
+                         f"Grupo completo ({len(group)} clases por semana); no es un solo día.")
         return "\n".join(lines)
+
+    async def get_my_purchase_status() -> str:
+        """Consulta la compra de ESTA conversación y sus pagos, también en Mercado Pago si está configurado.
+
+        Úsala ante capturas de errores o comprobantes; no acredita pagos ni genera enlaces.
+        """
+        from app.services.chatbot.purchase_status import purchase_status
+        return await purchase_status(ctx)
+
+    async def get_membership_coverage(plan_id: int, template_id: Optional[int] = None) -> str:
+        """Cobertura real del paquete: días completos, clases del periodo e inicio de vigencia."""
+        try:
+            return await package_facts(db, plan_id=plan_id, template_id=template_id, member_id=ctx.member_id)
+        except ValueError as exc:
+            return str(exc)
+
+    async def reserve_with_membership(session_id: int) -> str:
+        """Reserva una clase regular cubierta por la membresía vigente; respeta horario, créditos y cupo."""
+        if ctx.member_id is None:
+            return _NEEDS_MEMBER
+        try:
+            seat_id = await _first_available_session_seat(db, session_id)
+            reservation = await reservationsCrud.create_reservation(
+                db, session_id=session_id, person_id=ctx.member_id, seat_id=seat_id, commit=False,
+            )
+            await db.commit()
+            return f"Reserva creada: reservation_id={reservation.id}, session_id={session_id}. Verifica con reservation_confirmation."
+        except ValueError as exc:
+            await db.rollback()
+            return str(exc)
 
     async def get_venues() -> str:
         """Sedes del estudio: nombre, dirección y capacidad."""
@@ -327,6 +365,11 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
     ) -> str:
         """Store the pending action. If MercadoPago is required (and amount>0), create a payment
         link (status awaiting_payment) and return it; otherwise leave it pending for a 'Sí'."""
+        from app.services.chatbot.purchase_status import PROCESSING_STATUSES
+        if ctx.provider_payment_status in PROCESSING_STATUSES and ctx.checked_payment_reference:
+            active = await pending_crud.get_active_pending(db, ctx.conversation_id)
+            if active and active.external_reference == ctx.checked_payment_reference:
+                return "El pago de la compra actual está aprobado/en proceso o requiere revisión. No generes otro enlace ni solicites otro cobro."
         if ctx.mp_required and not ctx.require_mp_payment and amount and float(amount) > 0:
             # Required but not configured: say so. Falling back to a text confirmation would
             # record a COMPLETED payment nobody collected.
@@ -375,7 +418,7 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         )
         return f"Propuesta lista: {summary}. Pide al cliente que confirme respondiendo *Sí*."
 
-    async def propose_membership(plan_id: int, template_id: int, full_name: Optional[str] = None) -> str:
+    async def propose_membership(plan_id: int, template_id: Optional[int] = None, full_name: Optional[str] = None) -> str:
         """Propone comprar un PAQUETE: un plan con horario fijo que reserva automáticamente el
         horario elegido para todo el periodo. Para socio existente es renovación; para cliente nuevo
         es inscripción (requiere full_name). Requiere plan_id (plan de horario fijo) y template_id
@@ -383,9 +426,21 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         plan = await plans_crud.get_membership_plan_by_id(db, int(plan_id))
         if plan is None:
             return f"No encontré el plan #{plan_id}."
+        if is_day_pass(plan):
+            return "Para un pase diario usa propose_day_pass con una clase concreta."
         if not plan.fixed_time_slot:
-            return (f"El plan {plan.name} no es de horario fijo. Para asistir un solo día usa el "
-                    "pase diario (propose_day_pass).")
+            name = (full_name or "").strip()
+            if ctx.member_id is None and not name:
+                return "Necesito el nombre completo del cliente para inscribirlo."
+            summary = await package_facts(db, plan_id=plan_id, member_id=ctx.member_id)
+            return await _finalize_proposal(
+                action_type=ACTION_BUY_PACKAGE,
+                payload={"plan_id": int(plan_id), "full_name": name or None,
+                         "phone_number": ctx.wa_id, "amount": str(plan.price)},
+                summary=summary, amount=plan.price, description=f"{plan.name} - FitPilot", payer_name=name or None,
+            )
+        if template_id is None:
+            return "Elige un grupo de horario fijo con get_weekly_schedule."
         templates = await class_catalog.get_class_templates(db, active_only=True)
         tinfo = next((t for t in templates if t.id == int(template_id)), None)
         if tinfo is None:
@@ -404,12 +459,10 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
             day0 = _WEEKDAYS_ES[tinfo.weekday] if 0 <= tinfo.weekday < 7 else ""
             return (f"El horario {day0} {(tinfo.start_time_local or '')[:5]} está lleno por ahora. "
                     "Ofrécele otro horario.")
-        day = _WEEKDAYS_ES[tinfo.weekday] if 0 <= tinfo.weekday < 7 else ""
-        hhmm = (tinfo.start_time_local or "")[:5]
-        cls = tinfo.class_type_name or tinfo.name or "clase"
         action_word = "Renovar" if ctx.member_id is not None else f"Inscribir a {name}"
-        summary = (f"{action_word} con el plan {plan.name} (${plan.price:.2f}), horario {day} {hhmm} "
-                   f"de {cls} — se reservan todas las clases del periodo")
+        summary = f"{action_word}.\n" + await package_facts(
+            db, plan_id=plan_id, template_id=template_id, member_id=ctx.member_id,
+        )
         payload = {
             "plan_id": int(plan_id),
             "template_id": int(template_id),
@@ -429,7 +482,7 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         plan = await plans_crud.get_membership_plan_by_id(db, int(plan_id))
         if plan is None:
             return f"No encontré el plan #{plan_id}."
-        if plan.duration_unit != "day":
+        if not is_day_pass(plan):
             return (f"El plan {plan.name} no es un pase diario. Para asistir varios días con horario "
                     "fijo usa propose_membership.")
         try:
@@ -444,6 +497,10 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         sinfo = next((s for s in sessions if s.id == int(session_id)), None)
         if sinfo is None:
             return "Esa clase no está disponible para reservar. Ofrécele otra."
+        from app.services.chatbot.verification import requested_session_error
+        mismatch = await requested_session_error(db, sinfo, ctx.user_text)
+        if mismatch:
+            return mismatch
         if (sinfo.available_spots is not None and sinfo.available_spots <= 0) or (
             seats and not any(s.is_available for s in seats)
         ):
@@ -611,9 +668,44 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         await special_event_payments.expire_payment_links(preferences)
         return f"Listo, cancelé {len(targets)} compra(s) pendiente(s) de pago; el lugar quedó libre."
 
+    async def respond_to_customer(
+        kind: str, text: str = "", session_id: Optional[int] = None,
+        reservation_id: Optional[int] = None, requested_date: Optional[str] = None,
+        order_id: Optional[int] = None,
+        plan_id: Optional[int] = None, template_id: Optional[int] = None,
+    ) -> str:
+        """Finaliza TODA respuesta. kind=information|membership_information|purchase|clarification|reservation_confirmation|event_confirmation.
+
+        Para confirmar una reserva: session_id, reservation_id y requested_date YYYY-MM-DD son
+        obligatorios. El servidor verifica y redacta la confirmación; text solo se usa para otros tipos.
+        Si rechaza, corrige la compra o pide aclaración y vuelve a llamar esta herramienta.
+        Para confirmar entradas pagadas de eventos usa event_confirmation con order_id.
+        Para enviar el link de un evento usa purchase con order_id.
+        Para explicar cobertura, cantidad de clases o inicio de membresía usa membership_information
+        con plan_id y template_id (solo horario fijo). El servidor redacta con el grupo completo.
+        """
+        from app.services.chatbot.verification import finalize_reply
+        try:
+            if ctx.member_id is None and ctx.wa_id:
+                ctx.member_id = await membersCrud.get_member_id_by_wa_id(db, ctx.wa_id)
+            return await finalize_reply(
+                ctx, kind=kind, text=text, session_id=session_id,
+                reservation_id=reservation_id, requested_date=requested_date,
+                order_id=order_id,
+                plan_id=plan_id, template_id=template_id,
+            )
+        except (ValueError, TypeError):
+            ctx.validated_reply = None
+            ctx.reply_request = None
+            return "Fecha o identificadores inválidos. Aclara los datos antes de responder."
+
     factories = [
+        (respond_to_customer, "respond_to_customer", respond_to_customer.__doc__),
         (get_business_info, "get_business_info", "Información del negocio (nombre, dirección, horarios, teléfono, políticas)."),
         (get_membership_plans, "get_membership_plans", "Planes de membresía disponibles con precio y duración."),
+        (get_my_purchase_status, "get_my_purchase_status", get_my_purchase_status.__doc__),
+        (get_membership_coverage, "get_membership_coverage", get_membership_coverage.__doc__),
+        (reserve_with_membership, "reserve_with_membership", reserve_with_membership.__doc__),
         (list_available_classes, "list_available_classes", "Clases con cupo disponible en los próximos días (incluye el id de cada clase)."),
         (check_class_availability, "check_class_availability", "Asientos disponibles para una clase (session_id)."),
         (get_my_membership, "get_my_membership", "Estado de la membresía del cliente identificado."),
@@ -621,7 +713,7 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         (get_weekly_schedule, "get_weekly_schedule", "Horario semanal recurrente de clases (día, hora, clase, sede, instructor). Da el id de cada horario (template) para propose_membership."),
         (get_venues, "get_venues", "Sedes del estudio: nombre, dirección y capacidad."),
         (list_instructors, "list_instructors", "Nombres de los instructores del estudio."),
-        (propose_membership, "propose_membership", "Propone comprar un PAQUETE (plan de horario fijo): inscribe/renueva y auto-reserva el horario elegido todo el periodo. Args: plan_id, template_id, full_name (si es cliente nuevo)."),
+        (propose_membership, "propose_membership", "Compra/renueva membresías. Horario fijo: template_id del grupo completo; acceso libre/créditos: sin template_id ni reservas automáticas. Args: plan_id, template_id opcional, full_name si nuevo."),
         (propose_day_pass, "propose_day_pass", "Propone un PASE DIARIO (1 día): paga un plan diario y reserva una clase específica. Args: plan_id, session_id, full_name (si es cliente nuevo)."),
         (confirm_action, "confirm_action", "Ejecuta la compra pendiente tras la confirmación del cliente (solo cuando el pago no es por MercadoPago)."),
         (cancel_action, "cancel_action", "Cancela la acción pendiente."),
@@ -631,8 +723,17 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         (check_event_order_status, "check_event_order_status", "Estado verificado de las compras de eventos del cliente. Úsalo antes de decir que una entrada está pagada."),
         (cancel_event_order, "cancel_event_order", "Cancela una compra de evento aún no pagada. Arg opcional: order_id."),
     ]
+    def audited(fn, name):
+        @wraps(fn)
+        async def invoke(*args, **kwargs):
+            ctx.tools_used.append(name)
+            result = await fn(*args, **kwargs)
+            logger.info("chatbot_tool conversation=%s tool=%s verification=%s", ctx.conversation_id, name, ctx.verification_result)
+            return result
+        return invoke
+
     return [
-        StructuredTool.from_function(coroutine=fn, name=name, description=desc)
+        StructuredTool.from_function(coroutine=audited(fn, name), name=name, description=desc)
         for (fn, name, desc) in factories
     ]
 
@@ -672,8 +773,8 @@ async def _execute_pending(
 
     if action == ACTION_BUY_PACKAGE:
         plan_id = int(payload["plan_id"])
-        template_id = int(payload["template_id"])
-        seat_id = await _first_available_template_seat(db, template_id)
+        template_id = int(payload["template_id"]) if payload.get("template_id") else None
+        seat_id = await _first_available_template_seat(db, template_id) if template_id else None
         if pending.member_id is not None:
             # renew_subscription_with_standing_booking commits internally.
             subscription, _payment, plan, _sb, stats = (
@@ -692,8 +793,8 @@ async def _execute_pending(
                     recorded_by=None,
                 )
             )
-            return (f"¡Listo! Membresía {plan.name} activada. Vence {_fmt_dt(subscription.end_at)}."
-                    f"{_materialized_count(stats)}{_assigned_seat_note(stats)}")
+            facts = await package_facts(db, plan_id=plan_id, template_id=template_id, subscription=subscription)
+            return f"¡Listo! Membresía registrada.\n{facts}{_materialized_count(stats)}{_assigned_seat_note(stats)}"
         # New customer -> enrollment with standing booking (commits internally).
         person, subscription, _payment, plan, _sb, stats = (
             await enrollment_crud.create_member_enrollment_with_standing_booking(
@@ -712,57 +813,31 @@ async def _execute_pending(
                 recorded_by=None,
             )
         )
-        return (f"¡Bienvenido/a {person.full_name}! Inscripción lista con {plan.name}. "
-                f"Vence {_fmt_dt(subscription.end_at)}.{_materialized_count(stats)}"
-                f"{_assigned_seat_note(stats)}")
+        facts = await package_facts(db, plan_id=plan_id, template_id=template_id, subscription=subscription)
+        return (f"¡Bienvenido/a {person.full_name}! Inscripción lista.\n{facts}"
+                f"{_materialized_count(stats)}{_assigned_seat_note(stats)}")
 
     if action == ACTION_BUY_DAY_PASS:
-        plan_id = int(payload["plan_id"])
-        session_id = int(payload["session_id"])
-        seat_id = await _first_available_session_seat(db, session_id)
-        if pending.member_id is not None:
-            subscription = await subscriptions_crud.create_membership_subscription(
-                db, person_id=int(pending.member_id), plan_id=plan_id, commit=False
-            )
-            await payments_crud.create_payment(
-                db,
-                person_id=int(pending.member_id),
-                amount=amount_dec if amount_dec is not None else Decimal("0"),
-                method=payment_method,
-                subscription_id=subscription.id,
-                provider=payment_provider,
-                provider_payment_id=provider_payment_id,
-                external_reference=external_reference,
-                comment="WhatsApp bot pase diario",
-                recorded_by=None,
-                commit=False,
-            )
-            reservation = await reservationsCrud.create_reservation(
-                db, session_id=session_id, person_id=int(pending.member_id),
-                seat_id=seat_id, source="manual", commit=False,
-            )
-            await db.commit()
-            return f"¡Listo! Pase diario activado y reserva #{reservation.id} confirmada."
-        # New customer day pass -> 1-day enrollment + single reservation.
-        person, _subscription, _payment, plan = await enrollment_crud.create_member_enrollment(
-            db,
-            full_name=full_name,
-            phone_number=phone_number,
-            plan_id=plan_id,
-            payment_method=payment_method,
-            payment_amount=amount_dec,
-            payment_comment="WhatsApp bot pase diario",
-            payment_provider=payment_provider,
-            provider_payment_id=provider_payment_id,
-            external_reference=external_reference,
-            recorded_by=None,
-        )
-        reservation = await reservationsCrud.create_reservation(
-            db, session_id=session_id, person_id=person.id,
-            seat_id=seat_id, source="manual", commit=False,
+        purchase = await purchase_day_pass(
+            db, plan_id=int(payload["plan_id"]), session_id=int(payload["session_id"]),
+            person_id=pending.member_id, full_name=full_name, phone_number=phone_number,
+            payment_method=payment_method, payment_amount=amount_dec,
+            payment_comment="WhatsApp bot pase diario", payment_provider=payment_provider,
+            provider_payment_id=provider_payment_id, external_reference=external_reference,
         )
         await db.commit()
-        return (f"¡Bienvenido/a {person.full_name}! Pase diario {plan.name} activado y "
-                f"reserva #{reservation.id} confirmada.")
+        from app.models import ClassSession
+        session = await db.get(ClassSession, purchase.subscription.session_id, populate_existing=True)
+        if (session.status != "scheduled" or session.end_at <= datetime.now(timezone.utc)
+                or purchase.reservation.status not in ("reserved", "checked_in")):
+            return (
+                f"El pago ya está registrado para la clase del {_fmt_dt(session.start_at)}. "
+                "La reserva requiere revisión; un asesor verificará su estado."
+            )
+        return (
+            f"Pase diario {purchase.plan.name} activado. Reserva #{purchase.reservation.id} "
+            f"confirmada para {_fmt_dt(session.start_at)}. "
+            f"El pase vence al terminar esa clase: {_fmt_dt(session.end_at)}."
+        )
 
     raise ValueError(f"Tipo de acción desconocido: {action}")

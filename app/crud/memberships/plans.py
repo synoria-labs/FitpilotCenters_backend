@@ -19,6 +19,14 @@ def _derive_fixed_time_slot(plan_type: str) -> bool:
     return plan_type == "fixed_schedule"
 
 
+def _class_limit(plan_type, value):
+    if plan_type != "credit_pack":
+        return None  # Fixed coverage is derived per subscription; flexible access is unlimited.
+    if value is None or int(value) <= 0:
+        raise ValueError("El paquete de créditos requiere un número de clases mayor que cero.")
+    return int(value)
+
+
 async def get_membership_plans(
     db: AsyncSession, include_inactive: bool = False
 ) -> List[MembershipPlanData]:
@@ -71,9 +79,8 @@ async def create_membership_plan(
     if plan_type not in PLAN_TYPES:
         raise ValueError(f"plan_type inválido: {plan_type}")
 
-    resolved_fixed_slot = (
-        fixed_time_slot if fixed_time_slot is not None else _derive_fixed_time_slot(plan_type)
-    )
+    resolved_fixed_slot = _derive_fixed_time_slot(plan_type)
+    class_limit = _class_limit(plan_type, class_limit)
 
     plan = MembershipPlan(
         name=name,
@@ -85,8 +92,8 @@ async def create_membership_plan(
         plan_type=plan_type,
         fixed_time_slot=resolved_fixed_slot,
         is_active=is_active,
-        max_sessions_per_day=max_sessions_per_day,
-        max_sessions_per_week=max_sessions_per_week,
+        max_sessions_per_day=max_sessions_per_day if plan_type == "credit_pack" else None,
+        max_sessions_per_week=max_sessions_per_week if plan_type == "credit_pack" else None,
     )
 
     db.add(plan)
@@ -147,6 +154,10 @@ async def update_membership_plan(
         plan.max_sessions_per_day = max_sessions_per_day
     if max_sessions_per_week is not _UNSET:
         plan.max_sessions_per_week = max_sessions_per_week
+
+    plan.class_limit = _class_limit(plan.plan_type, plan.class_limit)
+    if plan.plan_type != "credit_pack":
+        plan.max_sessions_per_day = plan.max_sessions_per_week = None
 
     plan.updated_at = datetime.now(timezone.utc)
 

@@ -96,7 +96,7 @@ def _membership_status_condition(values: List[str], now: datetime):
             had_membership = _sub_exists(
                 or_(
                     MembershipSubscription.status == "expired",
-                    MembershipSubscription.end_at < now,
+                    and_(MembershipSubscription.status == "active", MembershipSubscription.end_at <= now),
                 )
             )
             clauses.append(and_(~has_active, had_membership))

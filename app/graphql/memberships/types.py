@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Optional
 
 import strawberry
+from strawberry.types import Info
 from app.crud.membershipsCrud import MembershipPlanData, SubscriptionData
 from app.models.membershipsModel import Payment as PaymentModel
 from app.graphql.members.types import Member
@@ -43,7 +44,15 @@ class MembershipPlan:
 
 
 @strawberry.type
+class MembershipCoverage:
+    mode: str
+    included_classes: Optional[int]
+    schedule: Optional[str]
+
+
+@strawberry.type
 class Subscription:
+    session_id: Optional[int]
     id: int
     person_id: int
     plan_id: int
@@ -54,10 +63,19 @@ class Subscription:
     person_name: str
     remaining_days: Optional[int]
 
+    @strawberry.field
+    async def coverage(self, info: Info) -> MembershipCoverage:
+        from app.models import MembershipSubscription
+        from app.crud.memberships.coverage import subscription_coverage
+        subscription = await info.context.db.get(MembershipSubscription, self.id)
+        result = await subscription_coverage(info.context.db, subscription)
+        return MembershipCoverage(mode=result.mode, included_classes=result.included_classes, schedule=result.schedule)
+
     @classmethod
     def from_data(cls, data: SubscriptionData) -> "Subscription":
         return cls(
             id=data.id,
+            session_id=data.session_id,
             person_id=data.person_id,
             plan_id=data.plan_id,
             start_at=data.start_at,
@@ -227,6 +245,7 @@ class UpdateMembershipPlanInput:
 
 @strawberry.input
 class CreateSubscriptionInput:
+    session_id: Optional[int] = None
     person_id: int
     plan_id: int
     start_at: Optional[datetime] = None
@@ -234,6 +253,7 @@ class CreateSubscriptionInput:
 
 @strawberry.input
 class CreateMemberEnrollmentInput:
+    session_id: Optional[int] = None
     full_name: str
     email: Optional[str] = None
     phone_number: Optional[str] = None  # WhatsApp number goes here
@@ -253,6 +273,7 @@ class CreateMemberEnrollmentInput:
 
 @strawberry.input
 class RenewSubscriptionInput:
+    session_id: Optional[int] = None
     member_id: int
     plan_id: int
     template_id: Optional[int] = None

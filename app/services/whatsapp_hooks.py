@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 
 # Message types the agent can act on: plain text, and a tap on a template QUICK_REPLY button
 # (delivered by Meta as "button", or "interactive" for a generic reply-button/list message).
-# Media/reactions/statuses stay ignored.
-_AGENT_MESSAGE_TYPES = {"text", "button", "interactive"}
+# Images are interpreted with the caption and the conversation; other media/reactions stay ignored.
+_AGENT_MESSAGE_TYPES = {"text", "button", "interactive", "image"}
 
 
 async def on_inbound_message(
@@ -37,6 +37,9 @@ async def on_inbound_message(
         return None
 
     text = (message.text_content or "").strip()
+    if not text and message.message_type == "image":
+        from app.services.chatbot.image_context import IMAGE_PLACEHOLDER
+        text = IMAGE_PLACEHOLDER
     if not text:
         return None
 
@@ -66,6 +69,8 @@ async def on_inbound_message(
             authorized_phone_id=authorized.id,
             message_id=message.id,
             text=text,
+            message_type=message.message_type,
+            context_message_id=getattr(message, "context_message_id", None),
         )
         return None
 

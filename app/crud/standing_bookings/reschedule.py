@@ -362,15 +362,6 @@ async def reschedule_standing_booking(
             # concurrent booking) must skip only this item, not poison the whole
             # transaction so every later item fails with InFailedSQLTransaction.
             async with db.begin_nested():
-                await create_reservation(
-                    db=db,
-                    session_id=item.target_session_id,
-                    person_id=standing_booking.person_id,
-                    seat_id=item.seat_id,
-                    source="override",
-                    commit=False,
-                )
-
                 await create_standing_booking_exception(
                     db=db,
                     standing_booking_id=item.standing_booking_id,
@@ -378,6 +369,15 @@ async def reschedule_standing_booking(
                     action="reschedule",
                     new_session_id=item.target_session_id,
                     new_seat_id=item.seat_id,
+                )
+
+                await create_reservation(
+                    db=db,
+                    session_id=item.target_session_id,
+                    person_id=standing_booking.person_id,
+                    seat_id=item.seat_id,
+                    source="override",
+                    commit=False,
                 )
 
                 if item.source_session_id:

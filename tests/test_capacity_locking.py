@@ -18,6 +18,7 @@ _CRUD = os.path.join(_BACKEND_ROOT, "app", "crud")
 
 # file (relative to app/crud) -> functions that MUST call lock_class_session
 LOCKED_FUNCTIONS = {
+    "memberships/day_passes.py": ["purchase_day_pass"],
     "reservationsCrud.py": ["create_reservation"],
     "standing_bookings/materialization.py": ["_create_reservation_if_possible"],
     # Taking over / giving back a regular class rewrites its reservations: same per-class lock.
@@ -71,6 +72,7 @@ def test_special_event_paths_take_event_lock(rel_path, functions):
 # ABBA deadlock between concurrent batches (each accumulates many per-session
 # locks in a data-dependent order held until the terminal commit).
 BATCH_FUNCTIONS = {
+    "pos/sales.py": ["create_sale"],
     "standing_bookings/materialization.py": ["materialize_standing_bookings"],
     "standing_bookings/reschedule.py": ["reschedule_standing_booking"],
 }

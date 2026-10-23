@@ -63,6 +63,10 @@ class MembershipSubscription(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     person_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("people.id"), nullable=False)
     plan_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("membership_plans.id"), nullable=False)
+    # Only new single-class day passes have a session. Historical rows stay unbound.
+    session_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("class_sessions.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     start_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
     end_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False)

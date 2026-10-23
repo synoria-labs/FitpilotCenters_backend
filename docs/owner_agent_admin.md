@@ -18,7 +18,7 @@ La activacion tiene dos niveles:
    - `OWNER_AGENT_SERVER_ENABLED=true`
    - `ANTHROPIC_API_KEY=<secret>`
    - Opcionales:
-     - `OWNER_AGENT_MODEL=claude-sonnet-4-6`
+     - `OWNER_AGENT_MODEL=claude-sonnet-5-5`
      - `OWNER_AGENT_RECURSION_LIMIT=12`
 
 2. Configuracion operativa desde el frontend:

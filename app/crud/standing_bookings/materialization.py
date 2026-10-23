@@ -13,6 +13,7 @@ from app.models.classModel import (
     StandingBooking,
     StandingBookingException,
 )
+from app.models.membershipsModel import MembershipSubscription
 from app.models.specialEventModel import SESSION_DISPLACED
 
 from app.crud.locks import lock_class_session, lock_materialization_batch
@@ -275,21 +276,28 @@ async def _create_reservation_if_possible(
     if not session:
         return
 
+    subscription = await db.get(MembershipSubscription, standing_booking.subscription_id)
+    if (subscription is None or subscription.status != "active"
+            or not subscription.start_at <= session.start_at < subscription.end_at):
+        return
+    if session.status != "scheduled":
+        return
+
     seat_id = seat_id_override if seat_id_override is not None else standing_booking.seat_id
 
     if seat_id:
         if await _is_seat_taken(db, session_id, seat_id):
             stats["skipped_seat_taken"] += 1
             return
-    else:
-        has_capacity = await _session_has_capacity(db, session)
-        if not has_capacity:
-            stats["skipped_no_capacity"] += 1
-            return
+    has_capacity = await _session_has_capacity(db, session)
+    if not has_capacity:
+        stats["skipped_no_capacity"] += 1
+        return
 
     reservation = Reservation(
         session_id=session_id,
         person_id=standing_booking.person_id,
+        subscription_id=standing_booking.subscription_id,
         seat_id=seat_id,
         status="reserved",
         source=source,

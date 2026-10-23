@@ -25,6 +25,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.postgresql import Base
+from app.core.ai_models import DEFAULT_AI_MODEL
 
 
 # Pending action lifecycle.
@@ -64,7 +65,9 @@ class ChatbotConfig(Base):
     # before executing; off => confirmed by "Sí" (manual flow). Editable from the frontend.
     require_mp_payment: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Anthropic model id (defaults to the latest Sonnet).
-    model: Mapped[str] = mapped_column(String(80), nullable=False, default="claude-sonnet-4-6")
+    model: Mapped[str] = mapped_column(String(80), nullable=False, default=DEFAULT_AI_MODEL)
+    template_ai_model: Mapped[str] = mapped_column(String(80), nullable=False, default=DEFAULT_AI_MODEL)
+    prompt_optimizer_model: Mapped[str] = mapped_column(String(80), nullable=False, default=DEFAULT_AI_MODEL)
     # The configurable system prompt (initial context + behaviour for the business).
     system_prompt: Mapped[Optional[str]] = mapped_column(Text)
     # Business info surfaced to the agent (and to the get_business_info tool).

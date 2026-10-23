@@ -22,6 +22,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.postgresql import Base
+from app.core.ai_models import DEFAULT_AI_MODEL
 
 
 OWNER_PENDING_STATUS_PENDING = "pending"
@@ -46,7 +47,7 @@ class OwnerAgentConfig(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     require_confirmation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    model: Mapped[str] = mapped_column(String(80), nullable=False, default="claude-sonnet-4-6")
+    model: Mapped[str] = mapped_column(String(80), nullable=False, default=DEFAULT_AI_MODEL)
     system_prompt: Mapped[Optional[str]] = mapped_column(Text)
     history_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     max_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=1024)

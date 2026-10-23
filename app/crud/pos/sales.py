@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.payment_methods import MIXED, is_cash
+from app.crud.locks import lock_materialization_batch
 from app.crud.memberships.enrollment import (
     create_member_enrollment_with_standing_booking,
     renew_subscription_with_standing_booking,
@@ -54,6 +55,7 @@ class SaleLineInput:
     phone_number: Optional[str] = None
     start_at: Optional[datetime] = None
     template_id: Optional[int] = None
+    session_id: Optional[int] = None
     seat_id: Optional[int] = None
     # product field (Phase 2)
     product_id: Optional[int] = None
@@ -125,6 +127,10 @@ async def create_sale(
     nonzero_tenders = [t for t in tenders if _dec(t.amount) > 0]
     if not nonzero_tenders:
         raise ValueError("La venta no tiene pagos.")
+    # Multiple daily purchases retain their per-class locks until the ticket commits.
+    # Take the existing batch lock first so opposite cart orders cannot deadlock.
+    if sum(li.line_type in ("membership_new", "membership_renewal") for li in line_items) > 1:
+        await lock_materialization_batch(db)
 
     open_session = await get_open_cash_session(db)
     has_cash_tender = any(is_cash(t.method) for t in nonzero_tenders)
@@ -224,6 +230,7 @@ async def _process_membership_line(db, sale, li: SaleLineInput, primary_method, 
                 email=li.email,
                 phone_number=li.phone_number,
                 plan_id=li.plan_id,
+                session_id=li.session_id,
                 start_at=li.start_at,
                 payment_method=primary_method,
                 payment_amount=li.unit_price,
@@ -246,6 +253,7 @@ async def _process_membership_line(db, sale, li: SaleLineInput, primary_method, 
                 db=db,
                 member_id=li.member_id,
                 plan_id=li.plan_id,
+                session_id=li.session_id,
                 template_id=li.template_id,
                 seat_id=li.seat_id,
                 start_at=li.start_at,
@@ -264,6 +272,7 @@ async def _process_membership_line(db, sale, li: SaleLineInput, primary_method, 
     meta = {
         "person_id": subscription.person_id,
         "template_id": li.template_id,
+        "session_id": li.session_id,
         "seat_id": li.seat_id,
         "standing_booking_id": sb_id,
         "plan_name": plan.name,

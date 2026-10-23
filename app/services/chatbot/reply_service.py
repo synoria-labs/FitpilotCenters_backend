@@ -11,6 +11,7 @@ realtime stream (the DB trigger fans the INSERT out to subscribers).
 """
 import asyncio
 import logging
+from datetime import timezone
 from typing import List, Optional, Set
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
@@ -33,6 +34,9 @@ from app.services import whatsapp_outbound as outbound
 from app.services.chatbot.agent import run_agent
 from app.services.chatbot.business_context import build_business_info
 from app.services.chatbot.tools import ChatbotContext, build_tools
+from app.services.chatbot.timefmt import fmt_dt
+from app.services.chatbot.verification import reservation_context, finalize_reply
+from app.services.chatbot import image_context, turn_queue
 
 logger = logging.getLogger(__name__)
 
@@ -82,15 +86,16 @@ async def send_and_persist_reply(
 
 
 async def _load_history(
-    db: AsyncSession, conversation_id: int, exclude_message_id: Optional[int]
+    db: AsyncSession, conversation_id: int, exclude_message_id: Optional[int], context_message_id: Optional[str] = None,
 ) -> List[BaseMessage]:
     """Build LangChain message history from the conversation's stored messages.
 
     Excludes the current inbound message (it is appended separately by the agent), reactions,
     and empty messages. Inbound -> HumanMessage, outbound -> AIMessage.
     """
-    rows = await crud.get_conversation_messages(
-        db, conversation_id, limit=chatbot_env.HISTORY_LIMIT
+    rows, selected_images = await image_context.history_rows(
+        db, conversation_id=conversation_id, limit=chatbot_env.HISTORY_LIMIT,
+        exclude_message_id=exclude_message_id, context_message_id=context_message_id,
     )
     messages: List[BaseMessage] = []
     for r in rows:
@@ -99,15 +104,24 @@ async def _load_history(
         if r.message_type == "reaction":
             continue
         text = (r.text_content or "").strip()
+        if not text and r.message_type == "image":
+            text = image_context.IMAGE_PLACEHOLDER
         if not text:
             continue
+        stamp = getattr(r, "timestamp", None) or getattr(r, "created_at", None)
+        if stamp is not None and stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        text = f"[Enviado: {fmt_dt(stamp) if stamp else 'fecha desconocida'}; hora de México] {text}"
         if r.direction == "inbound":
-            messages.append(HumanMessage(content=text))
+            content = await image_context.image_content(db, r, text, include_image=r.id in selected_images)
+            messages.append(HumanMessage(content=content))
         else:
             # Label automated/campaign context so the bot can close a sale the customer is
             # responding to (and not mistake a campaign/notification for its own prior turn).
             if getattr(r, "message_class", None) == "marketing" or r.message_type == "template":
                 text = f"[mensaje automático/campaña] {text}"
+            elif "pago acreditado" in text.lower():
+                text = f"[notificación automática de pago; corresponde a su fecha de envío] {text}"
             messages.append(AIMessage(content=text))
     return messages
 
@@ -128,7 +142,9 @@ async def _build_pending_note(db: AsyncSession, conversation_id: int) -> Optiona
         link = pending.mp_init_point or "(link no disponible)"
         return (
             f"⚠️ Hay una compra pendiente de PAGO: «{summary}». El cliente debe pagar en el link ya "
-            f"enviado: {link}. Si pregunta o no lo encuentra, reenvíaselo. NO la confirmes por texto; "
+            f"enviado: {link}. Si reporta un error o envía un comprobante, consulta get_my_purchase_status "
+            "antes de indicarle que pague. Reenvía enlaces solo mediante respond_to_customer con kind=purchase, "
+            "que verifica que la compra y su clase sigan vigentes. NO la confirmes por texto; "
             "se confirma sola al acreditarse el pago. Si quiere cancelar, usa cancel_action."
         )
     return (
@@ -152,15 +168,21 @@ def _build_member_note(member) -> Optional[str]:
     m = getattr(member, "active_membership", None)
     status = (getattr(m, "status", None) or "").strip().lower() if m is not None else ""
     days = getattr(m, "remaining_days", None) if m is not None else None
+    end_at = getattr(m, "end_date", None) if m is not None else None
 
     if status == "active":
         detail = f"membresía ACTIVA, {days} días restantes" if days is not None else "membresía ACTIVA"
+        if end_at is not None:
+            detail = f"membresía ACTIVA hasta {fmt_dt(end_at)} (hora de México)"
         return (
             f"Socio identificado: {name}. {detail}. Salúdalo por su nombre y personaliza tu "
-            "respuesta; no insistas en renovar salvo que falten pocos días."
+            "respuesta. Esto NO acredita una reserva para la fecha solicitada: verifica la sesión "
+            "con las herramientas. Un pase diario anterior no cubre una nueva clase."
         )
     if status == "expired":
         detail = f"VENCIDA hace {abs(days)} días" if days is not None else "VENCIDA"
+        if end_at is not None:
+            detail = f"VENCIDA desde {fmt_dt(end_at)} (hora de México)"
         return (
             f"Socio identificado: {name}. Su membresía está {detail}. Salúdalo por su nombre y, "
             "con tacto, invítalo a renovar."
@@ -374,6 +396,8 @@ async def _run_agent_reply(
     if not chatbot_env.is_configured() or not chatbot_env.ENABLED:
         return
     text = (text or "").strip()
+    if not text and message_type == "image":
+        text = image_context.IMAGE_PLACEHOLDER
     if not text:
         return
     try:
@@ -389,11 +413,18 @@ async def _run_agent_reply(
                 else None
             )
             business_info = await build_business_info(db, config)
-            history = await _load_history(db, conversation_id, exclude_message_id=message_id)
+            current_image = None
+            if message_type == "image":
+                current_image = await image_context.current_image_blocks(
+                    db, message_id=message_id, conversation_id=conversation_id, contact_id=contact_id,
+                )
+            history = await _load_history(db, conversation_id, exclude_message_id=message_id,
+                                          context_message_id=context_message_id)
             mp_required = bool(config.require_mp_payment)
             require_mp = mp_required and mercadopago_config.is_configured()
             pending_note = await _build_pending_note(db, conversation_id)
             member_note = _build_member_note(member)
+            member_note = (member_note or "") + "\n" + await reservation_context(db, member_id)
             campaign_note = await _build_campaign_context_note(
                 db, context_message_id, message_type, text
             )
@@ -413,15 +444,36 @@ async def _run_agent_reply(
                 wa_id=contact_wa_id,
                 require_mp_payment=require_mp,
                 mp_required=mp_required,
+                user_text=text,
             )
             tools = build_tools(ctx)
-            reply = await run_agent(
-                config, tools, business_info, member_id, history, text,
-                pending_note=pending_note, member_note=member_note,
-                campaign_note=campaign_note, event_note=event_note,
+            if message_type == "image" and text == image_context.IMAGE_PLACEHOLDER:
+                tools = image_context.read_only_tools(tools)
+            turn_queue.mark_started("customer", conversation_id)
+            visual_turn = current_image is not None or any(isinstance(m.content, list) for m in history)
+            try:
+                reply = await run_agent(
+                    config, tools, business_info, member_id, history, text,
+                    pending_note=pending_note, member_note=member_note,
+                    campaign_note=campaign_note, event_note=event_note,
+                    image_content=current_image,
+                )
+            except Exception as exc:  # noqa: BLE001 - provide a truthful response for unreadable images
+                if not visual_turn:
+                    raise
+                logger.info("chatbot_image_model message=%s result=failed reason=%s", message_id, type(exc).__name__)
+                await db.rollback()
+                ctx.reply_request = None
+                ctx.validated_reply = image_context.IMAGE_FAILURE_REPLY
+            # Never send unverified model output, even when it omitted the final tool.
+            fallback = (
+                "Necesito verificar la fecha y el horario antes de confirmar una reserva. "
+                "¿Para qué fecha y hora deseas comprar tu clase?"
             )
-            if not reply:
-                return
+            if visual_turn:
+                fallback = "No pude interpretar la imagen con seguridad. ¿Puedes reenviarla o escribir el mensaje de error que aparece?"
+            reply = ctx.validated_reply or fallback
+            logger.info("chatbot_turn conversation=%s tools=%s verification=%s", conversation_id, ctx.tools_used, ctx.verification_result)
 
             # The agent took time to run; re-check the bot wasn't disabled/paused meanwhile (STOP,
             # human takeover, or robot button off) so it doesn't talk over a human or reply right
@@ -438,6 +490,10 @@ async def _run_agent_reply(
                     conversation_id,
                 )
                 return
+
+            if ctx.reply_request:
+                await finalize_reply(ctx, **ctx.reply_request)
+                reply = ctx.validated_reply or "No pude verificar esa reserva. Revisemos la fecha y el horario antes de confirmarla."
 
             await send_and_persist_reply(
                 db,
@@ -464,11 +520,11 @@ def schedule_agent_reply(
 ) -> None:
     """Fire-and-forget the agent reply on the running event loop (non-blocking webhook)."""
     try:
-        task = asyncio.create_task(
-            _run_agent_reply(
+        task = turn_queue.schedule_turn(
+            "customer", conversation_id, lambda: _run_agent_reply(
                 conversation_id, contact_id, contact_wa_id, message_id, text,
                 message_type=message_type, context_message_id=context_message_id,
-            )
+            ),
         )
     except RuntimeError:
         # No running loop (e.g. called from a sync context outside the app) — skip.

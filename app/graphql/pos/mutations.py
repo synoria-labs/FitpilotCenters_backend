@@ -175,6 +175,7 @@ class PosMutation:
                     phone_number=li.phone_number,
                     start_at=li.start_at,
                     template_id=li.template_id,
+                    session_id=getattr(li, "session_id", None),
                     seat_id=li.seat_id,
                     product_id=li.product_id,
                 )

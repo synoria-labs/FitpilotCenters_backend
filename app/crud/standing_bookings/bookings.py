@@ -66,13 +66,17 @@ async def create_standing_booking(
         if not seat:
             raise ValueError("Seat not found or not available for this venue")
 
-    existing_stmt = select(StandingBooking).where(
+    existing_stmt = select(StandingBooking).join(
+        MembershipSubscription, MembershipSubscription.id == StandingBooking.subscription_id,
+    ).where(
         and_(
             StandingBooking.person_id == person_id,
             StandingBooking.template_id == template_id,
             StandingBooking.status == "active",
             StandingBooking.start_date <= end_date,
             StandingBooking.end_date >= start_date,
+            MembershipSubscription.start_at < subscription.end_at,
+            MembershipSubscription.end_at > subscription.start_at,
         )
     )
     existing_result = await db.execute(existing_stmt)
@@ -89,6 +93,9 @@ async def create_standing_booking(
                 and_(
                     ClassSession.template_id == template_id,
                     between_dates(ClassSession.start_at, start_date, end_date),
+                    ClassSession.start_at >= subscription.start_at,
+                    ClassSession.start_at < subscription.end_at,
+                    ClassSession.status == "scheduled",
                     Reservation.seat_id == seat_id,
                     Reservation.status.in_(["reserved", "checked_in"]),
                     Reservation.person_id != person_id,

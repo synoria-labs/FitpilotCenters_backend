@@ -15,6 +15,8 @@ from app.models import (
     Lead, LeadEvent, LeadAttribution, CommunicationOptIn, WhatsAppThread, FormSubmission
 )
 from app.core.conversions import coerce_int
+from app.crud.memberships.day_passes import effective_status
+from app.core.timezones import to_local
 
 
 logger = logging.getLogger(__name__)
@@ -120,16 +122,16 @@ def _build_member_data(person: People) -> MemberData:
     reference_subscription = active_subscription or latest_subscription
 
     if reference_subscription or true_end_date:
-        today_local = date.today()
+        today_local = to_local(datetime.now(timezone.utc)).date()
 
         # Priority: subscription end_at over standing booking end_date
         if reference_subscription and reference_subscription.end_at:
             end_datetime = reference_subscription.end_at
             start_datetime = reference_subscription.start_at
             # Calculate remaining days using local calendar dates
-            end_date_local = end_datetime.astimezone().date() if end_datetime.tzinfo else end_datetime.date()
+            end_date_local = to_local(end_datetime).date()
             remaining_days = (end_date_local - today_local).days
-            status = 'active' if remaining_days >= 0 else 'expired'
+            status = effective_status(reference_subscription)
         elif true_end_date:
             end_datetime = datetime.combine(true_end_date, datetime.max.time()).replace(tzinfo=timezone.utc)
             start_datetime = datetime.combine(true_start_date, datetime.min.time()).replace(tzinfo=timezone.utc) if true_start_date else None

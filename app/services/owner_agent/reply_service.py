@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import timezone
 from typing import Optional, Set
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +15,8 @@ from app.models.ownerAgentModel import OWNER_PENDING_STATUS_PENDING
 from app.services import whatsapp_cloud_service as cloud
 from app.services import whatsapp_outbound as outbound
 from app.services.owner_agent.env import owner_agent_env
+from app.services.chatbot import image_context, turn_queue
+from app.services.chatbot.timefmt import fmt_dt
 
 logger = logging.getLogger(__name__)
 
@@ -50,21 +53,30 @@ async def send_and_persist_reply(
 
 
 async def _load_history(
-    db: AsyncSession, conversation_id: int, exclude_message_id: Optional[int], limit: int
-) -> list[tuple[str, str]]:
-    rows = await whatsapp_crud.get_conversation_messages(
-        db, conversation_id, limit=max(1, min(int(limit or 30), 100))
+    db: AsyncSession, conversation_id: int, exclude_message_id: Optional[int], limit: int,
+    context_message_id: Optional[str] = None,
+) -> list[tuple[str, str | list]]:
+    rows, selected_images = await image_context.history_rows(
+        db, conversation_id=conversation_id, limit=max(1, min(int(limit or 30), 100)),
+        exclude_message_id=exclude_message_id, context_message_id=context_message_id,
     )
-    history: list[tuple[str, str]] = []
+    history: list[tuple[str, str | list]] = []
     for row in rows:
         if exclude_message_id is not None and row.id == exclude_message_id:
             continue
         if row.message_type == "reaction":
             continue
         text = (row.text_content or "").strip()
+        if not text and row.message_type == "image":
+            text = image_context.IMAGE_PLACEHOLDER
         if not text:
             continue
-        history.append((row.direction, text))
+        stamp = getattr(row, "timestamp", None)
+        if stamp is not None and stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        text = f"[Enviado: {fmt_dt(stamp) if stamp else 'fecha desconocida'}; hora de México] {text}"
+        content = await image_context.image_content(db, row, text, include_image=row.id in selected_images)
+        history.append((row.direction, content))
     return history
 
 
@@ -90,9 +102,13 @@ async def _run_agent_reply(
     authorized_phone_id: int,
     message_id: int,
     text: str,
+    message_type: str = "text",
+    context_message_id: Optional[str] = None,
 ) -> None:
     try:
         text = (text or "").strip()
+        if not text and message_type == "image":
+            text = image_context.IMAGE_PLACEHOLDER
         if not text:
             return
 
@@ -112,7 +128,12 @@ async def _run_agent_reply(
             from app.services.owner_agent.agent import run_agent
             from app.services.owner_agent.tools import OwnerAgentContext, build_tools
 
-            history = await _load_history(db, conversation_id, message_id, config.history_limit)
+            current_image = None
+            if message_type == "image":
+                current_image = await image_context.current_image_blocks(
+                    db, message_id=message_id, conversation_id=conversation_id, contact_id=contact_id,
+                )
+            history = await _load_history(db, conversation_id, message_id, config.history_limit, context_message_id)
             pending_note = await _pending_note(db, conversation_id)
             ctx = OwnerAgentContext(
                 db=db,
@@ -122,13 +143,24 @@ async def _run_agent_reply(
                 require_confirmation=bool(config.require_confirmation),
             )
             tools = build_tools(ctx)
-            reply = await run_agent(
-                config=config,
-                tools=tools,
-                history=history,
-                user_text=text,
-                pending_note=pending_note,
-            )
+            if message_type == "image" and text == image_context.IMAGE_PLACEHOLDER:
+                tools = image_context.read_only_tools(tools)
+            turn_queue.mark_started("owner", conversation_id)
+            try:
+                reply = await run_agent(
+                    config=config,
+                    tools=tools,
+                    history=history,
+                    user_text=text,
+                    pending_note=pending_note,
+                    image_content=current_image,
+                )
+            except Exception as exc:  # noqa: BLE001
+                if current_image is None and not any(isinstance(content, list) for _, content in history):
+                    raise
+                logger.info("owner_image_model message=%s result=failed reason=%s", message_id, type(exc).__name__)
+                await db.rollback()
+                reply = image_context.IMAGE_FAILURE_REPLY
             if not reply:
                 return
             await send_and_persist_reply(
@@ -152,17 +184,21 @@ def schedule_agent_reply(
     authorized_phone_id: int,
     message_id: int,
     text: str,
+    message_type: str = "text",
+    context_message_id: Optional[str] = None,
 ) -> None:
     try:
-        task = asyncio.create_task(
-            _run_agent_reply(
+        task = turn_queue.schedule_turn(
+            "owner", conversation_id, lambda: _run_agent_reply(
                 conversation_id=conversation_id,
                 contact_id=contact_id,
                 contact_wa_id=contact_wa_id,
                 authorized_phone_id=authorized_phone_id,
                 message_id=message_id,
                 text=text,
-            )
+                message_type=message_type,
+                context_message_id=context_message_id,
+            ),
         )
     except RuntimeError:
         logger.warning("owner schedule_agent_reply called without running loop; skipped")
