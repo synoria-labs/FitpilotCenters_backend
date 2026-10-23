@@ -224,6 +224,29 @@ async def test_actual_dispatch_obeys_daily_policy(db, monkeypatch, policy, expec
         assert r.send_after > d.now()
 
 
+async def test_real_daily_ledger_applies_across_campaigns_without_counting_own_intent(db, monkeypatch):
+    c, first = await seed(db)
+    c.status = "sending"
+    cloud = AsyncMock(side_effect=[{"wa_message_id": f"ledger-first-{first.id}"},
+                                   {"wa_message_id": f"ledger-extra-{first.id}"}])
+    monkeypatch.setattr(outbound.cloud, "send_template", cloud)
+    await svc._send_to_recipient(db, c, None, first)
+    assert first.status == "sent"  # The durable intent does not block its own first request.
+    for policy, expected in (("respect", "skipped"), ("defer", "pending"), ("allow_additional", "sent")):
+        campaign = Campaign(name="Next campaign", objective="broadcast", template_id=c.template_id,
+                            status="sending", daily_cap_policy=policy)
+        db.add(campaign)
+        await db.flush()
+        r = CampaignRecipient(campaign_id=campaign.id, person_id=first.person_id,
+                              wa_id=first.wa_id, phone_e164=first.phone_e164,
+                              dedup_key=f"ledger:{campaign.id}:{first.person_id}", status="pending")
+        db.add(r)
+        await db.flush()
+        await svc._send_to_recipient(db, campaign, None, r)
+        assert r.status == expected
+    assert cloud.await_count == 2
+
+
 async def test_lost_provider_response_is_never_blindly_retried(db, monkeypatch):
     c, r = await seed(db, policy="allow_additional")
     c.status = "sending"
