@@ -68,3 +68,43 @@ historial, para impedir su pérdida accidental.
 
 Esta migración parte de b8e1f4a7c0d3 (enlaces de eventos sin caducidad), ya integrada en
 main. La cadena de Alembic mantiene una sola cabeza.
+
+## Recuperación segmentada por causa (sin migración adicional)
+
+Los dos accesos, «Recuperar no entregados» y «Reintentar fallidos», usan la misma vista
+previa. `previewCampaignRecovery(campaignId, causes: [String!])` devuelve las causas,
+conteos, notas y una fila por destinatario con nombre, teléfono, causa, detalle, elegibilidad,
+bloqueo y fecha prevista. El cliente filtra esa lista localmente al cambiar las casillas.
+`recoverCampaignRecipients(campaignId, causes: [String!])` vuelve a comprobar todo y solo
+encola las causas elegidas. Una lista vacía no encola nada; una causa desconocida se rechaza.
+Las operaciones conservan el permiso SEND_CAMPAIGNS. Guardar la política no recupera ni envía.
+
+Por defecto se seleccionan daily_cap, meta_limit, meta_temporary y bad_number. Recency_block,
+unconfirmed y other_error requieren selección explícita. Un código de rechazo conservado en
+el último intento tiene prioridad sobre una clasificación local sobrescrita; las filas antiguas
+pueden clasificarse por `recipient.error` sin alterar el historial. Los números inválidos y los
+que carecen de teléfono se muestran en bad_number, incluso si quedaron omitidos por otra causa.
+
+- daily_cap aplica la política guardada (respetar, aplazar o exceptuar); el resto de controles
+  siguen vigentes. Recency_block solo se exceptúa al seleccionar esa causa.
+- meta_limit permite una recuperación manual aunque se hayan agotado los dos reintentos
+  automáticos o estén desactivados. Nunca programa antes de 24 h desde el último rechazo.
+  La política automática de reintentos a las 24 y 72 horas no cambia.
+- bad_number exige un teléfono actual de Socios distinto al anterior y de 10 a 15 dígitos.
+  Reformatear 52/521 no cuenta como corrección. Solo al ejecutar se refrescan phone_e164,
+  wa_id y phone_key con la misma función que construye la audiencia. La ficha no se modifica.
+- unconfirmed permite un intento manual tras 24 h con advertencia de posible duplicado.
+  La autorización queda en skip_reason=recovery_unconfirmed y sobrevive los aplazamientos.
+  No cambia ni borra intentos previos y nunca autoriza saltarse un intento nuevo en curso.
+- other_error expone el código para que el administrador revise y corrija la causa antes
+  de autorizar. Los errores temporales se separan en meta_temporary.
+
+Siempre se excluyen entregas/lecturas/respuestas demostradas, duplicados, bajas, conversiones,
+compradores con pedido pagado o apartado vigente del evento, envíos en curso y eventos cerrados
+(o fechas de envío posteriores a su inicio). El bloqueo de compradores se verifica por persona
+o participant_key y se repite en el remitente. Los duplicados mantienen un dueño determinista
+con el menor ID elegible a través de todas las causas, para que filtrar casillas no cambie la
+identidad elegida. El candado de teléfono y la comprobación anterior al envío siguen activos.
+
+Publicar primero backend y luego escritorio. No hay migraciones ni reparación histórica
+implícita. La consulta de diagnóstico y las pruebas no encolan recuperaciones en producción.

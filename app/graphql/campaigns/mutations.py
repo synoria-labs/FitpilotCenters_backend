@@ -8,7 +8,7 @@ commits, exactly like the notification dispatch, so a large blast never blocks t
 import asyncio
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 import strawberry
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -423,12 +423,14 @@ class CampaignsMutation:
         return CampaignRunResult(success=True, pending=result["eligible"])
 
     @strawberry.mutation(permission_classes=[IsAuthenticated])
-    async def recover_campaign_recipients(self, info: Info, campaign_id: int) -> CampaignRunResult:
+    async def recover_campaign_recipients(
+        self, info: Info, campaign_id: int, causes: Optional[List[str]] = None,
+    ) -> CampaignRunResult:
         if error := await require_capability(info, SEND_CAMPAIGNS):
             return CampaignRunResult(success=False, error=error)
         from app.services.campaign_delivery import recovery
         try:
-            result = await recovery(info.context.db, campaign_id, execute=True)
+            result = await recovery(info.context.db, campaign_id, execute=True, causes=causes)
             return CampaignRunResult(success=True, pending=result["eligible"])
         except ValueError as exc:
             return CampaignRunResult(success=False, error=str(exc))

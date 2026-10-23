@@ -11,6 +11,82 @@ from app.models.campaignsModel import CampaignSendAttempt as Attempt
 from app.models.whatsappModel import Message, MessageStatus, WebhookLog
 
 POLICIES = ("respect", "defer", "allow_additional")
+_CAUSES = {
+    "daily_cap": ("Ya recibió marketing ese día", True, "Se respeta la política diaria guardada en la campaña."),
+    "meta_limit": ("Límite de Meta por persona (131049)", True, "Espera mínima de 24 h desde el último rechazo. La selección explícita permite otro intento manual."),
+    "meta_temporary": ("Error temporal de Meta", True, "Se puede volver a intentar en el próximo horario permitido."),
+    "bad_number": ("Número inválido o sin WhatsApp", True, "Corrige su número en Socios; debe ser distinto y válido antes de reenviar."),
+    "recency_block": ("Contactado hace poco", False, "Al seleccionarlo se exceptúa este reenvío del bloqueo entre campañas."),
+    "unconfirmed": ("Aceptado sin confirmar entrega", False, "Solo después de 24 h. Puede duplicar un mensaje que Meta ya haya entregado sin notificarlo."),
+    "other_error": ("Otro error de Meta", False, "Revisa el código y corrige la causa antes de autorizar otro intento."),
+}
+_TEMPORARY_CODES = {1, 2, 4, 80007, 130429, 131000, 131016, 131056, 133004}
+
+
+def phone_snapshot(person):
+    """The same phone selection and normalization at audience build and correction time."""
+    raw = (person.phone_number or person.wa_id or "").strip() if person else ""
+    digits = re.sub(r"\D", "", raw)
+    return {"phone_e164": raw or None, "wa_id": digits or None, "phone_key": phone_key(digits) or None}
+
+
+def valid_phone(value):
+    return 10 <= len(re.sub(r"\D", "", value or "")) <= 15
+
+
+def _utc(value):
+    return value.replace(tzinfo=timezone.utc) if value and value.tzinfo is None else value
+
+
+def recovery_cause(recipient, attempts):
+    """Classify the snapshot without losing errors on legacy rows or earlier attempts."""
+    latest = max((a for a in attempts if a.state != "not_sent"), key=lambda a: a.id, default=None)
+    if (recipient.delivered_at or recipient.read_at or recipient.replied_at
+            or (latest and (latest.delivered_at or latest.read_at))):
+        return None, "Entrega o respuesta confirmada."
+    error = (latest.error_detail if latest else None) or recipient.error or ""
+    code = latest.error_code if latest else None
+    if code is None:
+        match = re.search(r"(?:#|Meta\s+)(\d+)", recipient.error or "", re.IGNORECASE)
+        code = int(match[1]) if match else None
+    detail = f"Meta {code}: {error}" if code else error
+    if (recipient.skip_reason == "no_phone" or not valid_phone(recipient.wa_id or recipient.phone_e164)
+            or code in (131026, 131021)):
+        return "bad_number", detail or "Sin número válido. Corrige su número en Socios."
+    if code == 131049:
+        return "meta_limit", detail
+    if code in _TEMPORARY_CODES:
+        return "meta_temporary", detail
+    if code:
+        return "other_error", detail
+    if recipient.skip_reason == "daily_cap":
+        return "daily_cap", "Omitido por el límite local de marketing."
+    if recipient.skip_reason == "recency_block":
+        return "recency_block", "Omitido por contacto reciente en otra campaña."
+    if (latest and latest.state in ("started", "uncertain", "accepted", "sent")) or recipient.wa_message_id or recipient.status == "sending":
+        return "unconfirmed", detail or "No hay confirmación de entrega; un reenvío puede duplicar el mensaje."
+    if recipient.status in ("failed", "needs_review"):
+        return "other_error", detail or "Revisa la causa del error antes de reenviar."
+    return "daily_cap", detail or "Pendiente de envío; sin rechazo registrado."
+
+
+def _manual_unconfirmed_allowed(recipient, attempt):
+    # The explicit authorization survives claiming/defer, but never overrides a new request.
+    return (recipient.skip_reason == "recovery_unconfirmed"
+            and _utc(attempt.started_at) <= now() - timedelta(hours=24))
+
+
+async def event_buyers(db, campaign):
+    from app.models import SpecialEventOrder
+    if not campaign.special_event_id:
+        return set(), set()
+    orders = (await db.scalars(select(SpecialEventOrder).where(
+        SpecialEventOrder.event_id == campaign.special_event_id,
+        SpecialEventOrder.status.in_(("awaiting_payment", "paid")),
+    ).execution_options(populate_existing=True))).all()
+    active = [o for o in orders if o.status == "paid" or not o.payment_link_expires
+              or o.hold_expires_at is None or _utc(o.hold_expires_at) > now()]
+    return {o.person_id for o in active if o.person_id}, {o.participant_key for o in active if o.participant_key}
 
 
 class DeliveryBlocked(Exception):
@@ -41,7 +117,7 @@ async def closed_event(db, campaign):
     if not campaign.special_event_id:
         return False
     from app.models import SpecialEvent
-    event = await db.get(SpecialEvent, campaign.special_event_id)
+    event = await db.get(SpecialEvent, campaign.special_event_id, populate_existing=True)
     return event is None or event.status != "published" or event.start_at <= now()
 
 
@@ -76,19 +152,29 @@ async def check_recipient(db, campaign, recipient, *, ignore_attempt_id=None):
     if campaign.status == "canceled":
         return "campaign_canceled"
     peers = list((await db.scalars(select(CampaignRecipient).where(
-        CampaignRecipient.campaign_id == campaign.id).order_by(CampaignRecipient.id))).all())
+        CampaignRecipient.campaign_id == campaign.id).order_by(CampaignRecipient.id)
+        .execution_options(populate_existing=True))).all())
     peers = [r for r in peers if phone_key(r.wa_id or r.phone_e164) == key]
     history = list((await db.scalars(select(Attempt).where(
-        Attempt.campaign_id == campaign.id, Attempt.phone_key == key))).all())
+        Attempt.campaign_id == campaign.id, Attempt.phone_key == key)
+        .execution_options(populate_existing=True))).all())
     history = [a for a in history if a.id != ignore_attempt_id]
     if any(a.delivered_at or a.read_at for a in history) or any(r.delivered_at or r.read_at or r.replied_at for r in peers):
         return "already_delivered"
-    if any(a.state in ("started", "uncertain") for a in history):
+    if any(r.converted for r in peers):
+        return "converted"
+    from app.crud.special_events.common import participant_key
+    buyers, buyer_phones = await event_buyers(db, campaign)
+    if recipient.person_id in buyers or participant_key(key) in buyer_phones:
+        return "event_buyer"
+    if any(a.state in ("started", "uncertain") and not _manual_unconfirmed_allowed(recipient, a) for a in history):
         return "uncertain_previous_send"
-    if any(a.state in ("accepted", "sent") for a in history):
+    if any(a.state in ("accepted", "sent") and not _manual_unconfirmed_allowed(recipient, a) for a in history):
         return "awaiting_delivery"
     blocked = await opted_out_person_ids(db, [r.person_id for r in peers if r.person_id])
     eligible = [r for r in peers if r.person_id not in blocked and r.status != "opted_out"]
+    queued = [r for r in eligible if r.status in ("pending", "sending")]
+    eligible = queued or eligible
     if recipient.person_id in blocked:
         return "no_consent"
     if eligible and recipient.id != min(r.id for r in eligible):
@@ -255,9 +341,16 @@ async def metrics(db, campaign_id, *, context=None):
                 period_end=now(), template_id=c.template_id if c else None)
 
 
-async def recovery(db, campaign_id, *, execute=False):
-    """Same eligibility calculation powers preview and execution. Never calls Meta."""
+async def recovery(db, campaign_id, *, execute=False, causes=None):
+    """One calculation for preview/queueing; optional causes require an explicit staff action."""
     from app.crud.campaignsCrud import opted_out_person_ids
+    from app.crud.special_events.common import participant_key
+    from app.models import People
+    from app.services.whatsapp_outbound import next_allowed_send_at
+
+    selected = set(causes) if causes is not None else {key for key, (_, default, _) in _CAUSES.items() if default}
+    if selected - _CAUSES.keys():
+        raise ValueError("Causa de recuperación desconocida.")
     c = await db.scalar(select(Campaign).where(Campaign.id == campaign_id).with_for_update()) if execute else await db.get(Campaign, campaign_id)
     if c is None or c.status in ("sending", "canceled"):
         raise ValueError("Pausa el envío antes de recuperar; una campaña cancelada no se puede recuperar.")
@@ -265,37 +358,70 @@ async def recovery(db, campaign_id, *, execute=False):
         raise ValueError("El evento ya comenzó o no está publicado.")
     rows = list((await db.scalars(select(CampaignRecipient).where(
         CampaignRecipient.campaign_id == campaign_id).order_by(CampaignRecipient.id))).all())
-    blocked = await opted_out_person_ids(db, [r.person_id for r in rows if r.person_id])
+    people = {p.id: p for p in (await db.scalars(select(People).where(
+        People.id.in_([r.person_id for r in rows if r.person_id])))).all()}
+    blocked = await opted_out_person_ids(db, list(people))
     history = await attempts_for(db, campaign_id)
-    seen = set()
+    buyers, buyer_phones = await event_buyers(db, c)
+    own_attempts = {r.id: [] for r in rows}
+    for a in history:
+        own_attempts.setdefault(a.recipient_id, []).append(a)
+    # Read delivery evidence even before a historical reconciliation has been run.
+    message_keys = {a.wa_message_id: a.phone_key for a in history if a.wa_message_id}
+    message_keys.update({r.wa_message_id: phone_key(r.wa_id or r.phone_e164) for r in rows if r.wa_message_id})
+    delivered = {a.phone_key for a in history if a.delivered_at or a.read_at}
+    delivered.update(phone_key(r.wa_id or r.phone_e164) for r in rows if r.delivered_at or r.read_at or r.replied_at)
+    receipts = (await db.scalars(select(Message.wa_message_id).join(MessageStatus).where(
+        Message.wa_message_id.in_(list(message_keys)), MessageStatus.status.in_(("delivered", "read"))))).all()
+    delivered.update(message_keys[mid] for mid in receipts)
+    converted = {phone_key(r.wa_id or r.phone_e164) for r in rows if r.converted}
     counts = {"eligible": 0, "duplicates": 0, "delivered": 0, "blocked": 0, "review": 0, "scheduled": 0}
-    entries = []
+    groups = {key: dict(key=key, label=label, total=0, eligible=0, blocked=0,
+                        selected_by_default=default, note=note) for key, (label, default, note) in _CAUSES.items()}
+    groups["daily_cap"]["note"] += " Política: " + {
+        "respect": "respetar el límite y omitir.", "defer": "reprogramar al próximo día permitido.",
+        "allow_additional": "permitir un envío adicional.",
+    }.get(c.daily_cap_policy, "respetar el límite.")
+    entries, candidates, seen = [], {}, set()
     for r in rows:
-        key = phone_key(r.wa_id or r.phone_e164)
-        peer_attempts = [a for a in history if a.phone_key == key]
-        reason, due = None, now()
-        if not key or r.person_id in blocked or r.status == "opted_out":
-            reason = "blocked"
-        elif any(a.delivered_at or a.read_at for a in peer_attempts) or any(
-                (x.delivered_at or x.read_at or x.replied_at) and phone_key(x.wa_id or x.phone_e164) == key for x in rows):
-            reason = "delivered"
+        own = own_attempts[r.id]
+        cause, detail = recovery_cause(r, own)
+        snapshot = phone_snapshot(people.get(r.person_id))
+        old_key = phone_key(r.wa_id or r.phone_e164)
+        corrected = cause == "bad_number" and valid_phone(snapshot["wa_id"]) and snapshot["phone_key"] != old_key
+        key = snapshot["phone_key"] if corrected else old_key
+        peers = [a for a in history if a.phone_key in {key, old_key}]
+        reason, block_detail, due = None, None, now()
+        if r.person_id in blocked or r.status == "opted_out" or r.skip_reason == "no_consent":
+            reason, block_detail = "blocked", "Sin consentimiento o baja de WhatsApp."
+        elif key in delivered or old_key in delivered:
+            reason, block_detail = "delivered", "Este teléfono ya recibió la campaña."
+        elif r.converted or key in converted:
+            reason, block_detail = "blocked", "Ya convirtió en esta campaña."
+        elif r.person_id in buyers or participant_key(key) in buyer_phones:
+            reason, block_detail = "blocked", "Ya tiene un pedido apartado o pagado de este evento."
+        elif any(a.state == "started" and _utc(a.started_at) > now() - timedelta(hours=24) for a in peers):
+            reason, block_detail = "review", "Hay un intento de envío en curso."
+        elif r.status == "sending" and _utc(r.updated_at) > now() - timedelta(hours=24):
+            reason, block_detail = "review", "Hay un envío en curso; espera su resultado."
         elif key in seen:
-            reason = "duplicates"
-        elif any(a.state in ("started", "uncertain", "accepted", "sent") for a in peer_attempts):
-            reason = "review"
+            reason, block_detail = "duplicates", "Número repetido en esta campaña."
+        elif cause == "bad_number" and not corrected:
+            reason, block_detail = "blocked", "Corrige su número en Socios: debe ser distinto y válido."
         else:
-            seen.add(key)
-            latest = max(peer_attempts, key=lambda a: a.id, default=None)
-            if latest and latest.error_code == 131049:
-                n = sum(a.error_code == 131049 for a in peer_attempts)
-                if not c.auto_retry_meta_limits or n > 2:
-                    reason = "review"
-                else:
-                    due = max(due, latest.failed_at + timedelta(hours=24 if n == 1 else 48))
-            elif latest and latest.error_code:
-                reason = "review"
-            elif r.status in ("failed", "needs_review") or (r.wa_message_id and not latest):
-                reason = "review"
+            active = [a for a in peers if a.state in ("started", "uncertain", "accepted", "sent")
+                      and (not corrected or a.phone_key == key)]
+            if active and (cause != "unconfirmed" or any(
+                    _utc(a.started_at) > now() - timedelta(hours=24) for a in active)):
+                reason, block_detail = "review", "Esperando confirmación de Meta; no reenviar antes de 24 h."
+            elif cause == "unconfirmed":
+                last = max((_utc(a.started_at) for a in active), default=_utc(r.sent_at or r.updated_at))
+                if last and last > now() - timedelta(hours=24):
+                    reason, block_detail = "review", "Esperando confirmación de Meta; no reenviar antes de 24 h."
+            elif cause == "meta_limit":
+                rejection = max((_utc(a.failed_at or a.started_at) for a in peers if a.error_code == 131049),
+                                default=_utc(r.updated_at))
+                due = max(due, rejection + timedelta(hours=24))
             if reason is None:
                 from app.crud.whatsappCrud import find_contact_by_number, count_marketing_sends_today
                 from app.core.outbound_config import outbound_config
@@ -306,32 +432,45 @@ async def recovery(db, campaign_id, *, execute=False):
                         if c.daily_cap_policy == "defer":
                             due = max(due, next_day())
                         else:
-                            reason = "blocked"
-        if reason:
-            counts[reason] += 1
-        else:
-            from app.services.whatsapp_outbound import next_allowed_send_at
+                            reason, block_detail = "blocked", "Este número ya alcanzó el límite diario de marketing."
+        if reason is None:
             due = next_allowed_send_at(due).astimezone(timezone.utc)
             if await beyond_event(db, c, due):
-                counts["blocked"] += 1
-                entries.append({"recipient_id": r.id, "reason": "event_closed", "send_after": None})
-                continue
+                reason, block_detail = "blocked", "El envío sería posterior al inicio del evento."
+        # A stable owner across all causes keeps local checkbox filtering identical to execution.
+        eligible = reason is None
+        if eligible:
+            seen.add(key)
+        if eligible and cause in selected:
             counts["eligible"] += 1
-            if due > now() + timedelta(seconds=1):
-                counts["scheduled"] += 1
-            if execute:
-                r.status, r.skip_reason, r.send_after = "pending", "recovery", due
-                r.phone_key = key
-        entries.append({"recipient_id": r.id, "reason": reason or "eligible", "send_after": due if not reason else None})
-    if execute and counts["eligible"]:
-        c.status = "scheduled"
-        c.scheduled_at = min(e["send_after"] for e in entries if e["reason"] == "eligible")
-        c.finished_at = None
+            counts["scheduled"] += int(due > now() + timedelta(seconds=1))
+            candidates[r.id] = (r, snapshot if corrected else None, key, cause, due)
+        elif reason:
+            counts[reason] += 1
+        else:
+            counts["review"] += 1
+        if cause in groups:
+            group = groups[cause]
+            group["total"] += 1
+            group["eligible" if eligible else "blocked"] += 1
+        entries.append(dict(recipient_id=r.id, cause=cause, detail=detail, person_name=(
+            people[r.person_id].full_name or "Sin nombre") if r.person_id in people else "Socio no disponible",
+            phone=snapshot["phone_e164"] if corrected else r.phone_e164 or r.wa_id or "Sin número",
+            eligible=eligible, reason=reason or ("eligible" if cause in selected else "not_selected"),
+            blocked_reason=block_detail, send_after=due.isoformat() if eligible else None))
+    if execute:
+        for r, snapshot, key, cause, due in candidates.values():
+            await phone_lock(db, c.id, key)
+            if snapshot:
+                r.phone_e164, r.wa_id = snapshot["phone_e164"], snapshot["wa_id"]
+            r.status, r.skip_reason, r.send_after = "pending", (
+                "recovery_unconfirmed" if cause == "unconfirmed" else "recovery"), due
+            r.phone_key = key
+        if counts["eligible"]:
+            c.status, c.finished_at = "scheduled", None
+            c.scheduled_at = min(item[-1] for item in candidates.values())
         await db.commit()
-    for entry in entries:
-        if entry["send_after"] is not None:
-            entry["send_after"] = entry["send_after"].isoformat()
-    return dict(counts, recipients=entries)
+    return dict(counts, causes=list(groups.values()), recipients=entries)
 
 
 async def reconcile(db, campaign_id, *, apply=False):

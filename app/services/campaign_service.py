@@ -499,8 +499,9 @@ async def build_campaign_audience(db: AsyncSession, campaign_id: int) -> Dict[st
     rows: List[Dict[str, Any]] = []
     for cand in candidates:
         person = cand.person
-        raw_phone = (person.phone_number or person.wa_id or "").strip()
-        wa_id = re.sub(r"\D", "", raw_phone)
+        from app.services.campaign_delivery import phone_snapshot
+        snapshot = phone_snapshot(person)
+        wa_id = snapshot["wa_id"]
 
         status = "pending"
         skip_reason: Optional[str] = None
@@ -519,8 +520,7 @@ async def build_campaign_audience(db: AsyncSession, campaign_id: int) -> Dict[st
                 "variant_id": variant.id,
                 "person_id": person.id,
                 "subscription_id": cand.subscription.id if cand.subscription else None,
-                "phone_e164": raw_phone or None,
-                "wa_id": wa_id or None,
+                **snapshot,
                 "status": status,
                 "skip_reason": skip_reason,
                 "favorite_class_type_id": favorite.class_type_id if favorite else None,

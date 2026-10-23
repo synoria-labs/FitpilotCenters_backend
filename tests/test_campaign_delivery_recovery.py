@@ -426,3 +426,244 @@ async def test_real_concurrent_alias_workers_send_only_once(monkeypatch):
                 await db.execute(delete(People).where(People.id.in_(people_ids)))
                 await db.execute(delete(WhatsAppTemplate).where(WhatsAppTemplate.id == tid))
                 await db.commit()
+
+# Recovery by cause: manual authorization remains separate from automatic retries.
+@pytest.mark.parametrize('code,cause', [
+    (131049, 'meta_limit'), (1, 'meta_temporary'), (2, 'meta_temporary'), (4, 'meta_temporary'),
+    (80007, 'meta_temporary'), (130429, 'meta_temporary'), (131000, 'meta_temporary'),
+    (131016, 'meta_temporary'), (131056, 'meta_temporary'), (133004, 'meta_temporary'),
+    (131026, 'bad_number'), (131021, 'bad_number'), (100, 'other_error'),
+    (132000, 'other_error'), (130472, 'other_error'), (131047, 'other_error'), (131051, 'other_error'),
+    (368, 'other_error'),
+])
+async def test_recovery_classifies_attempt_codes_and_legacy_errors(db, code, cause):
+    c, r = await seed(db, status='failed')
+    r.error = f'(#%s) Original rejection' % code
+    assert d.recovery_cause(r, [])[0] == cause
+    r.error = f'Meta {code}: Original rejection'
+    assert d.recovery_cause(r, [])[0] == cause
+    a = await attempt(db, c, r)
+    a.state, a.error_code, a.error_detail = 'failed', code, 'Original cause'
+    assert d.recovery_cause(r, [a])[0] == cause
+    assert str(code) in d.recovery_cause(r, [a])[1]
+
+
+async def test_recovery_only_queues_selected_causes_and_empty_selection_is_safe(db):
+    c, r = await seed(db, status='failed', policy='allow_additional')
+    r.error = 'Meta 131000: temporary'
+    p = People(full_name='Review parameters', phone_number='5218710001111')
+    db.add(p)
+    await db.flush()
+    other = CampaignRecipient(campaign_id=c.id, person_id=p.id, wa_id=p.phone_number,
+                              dedup_key=f'other:{c.id}', status='failed', error='(#100) Invalid parameter')
+    db.add(other)
+    await db.flush()
+    preview = await d.recovery(db, c.id)
+    assert {x['key'] for x in preview['causes'] if x['selected_by_default']} == {
+        'daily_cap', 'meta_limit', 'meta_temporary', 'bad_number'}
+    assert (await d.recovery(db, c.id, execute=True, causes=[]))['eligible'] == 0
+    result = await d.recovery(db, c.id, execute=True, causes=['other_error'])
+    assert result['eligible'] == 1 and other.status == 'pending' and r.status == 'failed'
+    assert (await d.recovery(db, c.id))['recipients'][0]['person_name'] == 'Test member'
+    with pytest.raises(ValueError, match='desconocida'):
+        await d.recovery(db, c.id, causes=['anything'])
+
+
+@pytest.mark.parametrize('number', ['', '1234'])
+async def test_invalid_snapshot_requires_a_changed_valid_phone_before_dispatch(db, monkeypatch, number):
+    c, r = await seed(db, number=number, status='failed', policy='allow_additional')
+    r.error = '(#100) Invalid parameter'
+    preview = await d.recovery(db, c.id)
+    entry = preview['recipients'][0]
+    assert entry['cause'] == 'bad_number' and not entry['eligible']
+    assert 'Socios' in entry['blocked_reason']
+    person = await db.get(People, r.person_id)
+    person.phone_number, person.wa_id = '+52 871 222 3333', '5218719990000'
+    await db.flush()
+    corrected = await d.recovery(db, c.id)
+    assert corrected['eligible'] == 1 and r.wa_id == number  # Preview never mutates the snapshot.
+    await d.recovery(db, c.id, execute=True, causes=['bad_number'])
+    assert r.wa_id == '528712223333' and r.phone_key == '528712223333'
+    assert r.phone_e164 == '+52 871 222 3333'
+    c.status = 'sending'
+    cloud = AsyncMock(return_value={'wa_message_id': f'corrected-{r.id}'})
+    monkeypatch.setattr(outbound.cloud, 'send_template', cloud)
+    await svc._send_to_recipient(db, c, None, r)
+    assert cloud.await_count == 1 and cloud.await_args.kwargs['to'] == '528712223333'
+    assert person.wa_id == '5218719990000'
+
+
+async def test_undeliverable_number_must_change_not_just_be_reformatted(db):
+    c, r = await seed(db, status='failed')
+    r.error = 'Meta 131026: undeliverable'
+    person = await db.get(People, r.person_id)
+    person.phone_number = '+52 871 234 5678'
+    assert (await d.recovery(db, c.id, causes=['bad_number']))['eligible'] == 0
+
+
+async def test_converted_recipient_is_excluded_from_recovery_and_worker(db):
+    c, r = await seed(db, status='skipped')
+    r.converted = True
+    result = await d.recovery(db, c.id, execute=True)
+    assert result['eligible'] == 0 and 'convirtió' in result['recipients'][0]['blocked_reason']
+    await svc._send_to_recipient(db, c, None, r)
+    assert r.skip_reason == 'converted'
+    outbound.cloud.send_template.assert_not_awaited()
+
+
+@pytest.mark.parametrize('identity', ['person', 'phone'])
+@pytest.mark.parametrize('state', ['awaiting_payment', 'paid'])
+async def test_existing_event_buyers_are_excluded_by_person_or_normalized_phone(db, identity, state):
+    from app.models.specialEventModel import SpecialEventOrder
+    from app.crud.special_events.common import participant_key
+    from tests.test_special_event_payments import published_event
+    c, r = await seed(db, status='skipped')
+    _, event = await published_event(db)
+    c.special_event_id = event.id
+    order = SpecialEventOrder(event_id=event.id, person_id=r.person_id if identity == 'person' else None,
+                              participant_name='Buyer', participant_key=participant_key(r.wa_id) if identity == 'phone' else None,
+                              amount=500, status=state, hold_expires_at=d.now() + timedelta(hours=1))
+    db.add(order)
+    await db.flush()
+    result = await d.recovery(db, c.id, execute=True)
+    assert result['eligible'] == 0 and 'pedido' in result['recipients'][0]['blocked_reason']
+    assert await d.check_recipient(db, c, r) == 'event_buyer'
+
+
+async def test_unconfirmed_requires_explicit_cause_and_24_hours_then_sends_once(db, monkeypatch):
+    c, r = await seed(db, policy='allow_additional', status='sent')
+    a = await attempt(db, c, r)
+    monkeypatch.setattr(d, 'now', lambda: AT + timedelta(hours=23))
+    assert (await d.recovery(db, c.id, causes=['unconfirmed']))['eligible'] == 0
+    monkeypatch.setattr(d, 'now', lambda: AT + timedelta(hours=25))
+    assert (await d.recovery(db, c.id))['eligible'] == 0
+    preview = await d.recovery(db, c.id, causes=['unconfirmed'])
+    assert preview['eligible'] == 1
+    assert preview['recipients'][0]['cause'] == 'unconfirmed'
+    await d.recovery(db, c.id, execute=True, causes=['unconfirmed'])
+    assert r.skip_reason == 'recovery_unconfirmed'
+    await crud.defer_recipient(db, r, send_after=d.now(), reason='pending_action')
+    assert r.skip_reason == 'recovery_unconfirmed'
+    cloud = AsyncMock(return_value={'wa_message_id': f'manual-{r.id}'})
+    monkeypatch.setattr(outbound.cloud, 'send_template', cloud)
+    c.status = 'sending'
+    await svc._send_to_recipient(db, c, None, r)
+    await svc._send_to_recipient(db, c, None, r)
+    assert cloud.await_count == 1
+    assert a.state == 'accepted'  # Manual retry keeps the original evidence.
+
+
+async def test_late_delivery_cancels_manual_authorization_before_send(db, monkeypatch):
+    c, r = await seed(db, policy='allow_additional', status='sent')
+    a = await attempt(db, c, r)
+    monkeypatch.setattr(d, 'now', lambda: AT + timedelta(hours=25))
+    await d.recovery(db, c.id, execute=True, causes=['unconfirmed'])
+    await d.apply_status(db, wa_message_id=a.wa_message_id, meta_status='delivered', timestamp=d.now())
+    await svc._send_to_recipient(db, c, None, r)
+    outbound.cloud.send_template.assert_not_awaited()
+    assert (await d.recovery(db, c.id, causes=['unconfirmed']))['eligible'] == 0
+
+
+async def test_recency_recovery_requires_explicit_selection(db):
+    c, r = await seed(db, status='skipped')
+    r.skip_reason = 'recency_block'
+    assert (await d.recovery(db, c.id))['eligible'] == 0
+    assert (await d.recovery(db, c.id, execute=True, causes=['recency_block']))['eligible'] == 1
+    assert r.status == 'pending'
+
+
+async def test_manual_meta_limit_recovery_exceeds_auto_limit_but_waits_24h(db, monkeypatch):
+    c, r = await seed(db, auto=False)
+    for index in range(3):
+        a = await attempt(db, c, r, index)
+        await d.failure(db, c, r, a, 131049, 'Limit', AT + timedelta(hours=24 * index), schedule=False)
+    monkeypatch.setattr(d, 'now', lambda: AT + timedelta(hours=49))
+    result = await d.recovery(db, c.id, execute=True, causes=['meta_limit'])
+    assert result['eligible'] == 1 and r.send_after == AT + timedelta(hours=72)
+    assert not c.auto_retry_meta_limits
+
+
+async def test_graphql_accepts_causes_and_returns_typed_cause_details(db, monkeypatch):
+    import strawberry
+    import app.graphql.campaigns.mutations as mutations
+    import app.graphql.campaigns.queries as queries
+    c, r = await seed(db, status='failed')
+    r.error = 'Meta 131000: temporary'
+    for module in (queries, mutations):
+        monkeypatch.setattr(module, 'require_capability', AsyncMock(return_value=None))
+    schema = strawberry.Schema(query=queries.CampaignsQuery, mutation=mutations.CampaignsMutation)
+    context = SimpleNamespace(db=db, user=SimpleNamespace(id=1))
+    result = await schema.execute('''query($id:Int!,$causes:[String!]) {
+        previewCampaignRecovery(campaignId:$id,causes:$causes) {
+            eligible causes { key label eligible blocked selectedByDefault } recipients error
+        }
+    }''', variable_values={'id': c.id, 'causes': ['meta_temporary']}, context_value=context)
+    assert not result.errors
+    assert result.data['previewCampaignRecovery']['eligible'] == 1 and r.status == 'failed'
+    result = await schema.execute('''mutation($id:Int!,$causes:[String!]) {
+        recoverCampaignRecipients(campaignId:$id,causes:$causes) { success pending error }
+    }''', variable_values={'id': c.id, 'causes': []}, context_value=context)
+    assert not result.errors and result.data['recoverCampaignRecipients']['pending'] == 0
+    assert r.status == 'failed'
+
+
+async def test_latest_real_error_survives_a_local_omission_and_not_sent_attempt(db):
+    c, r = await seed(db, status='skipped')
+    r.skip_reason, r.error = 'daily_cap', None
+    a = await attempt(db, c, r)
+    a.state, a.error_code, a.error_detail = 'failed', 131048, 'Spam limit'
+    local = await attempt(db, c, r, 1)
+    local.state, local.wa_message_id = 'not_sent', None
+    assert d.recovery_cause(r, [a, local])[0] == 'other_error'
+    assert (await d.recovery(db, c.id))['eligible'] == 0
+
+
+async def test_stale_invalid_request_can_recover_to_a_different_valid_number(db):
+    c, r = await seed(db, status='sending', number='1234')
+    r.updated_at = d.now() - timedelta(hours=25)
+    a = await attempt(db, c, r)
+    a.state, a.started_at, a.accepted_at, a.wa_message_id = 'started', r.updated_at, None, None
+    person = await db.get(People, r.person_id)
+    person.phone_number = '5218712223333'
+    await db.flush()
+    assert (await d.recovery(db, c.id, execute=True, causes=['bad_number']))['eligible'] == 1
+    assert r.wa_id == '5218712223333'
+
+
+async def test_duplicate_owner_does_not_change_when_cause_selection_changes(db, monkeypatch):
+    c, first = await seed(db, policy='allow_additional', status='sent')
+    await attempt(db, c, first)
+    monkeypatch.setattr(d, 'now', lambda: AT + timedelta(hours=25))
+    alias = CampaignRecipient(campaign_id=c.id, person_id=first.person_id, wa_id=first.wa_id,
+                              dedup_key=f'alias-recovery:{c.id}', status='skipped', skip_reason='recency_block')
+    db.add(alias)
+    await db.flush()
+    for selected in (None, ['unconfirmed'], ['recency_block']):
+        preview = await d.recovery(db, c.id, causes=selected)
+        rows = {row['recipient_id']: row for row in preview['recipients']}
+        assert rows[first.id]['eligible'] and rows[alias.id]['reason'] == 'duplicates'
+    assert (await d.recovery(db, c.id, execute=True, causes=['recency_block']))['eligible'] == 0
+
+
+async def test_new_live_attempt_is_not_overridden_by_old_manual_authorization(db, monkeypatch):
+    c, r = await seed(db, policy='allow_additional', status='sent')
+    await attempt(db, c, r)
+    monkeypatch.setattr(d, 'now', lambda: AT + timedelta(hours=25))
+    await d.recovery(db, c.id, execute=True, causes=['unconfirmed'])
+    live = await attempt(db, c, r, 2)
+    live.started_at, live.state = d.now(), 'started'
+    await db.flush()
+    assert await d.check_recipient(db, c, r) == 'uncertain_previous_send'
+
+
+async def test_send_guard_refreshes_a_delivery_written_while_models_were_cached(db, monkeypatch):
+    from sqlalchemy import update
+    c, r = await seed(db, policy='allow_additional', status='sent')
+    a = await attempt(db, c, r)
+    monkeypatch.setattr(d, 'now', lambda: AT + timedelta(hours=25))
+    await d.recovery(db, c.id, execute=True, causes=['unconfirmed'])
+    await db.execute(update(Attempt).where(Attempt.id == a.id).values(delivered_at=d.now(), state='delivered')
+                     .execution_options(synchronize_session=False))
+    assert a.delivered_at is None  # Simulate a webhook processed by a different session.
+    assert await d.check_recipient(db, c, r) == 'already_delivered'
+    assert a.delivered_at is not None

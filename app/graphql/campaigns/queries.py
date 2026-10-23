@@ -131,12 +131,14 @@ class CampaignsQuery:
         )
 
     @strawberry.field(permission_classes=[IsAuthenticated])
-    async def preview_campaign_recovery(self, info: Info, campaign_id: int) -> CampaignRecoveryPreview:
+    async def preview_campaign_recovery(
+        self, info: Info, campaign_id: int, causes: Optional[List[str]] = None,
+    ) -> CampaignRecoveryPreview:
         if error := await require_capability(info, SEND_CAMPAIGNS):
             return CampaignRecoveryPreview(error=error)
         from app.services.campaign_delivery import recovery
         try:
-            return CampaignRecoveryPreview(**await recovery(info.context.db, campaign_id))
+            return CampaignRecoveryPreview.from_dict(await recovery(info.context.db, campaign_id, causes=causes))
         except ValueError as exc:
             return CampaignRecoveryPreview(error=str(exc))
 
