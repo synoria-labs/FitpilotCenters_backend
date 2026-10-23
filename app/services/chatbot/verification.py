@@ -182,6 +182,11 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
     elif kind in ("information", "purchase", "clarification"):
         # A proposed checkout must also refer to the requested day, never yesterday's purchase.
         if kind == "purchase":
+            from app.services.chatbot.purchase_status import PROCESSING_STATUSES
+            if (pending is not None and ctx.checked_payment_reference
+                    and pending.external_reference == ctx.checked_payment_reference
+                    and ctx.provider_payment_status in PROCESSING_STATUSES):
+                return "No envíes otro enlace: el proveedor/pago registrado indica un pago aprobado, en proceso o que requiere revisión. Informa el estado y verifica la reserva por separado."
             if pending is not None and pending.action_type == "buy_day_pass":
                 session = await ctx.db.get(ClassSession, int(pending.payload["session_id"]), populate_existing=True)
                 if session is None or session.status != "scheduled" or session.start_at <= datetime.now(timezone.utc):
@@ -219,6 +224,8 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
             elif re.search(r"mercadopago\.|mpago\.", text, re.I):
                 return "No hay una compra pendiente verificable para enviar ese enlace. Propón primero la compra o indica order_id para el evento."
         if ctx.validated_reply is None:
+            if kind != "purchase" and re.search(r"(?:mercadopago\.|mpago\.)", text, re.I):
+                return "Los enlaces de pago se envían con purchase y una compra vigente verificada; no reutilices enlaces de capturas o del historial."
             membership_topic = re.search(r"\b(?:membres[ií]a|mensual|semanal|paquete|plan|mi mes)\b",
                                          ctx.user_text + " " + text, re.I)
             if membership_topic and re.search(r"\b(?:cubre|incluye|incluidas|abarca|empieza|comienza)\b.{0,90}"

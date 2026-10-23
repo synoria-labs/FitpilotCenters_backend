@@ -8,6 +8,7 @@ from app.crud.ownerAgentCrud import OwnerAgentConfigData
 from app.services.chatbot.timefmt import fmt_now_es
 from app.services.owner_agent.env import owner_agent_env
 from app.core.ai_models import model_request_options
+from app.services.chatbot.image_context import ADMIN_VISION_RULES
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ def build_system_prompt(
         _BASE_RULES,
         f"Fecha y hora actual: {fmt_now_es()} (America/Mexico_City). Usa esta fecha para interpretar hoy, manana, esta semana y este mes.",
         _ACTION_RULES,
+        ADMIN_VISION_RULES,
     ]
     if config.system_prompt:
         parts.append("Instrucciones configuradas:\n" + config.system_prompt.strip())
@@ -63,9 +65,10 @@ async def run_agent(
     *,
     config: OwnerAgentConfigData,
     tools: list,
-    history: list[tuple[str, str]],
+    history: list[tuple[str, str | list]],
     user_text: str,
     pending_note: Optional[str] = None,
+    image_content: Optional[list] = None,
 ) -> Optional[str]:
     """Run one owner-agent turn and return the text response."""
     try:
@@ -95,14 +98,14 @@ async def run_agent(
 
     messages = []
     for role, text in history:
-        clean = (text or "").strip()
+        clean = text if isinstance(text, list) else (text or "").strip()
         if not clean:
             continue
         if role == "inbound":
             messages.append(HumanMessage(content=clean))
         else:
             messages.append(AIMessage(content=clean))
-    messages.append(HumanMessage(content=(user_text or "").strip()))
+    messages.append(HumanMessage(content=image_content if image_content is not None else (user_text or "").strip()))
 
     result = await agent.ainvoke(
         {"messages": messages},

@@ -16,6 +16,10 @@ prompts, el estado de los bots ni los teléfonos autorizados. La optimización d
 prompt también acepta el modelo seleccionado en el editor antes de guardar, sin
 persistir ese cambio ni sobrescribir el modelo del chat.
 
+Los bots de clientes y Admin también usan su selección para interpretar imágenes
+de WhatsApp. El modelo debe admitir entradas visuales; los adjuntos y sus límites
+se describen en [Imágenes como contexto](imagenes_chatbot.md).
+
 ## Contrato backend/frontend
 
 `chatbotConfig` y `saveChatbotConfig` exponen `model`, `templateAiModel` y

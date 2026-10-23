@@ -90,6 +90,8 @@ class ChatbotContext:
     verification_result: str = "not_called"
     tools_used: list = field(default_factory=list)
     reply_request: Optional[dict] = None
+    checked_payment_reference: Optional[str] = None
+    provider_payment_status: Optional[str] = None
 
 
 def _to_decimal(value) -> Optional[Decimal]:
@@ -307,6 +309,14 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
                          f"Grupo completo ({len(group)} clases por semana); no es un solo día.")
         return "\n".join(lines)
 
+    async def get_my_purchase_status() -> str:
+        """Consulta la compra de ESTA conversación y sus pagos, también en Mercado Pago si está configurado.
+
+        Úsala ante capturas de errores o comprobantes; no acredita pagos ni genera enlaces.
+        """
+        from app.services.chatbot.purchase_status import purchase_status
+        return await purchase_status(ctx)
+
     async def get_membership_coverage(plan_id: int, template_id: Optional[int] = None) -> str:
         """Cobertura real del paquete: días completos, clases del periodo e inicio de vigencia."""
         try:
@@ -355,6 +365,11 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
     ) -> str:
         """Store the pending action. If MercadoPago is required (and amount>0), create a payment
         link (status awaiting_payment) and return it; otherwise leave it pending for a 'Sí'."""
+        from app.services.chatbot.purchase_status import PROCESSING_STATUSES
+        if ctx.provider_payment_status in PROCESSING_STATUSES and ctx.checked_payment_reference:
+            active = await pending_crud.get_active_pending(db, ctx.conversation_id)
+            if active and active.external_reference == ctx.checked_payment_reference:
+                return "El pago de la compra actual está aprobado/en proceso o requiere revisión. No generes otro enlace ni solicites otro cobro."
         if ctx.mp_required and not ctx.require_mp_payment and amount and float(amount) > 0:
             # Required but not configured: say so. Falling back to a text confirmation would
             # record a COMPLETED payment nobody collected.
@@ -688,6 +703,7 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         (respond_to_customer, "respond_to_customer", respond_to_customer.__doc__),
         (get_business_info, "get_business_info", "Información del negocio (nombre, dirección, horarios, teléfono, políticas)."),
         (get_membership_plans, "get_membership_plans", "Planes de membresía disponibles con precio y duración."),
+        (get_my_purchase_status, "get_my_purchase_status", get_my_purchase_status.__doc__),
         (get_membership_coverage, "get_membership_coverage", get_membership_coverage.__doc__),
         (reserve_with_membership, "reserve_with_membership", reserve_with_membership.__doc__),
         (list_available_classes, "list_available_classes", "Clases con cupo disponible en los próximos días (incluye el id de cada clase)."),

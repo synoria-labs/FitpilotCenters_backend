@@ -17,6 +17,7 @@ from app.core.chatbot_env import chatbot_env
 from app.core.ai_models import model_request_options
 from app.crud.chatbotConfigCrud import ChatbotConfigData
 from app.services.chatbot.timefmt import fmt_now_es
+from app.services.chatbot.image_context import VISION_RULES
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,7 @@ def build_system_prompt(
     if event_note:
         parts.append(event_note)
     parts.append(_TOOL_RULES)
+    parts.append(VISION_RULES)
     parts.append(
         "OBLIGATORIO: toda respuesta final se entrega con respond_to_customer. Usa kind=purchase "
         "para compras y links, clarification para aclaraciones, information para información general. "
@@ -175,6 +177,7 @@ async def run_agent(
     member_note: Optional[str] = None,
     campaign_note: Optional[str] = None,
     event_note: Optional[str] = None,
+    image_content: Optional[list] = None,
 ) -> Optional[str]:
     """Run one agent turn and return the reply text (or None if nothing to say)."""
     llm = build_llm(config)
@@ -183,7 +186,7 @@ async def run_agent(
     )
     agent = create_react_agent(llm, tools, prompt=system_prompt)
 
-    messages: List[BaseMessage] = list(history) + [HumanMessage(content=user_text)]
+    messages: List[BaseMessage] = list(history) + [HumanMessage(content=image_content if image_content is not None else user_text)]
     result = await agent.ainvoke(
         {"messages": messages},
         config={"recursion_limit": _RECURSION_LIMIT},

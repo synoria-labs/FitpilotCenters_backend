@@ -37,6 +37,7 @@ async def process(payload: Dict[str, Any]) -> List[int]:
     """Process a full webhook payload. Returns the ids of newly inserted messages."""
     new_message_ids: List[int] = []
     pending_media: List[tuple] = []  # (media_row_id, cloud_media_id)
+    pending_hooks: List[int] = []
 
     async with async_session_factory() as db:
         for entry in payload.get("entry", []) or []:
@@ -52,7 +53,7 @@ async def process(payload: Dict[str, Any]) -> List[int]:
                         profile_names[wa_id] = name
 
                 for msg in value.get("messages", []) or []:
-                    created = await _process_message(db, msg, profile_names, pending_media)
+                    created = await _process_message(db, msg, profile_names, pending_media, pending_hooks)
                     if created is not None:
                         new_message_ids.append(created)
 
@@ -65,6 +66,20 @@ async def process(payload: Dict[str, Any]) -> List[int]:
     for media_row_id, cloud_media_id in pending_media:
         media_service.schedule_download(media_row_id, cloud_media_id)
 
+    # Attachments and their messages must be visible before the agent opens its own session.
+    from app.models import Message, Contact, Conversation
+    async with async_session_factory() as db:
+        for message_id in pending_hooks:
+            try:
+                message = await db.get(Message, message_id)
+                contact = await db.get(Contact, message.contact_id)
+                conversation = await db.get(Conversation, message.conversation_id)
+                await on_inbound_message(db, message, contact, conversation)
+            except Exception:  # noqa: BLE001 - a failed hook must not fail webhook ingestion
+                await db.rollback()
+                logger.exception("post-commit inbound hook failed message=%s", message_id)
+        await db.commit()
+
     return new_message_ids
 
 
@@ -73,6 +88,7 @@ async def _process_message(
     msg: Dict[str, Any],
     profile_names: Dict[str, str],
     pending_media: List[tuple],
+    pending_hooks: Optional[List[int]] = None,
 ) -> Optional[int]:
     wa_id = msg.get("from")
     wa_message_id = msg.get("id")
@@ -139,10 +155,14 @@ async def _process_message(
         )
         pending_media.append((media_row.id, media_obj["id"]))
 
-    try:
-        await on_inbound_message(db, message, contact, conversation)
-    except Exception as e:  # noqa: BLE001 - never let the hook break ingestion
-        logger.warning("on_inbound_message hook failed: %s", e)
+    if pending_hooks is not None:
+        pending_hooks.append(message.id)
+    else:
+        # Internal/test callers that own the transaction retain the existing hook contract.
+        try:
+            await on_inbound_message(db, message, contact, conversation)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("on_inbound_message hook failed: %s", e)
 
     # A reply is the only source of the campaign 'replied' status (Meta callbacks stop at
     # 'read'). Never let campaign tracking break webhook ingestion.
