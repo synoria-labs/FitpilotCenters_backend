@@ -30,10 +30,35 @@ _OPTIN_REPLY = (
 )
 
 
+# Opt-out keywords that also mean "cancel what I'm buying". While a purchase is in progress the
+# customer almost certainly means the purchase, not "never message me again".
+_PURCHASE_AMBIGUOUS = {"CANCELAR"}
+
+
 def _normalize(text: str) -> str:
     t = unicodedata.normalize("NFKD", (text or "").strip())
     t = "".join(c for c in t if not unicodedata.combining(c))  # strip accents
     return t.upper()
+
+
+async def _purchase_in_progress(db: AsyncSession, conversation) -> bool:
+    """A chatbot purchase or a special-event order is waiting on this conversation."""
+    from sqlalchemy import select
+
+    from app.crud import chatbotPendingCrud
+    from app.models.specialEventModel import ORDER_AWAITING_PAYMENT, SpecialEventOrder
+
+    if await chatbotPendingCrud.get_active_pending(db, conversation.id) is not None:
+        return True
+    row = await db.execute(
+        select(SpecialEventOrder.id)
+        .where(
+            SpecialEventOrder.conversation_id == conversation.id,
+            SpecialEventOrder.status == ORDER_AWAITING_PAYMENT,
+        )
+        .limit(1)
+    )
+    return row.first() is not None
 
 
 async def handle_keyword(db: AsyncSession, message, contact, conversation) -> bool:
@@ -42,6 +67,9 @@ async def handle_keyword(db: AsyncSession, message, contact, conversation) -> bo
     is_optout = word in outbound_config.OPTOUT_KEYWORDS
     is_optin = word in outbound_config.OPTIN_KEYWORDS
     if not (is_optout or is_optin):
+        return False
+    if is_optout and word in _PURCHASE_AMBIGUOUS and await _purchase_in_progress(db, conversation):
+        # Let the assistant cancel the purchase instead of unsubscribing the customer.
         return False
 
     person_id = await membersCrud.get_member_id_by_wa_id(db, contact.wa_id)

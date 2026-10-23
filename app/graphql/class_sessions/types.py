@@ -337,7 +337,7 @@ class SeatOccupant:
 class SeatInfo:
     seat_id: int
     label: str
-    status: str  # 'free' | 'occupied'
+    status: str  # 'free' | 'occupied' | 'displaced' (booked in a class a special event took)
     occupant: Optional[SeatOccupant]
     will_expire_soon: bool
 
@@ -353,3 +353,7 @@ class SessionWithSeats:
     template_id: Optional[int]
     class_type_name: Optional[str]
     seats: List[SeatInfo]
+    # 'scheduled' | 'canceled' | 'completed' | 'displaced'
+    status: str = "scheduled"
+    # Name of the special event that took this class (status 'displaced').
+    displaced_by_event: Optional[str] = None

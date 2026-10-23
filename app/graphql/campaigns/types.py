@@ -43,6 +43,8 @@ class CampaignType:
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
     template: Optional[WhatsAppTemplate] = None
+    # Special event this campaign promotes (set from the Eventos especiales screen).
+    special_event_id: Optional[int] = None
 
     @classmethod
     def from_data(
@@ -77,6 +79,7 @@ class CampaignType:
             created_at=data.created_at,
             updated_at=data.updated_at,
             template=template,
+            special_event_id=data.special_event_id,
         )
 
 

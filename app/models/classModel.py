@@ -106,7 +106,11 @@ class ClassSession(Base):
 
     __table_args__ = (
         CheckConstraint("capacity > 0", name="ck_session_capacity"),
-        CheckConstraint("status IN ('scheduled','canceled','completed')", name="ck_session_status"),
+        # 'displaced': a special event took this slot (see specialEventModel). The row and its
+        # reservations are kept; booking paths only accept 'scheduled'.
+        CheckConstraint(
+            "status IN ('scheduled','canceled','completed','displaced')", name="ck_session_status"
+        ),
         Index("idx_sessions_time", "start_at", "venue_id"),
         Index("idx_sessions_instructor", "instructor_id", "start_at"),
         Index("idx_sessions_template", "template_id", "start_at"),
@@ -137,7 +141,12 @@ class Reservation(Base):
 
     __table_args__ = (
         UniqueConstraint("session_id", "person_id", name="uq_session_person"),
-        CheckConstraint("status IN ('reserved','waitlisted','canceled','checked_in','no_show')", name="ck_reservation_status"),
+        # 'displaced': the class was taken over by a special event. Not attendance, not an
+        # absence, not a consumed class; the client is listed for manual follow-up.
+        CheckConstraint(
+            "status IN ('reserved','waitlisted','canceled','checked_in','no_show','displaced')",
+            name="ck_reservation_status",
+        ),
         CheckConstraint("source IN ('manual','standing','override')", name="ck_reservation_source"),
         Index("uq_reservations_seat_once", "session_id", "seat_id", unique=True,
               postgresql_where="seat_id IS NOT NULL AND status IN ('reserved','checked_in')"),

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import selectinload
 
+from app.core.timezones import local_datetime
 from app.models.classModel import ClassSession, ClassTemplate, ClassType, Reservation
 from app.models.venueModel import Venue
 from app.crud.time_filters import between_dates, from_date, on_date, until_date
@@ -139,8 +140,9 @@ async def generate_sessions_from_template(
         # Check if current date matches template weekday (0=Sunday, 6=Saturday)
         if current_date.weekday() == (template.weekday - 1) % 7:  # Convert to Python weekday
 
-            # Create datetime for session start
-            session_start = datetime.combine(current_date, template.start_time_local)
+            # The template time is local wall-clock time. A naive datetime would be stored in
+            # the server's zone (UTC in the container), six hours early — see core/timezones.
+            session_start = local_datetime(current_date, template.start_time_local)
             session_end = session_start + timedelta(minutes=template.default_duration_min)
 
             # Check if session already exists for this date

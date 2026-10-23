@@ -27,6 +27,9 @@ from app.db.postgresql import engine  # noqa: E402 - must follow the policy abov
 async def db():
     async with engine.connect() as conn:
         outer_tx = await conn.begin()
+        # Production's Postgres runs in America/Mexico_City and day-bucketing queries rely on it
+        # (time_filters.py). Pin it per test so a UTC server (CI) answers like production.
+        await conn.exec_driver_sql("SET LOCAL TIME ZONE 'America/Mexico_City'")
         SessionMaker = async_sessionmaker(
             bind=conn,
             expire_on_commit=False,

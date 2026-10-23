@@ -84,6 +84,18 @@ async def _run_conversion_sweep_job() -> None:
         logger.exception("Campaign conversion sweep job failed")
 
 
+async def _run_special_event_sweep_job() -> None:
+    """Release lapsed special-event seat holds (after checking Mercado Pago for lost payments)."""
+    try:
+        from app.services.special_event_payments import sweep_holds
+
+        stats = await sweep_holds()
+        if any(stats.values()):
+            logger.info("Special event sweep completed: %s", stats)
+    except Exception:  # noqa: BLE001
+        logger.exception("Special event sweep job failed")
+
+
 class NotificationScheduler:
     def __init__(self) -> None:
         self._scheduler = None
@@ -128,6 +140,17 @@ class NotificationScheduler:
             max_instances=1,
             coalesce=True,
             misfire_grace_time=3600,
+        )
+        # Special-event holds last minutes, so they are swept often; each run is a handful of
+        # queries plus one Mercado Pago search per lapsed hold.
+        self._scheduler.add_job(
+            _run_special_event_sweep_job,
+            trigger=IntervalTrigger(minutes=2, timezone=_TIMEZONE),
+            id="special_event_hold_sweep",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=120,
         )
         self._scheduler.start()
         logger.info(

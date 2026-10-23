@@ -31,7 +31,8 @@ _TOOL_RULES = (
 )
 
 _PURCHASE_RULES = (
-    "Para que un cliente asista hay que COMPRAR un plan (no existe reserva gratis):\n"
+    "Para que un cliente asista a una CLASE REGULAR hay que COMPRAR un plan (no existe reserva "
+    "gratis):\n"
     "- PAQUETE (plan de horario fijo): usa propose_membership(plan_id, template_id, full_name si es "
     "cliente nuevo). Muestra los planes con get_membership_plans y los horarios con "
     "get_weekly_schedule (cada horario tiene un id=template). Reserva automáticamente todo el periodo. "
@@ -40,6 +41,20 @@ _PURCHASE_RULES = (
     "el plan diario con get_membership_plans y las clases con list_available_classes (cada clase tiene "
     "un id=session). Reserva ese día.\n"
     "El asiento/bici se asigna automáticamente; no le pidas el número al cliente."
+)
+
+_EVENT_RULES = (
+    "EVENTOS ESPECIALES (fechas únicas con precio propio, p. ej. una clase temática): NO son clases "
+    "regulares, NO se venden con pase diario ni con planes y NO usan ni modifican la membresía. "
+    "Obtén fecha, horario, lugar, qué incluye, precio y lugares SOLO de list_special_events y "
+    "get_special_event (nunca del texto de una campaña). Para reservar: identifica el evento, pide "
+    "el nombre completo del participante (si es el socio identificado comprando para sí, ya lo "
+    "tienes), repite evento, fecha, horario y precio, y llama a start_event_purchase; envía el link "
+    "tal cual. Una compra = un participante; para varias personas haz una compra por cada una. Un "
+    "cliente con clase regular a la misma hora SÍ puede comprar el evento. NUNCA digas que una "
+    "entrada está pagada o confirmada salvo que check_event_order_status diga PAGADA; la "
+    "confirmación oficial le llega sola por WhatsApp cuando Mercado Pago acredita el pago. Si "
+    "quiere cancelar una compra no pagada, usa cancel_event_order."
 )
 
 _CONFIRM_RULES_STRICT = (
@@ -70,6 +85,7 @@ def build_system_prompt(
     pending_note: Optional[str] = None,
     member_note: Optional[str] = None,
     campaign_note: Optional[str] = None,
+    event_note: Optional[str] = None,
 ) -> str:
     parts: List[str] = []
     if config.system_prompt:
@@ -86,8 +102,11 @@ def build_system_prompt(
         parts.append(pending_note)
     if campaign_note:
         parts.append(campaign_note)
+    if event_note:
+        parts.append(event_note)
     parts.append(_TOOL_RULES)
     parts.append(_PURCHASE_RULES)
+    parts.append(_EVENT_RULES)
     parts.append(_CONFIRM_RULES_STRICT if config.require_confirmation else _CONFIRM_RULES_RELAXED)
     if member_id is not None:
         parts.append(
@@ -132,11 +151,12 @@ async def run_agent(
     pending_note: Optional[str] = None,
     member_note: Optional[str] = None,
     campaign_note: Optional[str] = None,
+    event_note: Optional[str] = None,
 ) -> Optional[str]:
     """Run one agent turn and return the reply text (or None if nothing to say)."""
     llm = build_llm(config)
     system_prompt = build_system_prompt(
-        config, business_info, member_id, pending_note, member_note, campaign_note
+        config, business_info, member_id, pending_note, member_note, campaign_note, event_note
     )
     agent = create_react_agent(llm, tools, prompt=system_prompt)
 

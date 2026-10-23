@@ -20,6 +20,13 @@ from app.models.notificationModel import NotificationSetting, NotificationLog
 from app.models.chatbotModel import ChatbotConfig, ChatbotPendingAction
 from app.models.estimationModel import FitnessEstimationConfig
 from app.models.campaignsModel import Campaign, CampaignVariant, CampaignRecipient
+from app.models.specialEventModel import (
+    SpecialEvent,
+    SpecialEventSeat,
+    SpecialEventOrder,
+    SpecialEventTakeover,
+    SpecialEventDisplacement,
+)
 from app.models.posModel import (
     Product, CashSession, CashMovement, Sale, SaleLineItem, SalePayment
 )
@@ -45,6 +52,8 @@ __all__ = [
     "ChatbotConfig", "ChatbotPendingAction",
     "FitnessEstimationConfig",
     "Campaign", "CampaignVariant", "CampaignRecipient",
+    "SpecialEvent", "SpecialEventSeat", "SpecialEventOrder", "SpecialEventTakeover",
+    "SpecialEventDisplacement",
     "Product", "CashSession", "CashMovement", "Sale", "SaleLineItem", "SalePayment",
     "OwnerAgentConfig", "OwnerAgentAuthorizedPhone", "OwnerAgentPendingAction",
     "OwnerAgentAuditLog", "OwnerTask",

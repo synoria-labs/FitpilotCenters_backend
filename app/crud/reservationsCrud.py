@@ -14,6 +14,7 @@ from app.models import (
     Reservation, People, Seat, ClassSession, ClassType, Venue,
     SeatType, MembershipSubscription
 )
+from app.core.timezones import local_date
 from app.crud.locks import lock_class_session
 from app.crud.time_filters import between_dates
 
@@ -545,6 +546,7 @@ async def _get_sessions_with_seats_range(
     # Todas las reservas del rango en UNA query (antes: una query por sesión, N+1
     # que en la vista semanal significaba ~50 round-trips).
     reservations_by_session: Dict[int, List[Reservation]] = {}
+    displaced_by: Dict[int, str] = {}
     if sessions:
         session_ids = [s.id for s in sessions]
         all_res_result = await db.execute(
@@ -554,19 +556,34 @@ async def _get_sessions_with_seats_range(
                 and_(
                     Reservation.session_id.in_(session_ids),
                     Reservation.seat_id.isnot(None),
-                    Reservation.status.in_(['reserved', 'checked_in']),
+                    # 'displaced' only matters for classes a special event took: their seats show
+                    # who was booked (status 'displaced') instead of looking empty.
+                    Reservation.status.in_(['reserved', 'checked_in', 'displaced']),
                 )
             )
         )
         for r in all_res_result.scalars().all():
             reservations_by_session.setdefault(r.session_id, []).append(r)
+        displaced_ids = [s.id for s in sessions if s.status == 'displaced']
+        if displaced_ids:
+            from app.models.specialEventModel import SpecialEvent, SpecialEventTakeover
+
+            takeover_rows = await db.execute(
+                select(SpecialEventTakeover.session_id, SpecialEvent.name)
+                .join(SpecialEvent, SpecialEvent.id == SpecialEventTakeover.event_id)
+                .where(
+                    SpecialEventTakeover.session_id.in_(displaced_ids),
+                    SpecialEventTakeover.status == 'active',
+                )
+            )
+            displaced_by = {sid: name for sid, name in takeover_rows.all()}
 
     results: List[Dict[str, Any]] = []
     seats_cache: Dict[int, List] = {}
     expiry_cache: Dict[tuple[int, date], bool] = {}
 
     async def _will_expire_soon(person_id: int, session_start_at: datetime) -> bool:
-        cache_key = (person_id, session_start_at.date())
+        cache_key = (person_id, local_date(session_start_at))
         if cache_key in expiry_cache:
             return expiry_cache[cache_key]
 
@@ -589,7 +606,7 @@ async def _get_sessions_with_seats_range(
             expiry_cache[cache_key] = False
             return False
 
-        days_left = (ms.end_at.date() - session_start_at.date()).days
+        days_left = (local_date(ms.end_at) - local_date(session_start_at)).days
         will_expire = 0 <= days_left <= 2
         expiry_cache[cache_key] = will_expire
         return will_expire
@@ -609,8 +626,13 @@ async def _get_sessions_with_seats_range(
 
         # Reservations for this session mapped by seat_id (pre-cargadas en bloque)
         reservations = reservations_by_session.get(session.id, [])
+        session_displaced = session.status == 'displaced'
         reserved_by_seat: Dict[int, People] = {}
         for r in reservations:
+            # In a regular class only active bookings occupy a bike; a displaced booking is shown
+            # only on the displaced class itself.
+            if r.status == 'displaced' and not session_displaced:
+                continue
             if r.seat_id is not None and r.person is not None:
                 reserved_by_seat[r.seat_id] = r.person
 
@@ -619,11 +641,14 @@ async def _get_sessions_with_seats_range(
         for seat in venue_seats:
             occupant = reserved_by_seat.get(seat.id)
             if occupant:
-                will_exp = await _will_expire_soon(occupant.id, session.start_at)
+                will_exp = (
+                    False if session_displaced
+                    else await _will_expire_soon(occupant.id, session.start_at)
+                )
                 seats_payload.append({
                     'seat_id': seat.id,
                     'label': seat.label,
-                    'status': 'occupied',
+                    'status': 'displaced' if session_displaced else 'occupied',
                     'occupant': {
                         'person_id': occupant.id,
                         'full_name': occupant.full_name or '',
@@ -631,10 +656,11 @@ async def _get_sessions_with_seats_range(
                     'will_expire_soon': will_exp,
                 })
             else:
+                # A displaced class cannot be booked: none of its bikes is "free".
                 seats_payload.append({
                     'seat_id': seat.id,
                     'label': seat.label,
-                    'status': 'free',
+                    'status': 'displaced' if session_displaced else 'free',
                     'occupant': None,
                     'will_expire_soon': False,
                 })
@@ -649,6 +675,8 @@ async def _get_sessions_with_seats_range(
             'template_id': session.template_id,
             'class_type_name': session.class_type.name if session.class_type else None,
             'seats': seats_payload,
+            'status': session.status,
+            'displaced_by_event': displaced_by.get(session.id),
         }
 
         if include_class_type_id:

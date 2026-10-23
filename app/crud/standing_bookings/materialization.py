@@ -6,12 +6,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
+from app.core.timezones import local_date
 from app.models.classModel import (
     ClassSession,
     Reservation,
     StandingBooking,
     StandingBookingException,
 )
+from app.models.specialEventModel import SESSION_DISPLACED
 
 from app.crud.locks import lock_class_session, lock_materialization_batch
 from app.crud.time_filters import between_dates
@@ -150,7 +152,7 @@ async def materialize_standing_bookings_for_session(
         stats["reservations_created"] = 0
         return stats
 
-    session_date = session.start_at.date()
+    session_date = local_date(session.start_at)
 
     standing_stmt = select(StandingBooking).where(
         and_(
@@ -206,7 +208,7 @@ async def _materialize_single_standing_booking(
                     max(start_date, standing_booking.start_date),
                     min(end_date, standing_booking.end_date),
                 ),
-                ClassSession.status == "scheduled",
+                ClassSession.status.in_(("scheduled", SESSION_DISPLACED)),
             )
         )
         .order_by(ClassSession.start_at)
@@ -216,7 +218,18 @@ async def _materialize_single_standing_booking(
     sessions = sessions_result.scalars().all()
 
     for session in sessions:
-        session_date = session.start_at.date()
+        session_date = local_date(session.start_at)
+
+        if session.status == SESSION_DISPLACED:
+            # A special event took this class. Don't book it; record the client as displaced so
+            # the follow-up list includes members who enrolled after the takeover.
+            if session_date not in exceptions:
+                from app.crud.special_events.takeover import record_late_displacement
+
+                recorded = await record_late_displacement(db, session, standing_booking)
+                if recorded is not None:
+                    stats["recorded_displaced"] = stats.get("recorded_displaced", 0) + 1
+            continue
 
         if session_date in exceptions:
             exception = exceptions[session_date]
@@ -348,7 +361,7 @@ async def get_materialization_preview(
 
     preview = []
     for session in sessions:
-        session_date = session.start_at.date()
+        session_date = local_date(session.start_at)
 
         exception = exceptions.get(session_date)
         if exception:

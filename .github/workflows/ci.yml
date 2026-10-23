@@ -27,6 +27,9 @@ jobs:
           POSTGRES_USER: ci
           POSTGRES_PASSWORD: ci
           POSTGRES_DB: fitpilot_test
+          # Same zone as production and docker-compose.dev.yml: day-bucketing queries
+          # (time_filters.py) and the data migrations depend on the server's TimeZone.
+          TZ: America/Mexico_City
         ports:
           - 5432:5432
         options: >-

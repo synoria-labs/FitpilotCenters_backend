@@ -4,6 +4,7 @@ from typing import Dict, List, Optional
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timezones import local_date
 from app.models.classModel import ClassTemplate, ClassSession, StandingBooking, Reservation
 from app.models.venueModel import Seat
 from app.crud.time_filters import between_dates
@@ -78,7 +79,9 @@ async def _load_sessions_by_template_ids(
     )
     result = await db.execute(stmt)
     sessions = result.scalars().all()
-    return {(session.template_id, session.start_at.date()): session for session in sessions}
+    # Key by the LOCAL day: start_at comes back in UTC, so an evening class would otherwise
+    # be filed under the next day and miss its counterpart in the target template.
+    return {(session.template_id, local_date(session.start_at)): session for session in sessions}
 
 
 async def _get_group_standing_bookings(

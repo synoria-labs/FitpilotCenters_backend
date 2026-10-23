@@ -81,15 +81,38 @@ async def receive_mercadopago(request: Request):
         return JSONResponse({"status": "ok"})
 
     try:
-        await _process_approved_payment(payment_id)
+        retry = await _process_payment(payment_id)
     except Exception:  # noqa: BLE001
         logger.exception("MercadoPago webhook processing failed (id=%s)", payment_id)
+        retry = False
 
+    if retry:
+        # Special-event settlement is idempotent, so a transient failure asks Mercado Pago to
+        # deliver the notification again instead of losing it (the sweep is a second net).
+        return JSONResponse({"status": "retry"}, status_code=500)
     return JSONResponse({"status": "ok"})
 
 
-async def _process_approved_payment(payment_id: str) -> None:
+async def _process_payment(payment_id: str) -> bool:
+    """Route by external_reference. Returns True when Mercado Pago should retry."""
     payment = await mercadopago_service.get_payment(payment_id)
+    from app.services import special_event_payments
+
+    if special_event_payments.is_event_reference(payment.get("external_reference")):
+        try:
+            await special_event_payments.process_payment_notification(payment_id, payment)
+        except Exception:  # noqa: BLE001
+            logger.exception("Special event payment %s could not be settled; asking for retry", payment_id)
+            return True
+        return False
+
+    await _process_approved_payment(payment_id, payment)
+    return False
+
+
+async def _process_approved_payment(payment_id: str, payment: Optional[dict] = None) -> None:
+    if payment is None:
+        payment = await mercadopago_service.get_payment(payment_id)
     status = (payment.get("status") or "").lower()
     external_reference = payment.get("external_reference")
     if status != "approved" or not external_reference:

@@ -51,6 +51,8 @@ from app.graphql.owner_agent.mutations import OwnerAgentMutation
 from app.graphql.verification.mutations import StepUpMutation
 from app.graphql.pos.queries import PosQuery
 from app.graphql.pos.mutations import PosMutation
+from app.graphql.special_events.queries import SpecialEventsQuery
+from app.graphql.special_events.mutations import SpecialEventsMutation
 
 logger = logging.getLogger(__name__)
 
@@ -73,13 +75,13 @@ except ImportError as e:
         pass
 
 @strawberry.type
-class Query(UserQuery, MembersQuery, MembershipsQuery, ReservationQuery, StandingBookingQuery, SessionQuery, ClassSessionQueries, DashboardQuery, WhatsAppChatQuery, WhatsAppTemplateQuery, NotificationSettingsQuery, ChatbotConfigQuery, FitnessEstimationQuery, CampaignsQuery, PermissionsQuery, OwnerAgentQuery, PosQuery):
+class Query(UserQuery, MembersQuery, MembershipsQuery, ReservationQuery, StandingBookingQuery, SessionQuery, ClassSessionQueries, DashboardQuery, WhatsAppChatQuery, WhatsAppTemplateQuery, NotificationSettingsQuery, ChatbotConfigQuery, FitnessEstimationQuery, CampaignsQuery, PermissionsQuery, OwnerAgentQuery, PosQuery, SpecialEventsQuery):
     @strawberry.field
     def hello(self) -> str:
         return "Hello from GraphQL!"
 
 @strawberry.type
-class Mutation(AuthMutation, UserMutation, MemberMutation, MembershipMutation, ReservationMutation, StandingBookingMutation, SessionMutation, ClassSessionMutations, WhatsAppChatMutation, WhatsAppTemplateMutation, NotificationSettingsMutation, ChatbotConfigMutation, FitnessEstimationMutation, CampaignsMutation, PermissionsMutation, OwnerAgentMutation, PosMutation, StepUpMutation):
+class Mutation(AuthMutation, UserMutation, MemberMutation, MembershipMutation, ReservationMutation, StandingBookingMutation, SessionMutation, ClassSessionMutations, WhatsAppChatMutation, WhatsAppTemplateMutation, NotificationSettingsMutation, ChatbotConfigMutation, FitnessEstimationMutation, CampaignsMutation, PermissionsMutation, OwnerAgentMutation, PosMutation, StepUpMutation, SpecialEventsMutation):
     pass
 
 

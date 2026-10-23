@@ -20,6 +20,19 @@ _CRUD = os.path.join(_BACKEND_ROOT, "app", "crud")
 LOCKED_FUNCTIONS = {
     "reservationsCrud.py": ["create_reservation"],
     "standing_bookings/materialization.py": ["_create_reservation_if_possible"],
+    # Taking over / giving back a regular class rewrites its reservations: same per-class lock.
+    "special_events/takeover.py": ["apply_takeover", "apply_restore", "record_late_displacement"],
+}
+
+# file (relative to app/) -> functions that MUST call lock_special_event (seat holds, payment
+# settlement and capacity changes for one event count-then-write like class bookings do).
+EVENT_LOCKED_FUNCTIONS = {
+    "crud/special_events/orders.py": ["create_hold", "add_manual_participant", "cancel_order"],
+    "crud/special_events/events.py": [
+        "update_event", "publish_event", "unpublish_event", "cancel_event",
+    ],
+    "crud/special_events/takeover.py": ["apply_takeover", "apply_restore"],
+    "services/special_event_payments.py": ["_settle", "refund_order", "sweep_holds"],
 }
 
 
@@ -44,6 +57,14 @@ def test_capacity_paths_take_session_lock(rel_path, functions):
     locked = _functions_with_lock(path)
     missing = [f for f in functions if not locked.get(f, False)]
     assert not missing, f"{rel_path}: capacity paths without lock_class_session: {missing}"
+
+
+@pytest.mark.parametrize("rel_path,functions", sorted(EVENT_LOCKED_FUNCTIONS.items()))
+def test_special_event_paths_take_event_lock(rel_path, functions):
+    path = os.path.join(_BACKEND_ROOT, "app", *rel_path.split("/"))
+    calling = _functions_calling(path, "lock_special_event")
+    missing = [f for f in functions if not calling.get(f, False)]
+    assert not missing, f"{rel_path}: event paths without lock_special_event: {missing}"
 
 
 # Multi-session batch entry points MUST take the coarse batch lock to avoid an
