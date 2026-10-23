@@ -136,6 +136,7 @@ class SpecialEventsMutation:
                 capacity=input.capacity,
                 seat_ids=input.seat_ids,
                 hold_minutes=input.hold_minutes or 30,
+                payment_link_expires=True if input.payment_link_expires is None else input.payment_link_expires,
             )
             return event.id
 
@@ -155,7 +156,7 @@ class SpecialEventsMutation:
             changes = {}
             for field in (
                 "name", "description", "includes", "address", "class_type_id",
-                "instructor_id", "venue_id", "price", "capacity", "seat_ids", "hold_minutes",
+                "instructor_id", "venue_id", "price", "capacity", "seat_ids", "hold_minutes", "payment_link_expires",
             ):
                 value = getattr(input, field)
                 if value is not None:
@@ -434,7 +435,7 @@ class SpecialEventsMutation:
 
     @strawberry.mutation(permission_classes=[IsAuthenticated])
     async def refund_special_event_order(
-        self, info: Info, order_id: int, reason: Optional[str] = None
+        self, info: Info, order_id: int, reason: Optional[str] = None, review_confirmed: bool = False,
     ) -> SpecialEventResult:
         error = await require_capability(info, MANAGE_SPECIAL_EVENTS)
         if error:
@@ -442,7 +443,7 @@ class SpecialEventsMutation:
         db: AsyncSession = info.context.db
         try:
             order = await special_event_payments.refund_order(
-                db, order_id, actor_account_id=_actor(info), reason=reason or ""
+                db, order_id, actor_account_id=_actor(info), reason=reason or "", review_confirmed=review_confirmed,
             )
         except SpecialEventError as exc:
             await db.rollback()
@@ -454,7 +455,7 @@ class SpecialEventsMutation:
         message = (
             "Reembolso registrado."
             if order.status == "refunded"
-            else "El reembolso automático falló; la compra quedó «en revisión» para hacerlo manualmente."
+            else "El reembolso no se pudo completar; verifica el pago en Mercado Pago. La compra sigue «en revisión»."
         )
         return SpecialEventResult(
             success=order.status == "refunded",

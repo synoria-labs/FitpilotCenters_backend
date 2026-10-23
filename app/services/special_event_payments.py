@@ -2,10 +2,14 @@
 
 Policy, in one place:
 
-* **Holds.** Starting a purchase holds one bike for ``event.hold_minutes`` (30 by default). The
+* **Timed links.** Starting a purchase holds one bike for ``event.hold_minutes`` (30 by default). The
   payment link expires at the same instant, only accepts methods that settle immediately (cards,
   Mercado Pago balance; no OXXO/ATM vouchers or bank transfers) and runs in ``binary_mode``, so a
   payment is approved or rejected while the seat is still held.
+* **Open links.** With ``payment_link_expires=False``, check capacity before issuing the link,
+  but hold no seat. Allocate under the event lock only after payment. If the purchase cannot
+  be fulfilled, record the money and require explicit staff verification and a manual refund;
+  neither the webhook nor the reconciliation sweep refunds these orders automatically.
 * **Confirmation** happens only here, from Mercado Pago's own record of the payment (fetched by
   id, never trusted from the webhook body), after checking reference, amount and currency. The
   WhatsApp confirmation is sent by this module — the chatbot never confirms a ticket by itself.
@@ -28,7 +32,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Awaitable, Callable, Dict, List, Optional, Tuple
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.mercadopago_config import mercadopago_config
@@ -46,6 +50,7 @@ from app.db.postgresql import async_session_factory
 from app.models import Payment, Seat
 from app.models.specialEventModel import (
     EVENT_CANCELED,
+    EVENT_PUBLISHED,
     ORDER_ACTIVE_STATUSES,
     ORDER_AWAITING_PAYMENT,
     ORDER_CANCELED,
@@ -83,6 +88,7 @@ class PurchaseStart:
     init_point: Optional[str] = None
     hold_expires_at: Optional[datetime] = None
     already_paid: bool = False
+    payment_link_expires: bool = True
 
 
 async def start_whatsapp_purchase(
@@ -94,7 +100,7 @@ async def start_whatsapp_purchase(
     conversation_id: Optional[int],
     wa_id: Optional[str],
 ) -> PurchaseStart:
-    """Hold a seat and return the Mercado Pago link. Never confirms anything by itself."""
+    """Check capacity and return a link, optionally holding a seat. Never confirms a ticket."""
     if not mercadopago_config.is_configured():
         _reconcile(
             db,
@@ -144,7 +150,9 @@ async def start_whatsapp_purchase(
             order_id=order.id,
             init_point=order.mp_init_point,
             hold_expires_at=order.hold_expires_at,
-            message="Ya había un lugar apartado para este participante; es el mismo enlace de pago.",
+            payment_link_expires=order.payment_link_expires,
+            message=("Ya había un lugar apartado para este participante; es el mismo enlace de pago."
+                     if order.payment_link_expires else "Es el mismo enlace sin caducidad; no aparta un lugar."),
         )
 
     order_id = order.id
@@ -155,7 +163,21 @@ async def start_whatsapp_purchase(
     name = order.participant_name
     title = f"{event.name} - entrada"
     item_id = f"special-event-{event.id}"
-    await db.commit()  # the hold is durable before we call out
+    link_expires = order.payment_link_expires
+    await db.commit()  # the order is durable before we call out
+
+    # Serialize preference creation per order without holding the event inventory lock
+    # during the provider request. Concurrent retries must receive the same preference.
+    order = await orders_crud.get_order(db, order_id, for_update=True)
+    if order.status != ORDER_AWAITING_PAYMENT:
+        await db.commit()
+        return PurchaseStart(ok=False, message="La compra cambió de estado; consulta su estado antes de generar el enlace.")
+    if order.mp_init_point:
+        result = PurchaseStart(ok=True, order_id=order.id, init_point=order.mp_init_point,
+            hold_expires_at=order.hold_expires_at, payment_link_expires=order.payment_link_expires,
+            message="Es el enlace existente de esta compra.")
+        await db.commit()
+        return result
 
     try:
         preference = await mercadopago_service.create_preference(
@@ -171,11 +193,13 @@ async def start_whatsapp_purchase(
         )
     except Exception:  # noqa: BLE001 - any failure releases the seat right away
         logger.exception("Mercado Pago preference failed for special event order %s", order_id)
+        await db.rollback()  # release the order lock before reacquiring event -> order locks
         try:
             await orders_crud.cancel_order(
                 db, order_id, actor_account_id=None, reason="No se pudo generar el link de pago"
             )
             await db.commit()
+            await events_crud.get_event(db, event_id)  # restore the caller's event after rollback
         except Exception:  # noqa: BLE001
             await db.rollback()
             logger.exception("Could not release hold of order %s", order_id)
@@ -197,7 +221,8 @@ async def start_whatsapp_purchase(
         order_id=order_id,
         init_point=order.mp_init_point,
         hold_expires_at=expires,
-        message="Lugar apartado.",
+        payment_link_expires=link_expires,
+        message="Lugar apartado." if link_expires else "Enlace sin caducidad generado, sin apartado de lugar.",
     )
 
 
@@ -315,6 +340,26 @@ async def _settle_approved(
         await db.commit()
         return "needs_review", [_notify_review(order_id)]
 
+    if not order.payment_link_expires:
+        # An open link never reserved a bike. Allocation happens NOW under the event lock.
+        unavailable_reason = None
+        if order.status != ORDER_AWAITING_PAYMENT:
+            unavailable_reason = "La compra ya no estaba vigente al acreditarse el pago."
+        elif event.status != EVENT_PUBLISHED or event.start_at <= now:
+            unavailable_reason = "El evento ya no estaba a la venta al acreditarse el pago."
+        else:
+            await events_crud.expire_stale_holds(db, event_id=event.id, now=now)
+            avail = await events_crud.availability(db, event, now=now)
+            if not avail.sales_open:
+                unavailable_reason = "Ya no había cupo disponible al acreditarse el pago."
+        if unavailable_reason:
+            return await _queue_manual_refund(db, order, event, payment_id, now, unavailable_reason)
+        if avail.offered_seats:
+            order.seat_id = avail.free_seat_ids[0]
+        await _confirm(db, order, event, payment_id, now)
+        await db.commit()
+        return "confirmed", [_notify_confirmed(order_id, late=False)]
+
     if event.status == EVENT_CANCELED:
         return await _begin_refund(db, order, payment_id, "El evento fue cancelado")
     if order.status == ORDER_CANCELED:
@@ -382,13 +427,17 @@ def _payment_problem(order: SpecialEventOrder, payment: dict) -> Optional[str]:
 async def _confirm(
     db: AsyncSession, order: SpecialEventOrder, event: SpecialEvent, payment_id: str, now: datetime
 ) -> None:
+    order.status = ORDER_PAID
+    order.review_reason = None
+    await _record_approved_payment(db, order, event, payment_id, now)
+
+
+async def _record_approved_payment(db, order, event, payment_id, now):
     from app.crud.memberships import payments as payments_crud
 
-    order.status = ORDER_PAID
     order.paid_at = now
     order.mp_payment_id = payment_id
     order.payment_method = "mercadopago"
-    order.review_reason = None
     payment = await payments_crud.create_payment(
         db,
         person_id=order.person_id,
@@ -403,6 +452,19 @@ async def _confirm(
     )
     order.payment_id = payment.id
     await db.flush()
+
+
+async def _queue_manual_refund(db, order, event, payment_id, now, reason):
+    order.status = ORDER_NEEDS_REVIEW
+    order.manual_refund_required = True
+    order.seat_id = None
+    order.review_reason = reason + " Requiere revisión del administrador y reembolso manual en Mercado Pago."
+    await _record_approved_payment(db, order, event, payment_id, now)
+    _reconcile(db, "special_event_manual_refund", payment_id, order.external_reference,
+               detail={"order_id": order.id, "reason": reason})
+    order_id = order.id
+    await db.commit()
+    return "manual_refund_required", [_notify_review(order_id)]
 
 
 async def _begin_refund(
@@ -424,9 +486,15 @@ def _refund_order_payment(order_id: int, payment_id: str, reason: str, *, notify
 
 
 async def execute_refund(
-    db: AsyncSession, order_id: int, payment_id: str, reason: str, *, notify_customer: bool
+    db: AsyncSession, order_id: int, payment_id: str, reason: str, *, notify_customer: bool,
+    manual_review_confirmed: bool = False,
 ) -> bool:
     """Refund ``payment_id`` at Mercado Pago (idempotent key) and record the outcome."""
+    order = await orders_crud.get_order(db, order_id)
+    if order.manual_refund_required and (
+        not manual_review_confirmed or not order.refund_reviewed_by or not order.refund_reviewed_at
+    ):
+        raise SpecialEventError("Este reembolso requiere verificación y confirmación del administrador.")
     refunded = False
     try:
         await mercadopago_service.refund_payment(
@@ -445,7 +513,7 @@ async def execute_refund(
         await _mark_payment_refunded(db, order)
     else:
         order.status = ORDER_NEEDS_REVIEW
-        order.review_reason = f"{reason}. El reembolso automático falló: reembólsalo manualmente."
+        order.review_reason = f"{reason}. El reembolso falló: verifica el pago y reembólsalo manualmente."
         _reconcile(db, "special_event_refund_failed", payment_id, order.external_reference, detail=reason)
     order.updated_at = now
     amount = order.amount
@@ -511,7 +579,8 @@ async def _mark_payment_refunded(db: AsyncSession, order: SpecialEventOrder) -> 
 # Staff actions
 # ---------------------------------------------------------------------------------------------
 async def refund_order(
-    db: AsyncSession, order_id: int, *, actor_account_id: Optional[int], reason: str
+    db: AsyncSession, order_id: int, *, actor_account_id: Optional[int], reason: str,
+    review_confirmed: bool = False,
 ) -> SpecialEventOrder:
     """Refund a paid ticket on purpose (event canceled, client cannot attend...).
 
@@ -524,9 +593,37 @@ async def refund_order(
         raise SpecialEventError("No encontré esa compra.")
     await lock_special_event(db, order.event_id)
     order = await orders_crud.get_order(db, order_id, for_update=True)
+    if order.status == ORDER_REFUNDED:
+        return order
     if order.status not in (ORDER_PAID, ORDER_REFUND_PENDING, ORDER_NEEDS_REVIEW):
         raise SpecialEventError("Solo se pueden reembolsar entradas pagadas.")
     now = utcnow()
+    if order.manual_refund_required:
+        if not review_confirmed or actor_account_id is None:
+            raise SpecialEventError("Revisa el pago en Mercado Pago y confirma la verificación antes de reembolsar.")
+        try:
+            payment = await mercadopago_service.get_payment(order.mp_payment_id)
+        except Exception as exc:  # noqa: BLE001
+            raise SpecialEventError("No se pudo verificar el pago en Mercado Pago; no se solicitó el reembolso.") from exc
+        if (str(payment.get("id")) != order.mp_payment_id or not payment.get("currency_id")
+                or _payment_problem(order, payment)):
+            raise SpecialEventError("El pago de Mercado Pago no coincide con esta compra; revisa importe, moneda y referencia.")
+        provider_status = payment.get("status")
+        if provider_status not in ("approved", "refunded"):
+            raise SpecialEventError("El pago no está aprobado ni reembolsado; revísalo en Mercado Pago.")
+        if provider_status == "approved" and Decimal(str(payment.get("transaction_amount_refunded") or 0)) > 0:
+            raise SpecialEventError("El pago ya tiene una devolución parcial; completa la revisión en Mercado Pago.")
+        order.refund_reviewed_by = actor_account_id
+        order.refund_reviewed_at = now
+        if provider_status == "refunded":
+            order.status = ORDER_REFUNDED
+            order.mp_status = "refunded"
+            order.refunded_at = order.refunded_at or now
+            order.updated_by = actor_account_id
+            order.updated_at = now
+            await _mark_payment_refunded(db, order)
+            await db.commit()
+            return order
     order.updated_by = actor_account_id
     order.updated_at = now
     if order.mp_payment_id and order.payment_method in (None, "mercadopago"):
@@ -534,7 +631,8 @@ async def refund_order(
         order.status = ORDER_REFUND_PENDING
         order.review_reason = reason
         await db.commit()
-        await execute_refund(db, order_id, payment_id, reason, notify_customer=False)
+        await execute_refund(db, order_id, payment_id, reason, notify_customer=False,
+                             manual_review_confirmed=review_confirmed)
         return await orders_crud.get_order(db, order_id)
 
     order.status = ORDER_REFUNDED
@@ -577,9 +675,10 @@ async def sweep_holds(limit: int = 50) -> Dict[str, int]:
                 )
                 .where(
                     SpecialEventOrder.status == ORDER_AWAITING_PAYMENT,
-                    SpecialEventOrder.hold_expires_at <= now,
+                    or_(SpecialEventOrder.hold_expires_at <= now,
+                        SpecialEventOrder.payment_link_expires.is_(False)),
                 )
-                .order_by(SpecialEventOrder.hold_expires_at)
+                .order_by(SpecialEventOrder.updated_at, SpecialEventOrder.id)
                 .limit(limit)
             )
         ).all()
@@ -606,6 +705,15 @@ async def sweep_holds(limit: int = 50) -> Dict[str, int]:
                     stats["errors"] += 1
                     logger.exception("Reconciling order %s failed", order_id)
                 continue
+        if expires is None:
+            # Open links are reconciled in rotation, never expired by this sweep.
+            async with async_session_factory() as db:
+                await db.execute(update(SpecialEventOrder).where(
+                    SpecialEventOrder.id == order_id, SpecialEventOrder.status == ORDER_AWAITING_PAYMENT,
+                    SpecialEventOrder.payment_link_expires.is_(False),
+                ).values(updated_at=now))
+                await db.commit()
+            continue
         async with async_session_factory() as db:
             await lock_special_event(db, event_id)
             result = await db.execute(
@@ -672,6 +780,12 @@ def _notify_review(order_id: int) -> FollowUp:
     async def run(db: AsyncSession) -> None:
         order = await orders_crud.get_order(db, order_id)
         if order is None or not order.conversation_id:
+            return
+        if order.manual_refund_required:
+            await _send(db, order.conversation_id,
+                "Tu pago se acreditó, pero no fue posible asignarte un lugar para el evento. "
+                "El administrador revisará el pago y gestionará el reembolso manual en Mercado Pago. "
+                "Tu entrada no está confirmada y el reembolso aún no se ha realizado.")
             return
         await _send(
             db,

@@ -117,6 +117,7 @@ async def availability(
                 SpecialEventOrder.status,
                 SpecialEventOrder.seat_id,
                 SpecialEventOrder.hold_expires_at,
+                SpecialEventOrder.payment_link_expires,
             ).where(
                 SpecialEventOrder.event_id == event.id,
                 SpecialEventOrder.status.in_(ORDER_ACTIVE_STATUSES),
@@ -127,12 +128,12 @@ async def availability(
     held = 0
     sold_seats: List[int] = []
     held_seats: List[int] = []
-    for status, seat_id, expires in rows:
+    for status, seat_id, expires, link_expires in rows:
         if status == ORDER_PAID:
             paid += 1
             if seat_id is not None:
                 sold_seats.append(seat_id)
-        elif expires is None or expires > now:
+        elif link_expires and (expires is None or expires > now):
             held += 1
             if seat_id is not None:
                 held_seats.append(seat_id)
@@ -330,8 +331,9 @@ async def has_active_takeovers(db: AsyncSession, event_id: int) -> bool:
     return row.first() is not None
 
 
-async def count_active_orders(db: AsyncSession, event_id: int, *, now: Optional[datetime] = None) -> int:
-    """Paid tickets plus live holds."""
+async def count_active_orders(db: AsyncSession, event_id: int, *, now: Optional[datetime] = None,
+                              include_open_links: bool = False) -> int:
+    """Count occupied capacity; optionally include live open purchases to protect event edits."""
     now = now or utcnow()
     count = await db.execute(
         select(func.count(SpecialEventOrder.id)).where(
@@ -340,6 +342,7 @@ async def count_active_orders(db: AsyncSession, event_id: int, *, now: Optional[
                 SpecialEventOrder.status == ORDER_PAID,
                 and_(
                     SpecialEventOrder.status == ORDER_AWAITING_PAYMENT,
+                    or_(include_open_links, SpecialEventOrder.payment_link_expires.is_(True)),
                     or_(
                         SpecialEventOrder.hold_expires_at.is_(None),
                         SpecialEventOrder.hold_expires_at > now,
@@ -373,6 +376,7 @@ async def create_event(
     capacity: Optional[int] = None,
     seat_ids: Optional[Sequence[int]] = None,
     hold_minutes: int = 30,
+    payment_link_expires: bool = True,
     currency: str = "MXN",
 ) -> SpecialEvent:
     """Create a draft event. A draft is invisible to the chatbot until published."""
@@ -417,6 +421,7 @@ async def create_event(
         capacity=int(capacity) if capacity is not None else None,
         status=EVENT_DRAFT,
         hold_minutes=int(hold_minutes),
+        payment_link_expires=bool(payment_link_expires),
         created_by=actor_account_id,
         updated_by=actor_account_id,
     )
@@ -446,6 +451,7 @@ async def update_event(
     capacity=_UNSET,
     seat_ids=_UNSET,
     hold_minutes=_UNSET,
+    payment_link_expires=_UNSET,
 ) -> SpecialEvent:
     """Edit an event. Changing *when* or *where* is refused once it has consequences.
 
@@ -474,6 +480,8 @@ async def update_event(
         if not 5 <= int(hold_minutes) <= 240:
             raise SpecialEventError("El tiempo de apartado debe estar entre 5 y 240 minutos.")
         event.hold_minutes = int(hold_minutes)
+    if payment_link_expires is not _UNSET:
+        event.payment_link_expires = bool(payment_link_expires)
 
     new_venue = event.venue_id if venue_id is _UNSET else int(venue_id)
     new_instructor = event.instructor_id if instructor_id is _UNSET else (
@@ -512,9 +520,9 @@ async def update_event(
                 "El evento ya sustituyó clases regulares. Restituye el horario regular antes de "
                 "cambiar fecha, hora o sede."
             )
-        if await count_active_orders(db, event.id, now=now):
+        if await count_active_orders(db, event.id, now=now, include_open_links=True):
             raise SpecialEventError(
-                "El evento ya tiene lugares apartados o vendidos. No se puede cambiar fecha, hora "
+                "El evento tiene compras o enlaces de pago vigentes. No se puede cambiar fecha, hora "
                 "o sede; cancela o reembolsa esas compras primero."
             )
     elif event.end_at is None and new_end is not None and await has_active_takeovers(db, event.id):
@@ -657,9 +665,9 @@ async def unpublish_event(db: AsyncSession, event: SpecialEvent, *, actor_accoun
     if event.status != EVENT_PUBLISHED:
         raise SpecialEventError("Solo un evento publicado puede volver a borrador.")
     await expire_stale_holds(db, event_id=event.id)
-    if await count_active_orders(db, event.id):
+    if await count_active_orders(db, event.id, include_open_links=True):
         raise SpecialEventError(
-            "Hay lugares apartados o vendidos. No se puede regresar a borrador; si el evento no "
+            "Hay compras o enlaces de pago vigentes. No se puede regresar a borrador; si el evento no "
             "se realizará, cancélalo."
         )
     event.status = EVENT_DRAFT

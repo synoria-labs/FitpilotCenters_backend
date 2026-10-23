@@ -66,7 +66,11 @@ _EVENT_RULES = (
     "cliente con clase regular a la misma hora SÍ puede comprar el evento. NUNCA digas que una "
     "entrada está pagada o confirmada salvo que check_event_order_status diga PAGADA; la "
     "confirmación oficial le llega sola por WhatsApp cuando Mercado Pago acredita el pago. Si "
-    "quiere cancelar una compra no pagada, usa cancel_event_order."
+    "quiere cancelar una compra no pagada, usa cancel_event_order. Los eventos pueden tener enlaces "
+    "sin caducidad: en ese modo NO se aparta lugar mientras paga. Respeta el modo de cada compra, "
+    "consulta cupo antes de generar o reenviar su enlace y envíalo mediante respond_to_customer "
+    "con kind=purchase y order_id. Si un pago queda sin cupo, requiere revisión del administrador "
+    "y reembolso manual; no prometas una entrada ni una devolución ya realizada."
 )
 
 _CONFIRM_RULES_STRICT = (

@@ -24,6 +24,7 @@ from typing import List, Optional
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     ForeignKey,
     Index,
@@ -32,6 +33,8 @@ from sqlalchemy import (
     String,
     Text,
     TIMESTAMP,
+    true,
+    false,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -45,7 +48,7 @@ EVENT_COMPLETED = "completed"
 EVENT_STATUSES = (EVENT_DRAFT, EVENT_PUBLISHED, EVENT_CANCELED, EVENT_COMPLETED)
 
 # --- Order (participant) lifecycle ----------------------------------------------------------
-ORDER_AWAITING_PAYMENT = "awaiting_payment"  # seat held until hold_expires_at
+ORDER_AWAITING_PAYMENT = "awaiting_payment"  # a timed hold, or an open link with no seat/expiry
 ORDER_PAID = "paid"  # confirmed ticket
 ORDER_EXPIRED = "expired"  # hold lapsed without an approved payment
 ORDER_CANCELED = "canceled"  # voided before paying (or a non-refundable manual cancel)
@@ -61,7 +64,8 @@ ORDER_STATUSES = (
     ORDER_REFUNDED,
     ORDER_NEEDS_REVIEW,
 )
-# Statuses that occupy a seat/participant slot. Kept in sync with the partial unique indexes.
+# Live purchases deduplicate participants. Only paid orders and timed holds occupy capacity;
+# an awaiting open link has no seat. Kept in sync with the partial unique indexes.
 ORDER_ACTIVE_STATUSES = (ORDER_AWAITING_PAYMENT, ORDER_PAID)
 
 ORDER_CHANNEL_WHATSAPP = "whatsapp"
@@ -124,7 +128,9 @@ class SpecialEvent(Base):
     # Nullable while drafting; required to publish.
     capacity: Mapped[Optional[int]] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default=EVENT_DRAFT)
-    # How long a seat stays held while the customer pays (also the payment link's expiry).
+    # New purchases snapshot this policy; editing the event never changes existing links.
+    payment_link_expires: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=true())
+    # Used only when payment_link_expires is true.
     hold_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     cancel_reason: Mapped[Optional[str]] = mapped_column(Text)
     created_by: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("accounts.id"))
@@ -189,6 +195,10 @@ class SpecialEventOrder(Base):
     mp_preference_id: Mapped[Optional[str]] = mapped_column(String(120))
     mp_init_point: Mapped[Optional[str]] = mapped_column(Text)
     hold_expires_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
+    payment_link_expires: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=true())
+    manual_refund_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    refund_reviewed_by: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("accounts.id"))
+    refund_reviewed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
     mp_payment_id: Mapped[Optional[str]] = mapped_column(String(120))
     mp_status: Mapped[Optional[str]] = mapped_column(String(40))
     mp_status_detail: Mapped[Optional[str]] = mapped_column(String(120))
@@ -214,6 +224,10 @@ class SpecialEventOrder(Base):
         ),
         CheckConstraint("channel IN ('whatsapp','admin')", name="ck_special_event_order_channel"),
         CheckConstraint("amount >= 0", name="ck_special_event_order_amount"),
+        CheckConstraint(
+            "payment_link_expires OR status <> 'awaiting_payment' OR (seat_id IS NULL AND hold_expires_at IS NULL)",
+            name="ck_special_event_open_link_no_hold",
+        ),
         # A bike and a participant count once per event while the order holds or owns it.
         Index(
             "uq_special_event_order_seat",

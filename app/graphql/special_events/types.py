@@ -48,6 +48,8 @@ class SpecialEventType:
     currency: str
     capacity: Optional[int]
     hold_minutes: int
+    payment_link_expires: bool
+    manual_refunds_pending: int
     status: str
     sold: int
     held: int
@@ -82,6 +84,10 @@ class SpecialEventOrderType:
     payment_method: Optional[str]
     paid_at: Optional[datetime]
     hold_expires_at: Optional[datetime]
+    payment_link_expires: bool
+    manual_refund_required: bool
+    refund_reviewed_by: Optional[int]
+    refund_reviewed_at: Optional[datetime]
     mp_status: Optional[str]
     mp_payment_id: Optional[str]
     review_reason: Optional[str]
@@ -264,6 +270,7 @@ class SpecialEventInput:
     capacity: Optional[int] = None
     seat_ids: Optional[List[int]] = None
     hold_minutes: Optional[int] = None
+    payment_link_expires: Optional[bool] = None
 
 
 @strawberry.input

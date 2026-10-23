@@ -108,7 +108,7 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
     target_day = explicit_day or (date.fromisoformat(requested_date) if requested_date else None)
     from app.crud.chatbotPendingCrud import get_active_pending
     from app.crud.memberships.coverage import package_facts
-    pending = await get_active_pending(ctx.db, ctx.conversation_id) if kind in (
+    pending = await get_active_pending(ctx.db, ctx.conversation_id) if order_id is None and kind in (
         "information", "clarification", "membership_information", "purchase",
     ) else None
     package_pending = pending is not None and pending.action_type == "buy_package"
@@ -214,13 +214,28 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
                     ctx.validated_reply += f"\nPara completar tu compra: {pending.mp_init_point}"
             elif order_id is not None:
                 from app.models.specialEventModel import SpecialEventOrder, SpecialEvent
+                from app.crud.special_events.events import get_event, availability
                 order = await ctx.db.get(SpecialEventOrder, order_id, populate_existing=True)
                 if order is None or order.conversation_id != ctx.conversation_id or order.status != "awaiting_payment":
                     return "No hay una compra de evento pendiente para este cliente. Consulta su estado."
-                event = await ctx.db.get(SpecialEvent, order.event_id, populate_existing=True)
+                event = await get_event(ctx.db, order.event_id)
                 if event is None or event.status != "published" or event.start_at <= datetime.now(timezone.utc):
                     return "El evento ya no está disponible para comprar."
-                ctx.validated_reply = f"Compra pendiente de pago: {event.name}, {fmt_dt(event.start_at)}.\n{order.mp_init_point or ''}"
+                if not order.mp_init_point:
+                    return "El enlace aún no está disponible; consulta la compra antes de enviarlo."
+                if not order.payment_link_expires:
+                    avail = await availability(ctx.db, event)
+                    if not avail.sales_open:
+                        return "Ya no hay cupo disponible. No envíes ese enlace ni prometas un lugar."
+                    policy = ("Enlace sin caducidad. No aparta lugar ni bicicleta. El cupo se verifica al acreditarse "
+                              "el pago; si ya no hay lugar, el administrador revisará el pago y gestionará el "
+                              "reembolso manual en Mercado Pago.")
+                else:
+                    if order.hold_expires_at and order.hold_expires_at <= datetime.now(timezone.utc):
+                        return "El apartado y el enlace ya vencieron. Consulta disponibilidad antes de iniciar otra compra."
+                    policy = f"El apartado y el enlace vencen el {fmt_dt(order.hold_expires_at)}." if order.hold_expires_at else ""
+                ctx.validated_reply = (f"Compra pendiente de pago: {event.name}, {fmt_dt(event.start_at)}.\n"
+                                       f"{policy}\n{order.mp_init_point}")
             elif re.search(r"mercadopago\.|mpago\.", text, re.I):
                 return "No hay una compra pendiente verificable para enviar ese enlace. Propón primero la compra o indica order_id para el evento."
         if ctx.validated_reply is None:
