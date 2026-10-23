@@ -36,6 +36,7 @@ from app.crud import venuesCrud
 from app.crud.memberships import plans as plans_crud
 from app.crud.memberships import enrollment as enrollment_crud
 from app.crud.memberships.day_passes import is_day_pass, purchase_day_pass
+from app.crud.memberships.coverage import package_facts, schedule_key, schedule_label
 from app.crud.standing_bookings import catalog as class_catalog
 from app.crud.special_events import events as special_events_crud
 from app.crud.special_events import orders as special_event_orders_crud
@@ -210,9 +211,11 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
             if is_day_pass(p):
                 tipo = "pase diario"
             elif p.fixed_time_slot:
-                tipo = "paquete con horario fijo"
+                tipo = "horario fijo; clases según todos los días del grupo y la vigencia"
+            elif p.plan_type == "credit_pack":
+                tipo = f"paquete de {p.class_limit} créditos/clases"
             else:
-                tipo = "membresía"
+                tipo = "acceso libre sin límite de clases, sujeto a disponibilidad"
             desc = f" — {p.description}" if p.description else ""
             out.append(
                 f"#{p.id} {p.name} ({tipo}): ${p.price:.2f} por {p.duration_value} {p.duration_unit}(s){desc}"
@@ -291,20 +294,40 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         templates = await class_catalog.get_class_templates(db, active_only=True)
         if not templates:
             return "Aún no hay un horario de clases configurado."
-        by_day: dict = {}
+        groups: dict = {}
         for t in templates:
-            by_day.setdefault(t.weekday, []).append(t)
+            groups.setdefault(schedule_key(t), []).append(t)
         lines: List[str] = []
-        for wd in sorted(by_day.keys()):
-            day = _WEEKDAYS_ES[wd] if 0 <= wd < 7 else f"Día {wd}"
-            lines.append(f"*{day}*")
-            for t in sorted(by_day[wd], key=lambda x: x.start_time_local or ""):
-                hhmm = (t.start_time_local or "")[:5]
-                cls = t.class_type_name or t.name or "Clase"
-                venue = f" en {t.venue_name}" if t.venue_name else ""
-                instr = f" (con {t.instructor_name})" if t.instructor_name else ""
-                lines.append(f"  {hhmm} — {cls}{venue}{instr}")
+        for group in groups.values():
+            t = group[0]
+            cls = t.class_type_name or t.name or "Clase"
+            venue = f" en {t.venue_name}" if t.venue_name else ""
+            instr = f" (con {t.instructor_name})" if t.instructor_name else ""
+            lines.append(f"template_id={t.id}: {schedule_label(group)} — {cls}{venue}{instr}. "
+                         f"Grupo completo ({len(group)} clases por semana); no es un solo día.")
         return "\n".join(lines)
+
+    async def get_membership_coverage(plan_id: int, template_id: Optional[int] = None) -> str:
+        """Cobertura real del paquete: días completos, clases del periodo e inicio de vigencia."""
+        try:
+            return await package_facts(db, plan_id=plan_id, template_id=template_id, member_id=ctx.member_id)
+        except ValueError as exc:
+            return str(exc)
+
+    async def reserve_with_membership(session_id: int) -> str:
+        """Reserva una clase regular cubierta por la membresía vigente; respeta horario, créditos y cupo."""
+        if ctx.member_id is None:
+            return _NEEDS_MEMBER
+        try:
+            seat_id = await _first_available_session_seat(db, session_id)
+            reservation = await reservationsCrud.create_reservation(
+                db, session_id=session_id, person_id=ctx.member_id, seat_id=seat_id, commit=False,
+            )
+            await db.commit()
+            return f"Reserva creada: reservation_id={reservation.id}, session_id={session_id}. Verifica con reservation_confirmation."
+        except ValueError as exc:
+            await db.rollback()
+            return str(exc)
 
     async def get_venues() -> str:
         """Sedes del estudio: nombre, dirección y capacidad."""
@@ -380,7 +403,7 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         )
         return f"Propuesta lista: {summary}. Pide al cliente que confirme respondiendo *Sí*."
 
-    async def propose_membership(plan_id: int, template_id: int, full_name: Optional[str] = None) -> str:
+    async def propose_membership(plan_id: int, template_id: Optional[int] = None, full_name: Optional[str] = None) -> str:
         """Propone comprar un PAQUETE: un plan con horario fijo que reserva automáticamente el
         horario elegido para todo el periodo. Para socio existente es renovación; para cliente nuevo
         es inscripción (requiere full_name). Requiere plan_id (plan de horario fijo) y template_id
@@ -388,9 +411,21 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         plan = await plans_crud.get_membership_plan_by_id(db, int(plan_id))
         if plan is None:
             return f"No encontré el plan #{plan_id}."
+        if is_day_pass(plan):
+            return "Para un pase diario usa propose_day_pass con una clase concreta."
         if not plan.fixed_time_slot:
-            return (f"El plan {plan.name} no es de horario fijo. Para asistir un solo día usa el "
-                    "pase diario (propose_day_pass).")
+            name = (full_name or "").strip()
+            if ctx.member_id is None and not name:
+                return "Necesito el nombre completo del cliente para inscribirlo."
+            summary = await package_facts(db, plan_id=plan_id, member_id=ctx.member_id)
+            return await _finalize_proposal(
+                action_type=ACTION_BUY_PACKAGE,
+                payload={"plan_id": int(plan_id), "full_name": name or None,
+                         "phone_number": ctx.wa_id, "amount": str(plan.price)},
+                summary=summary, amount=plan.price, description=f"{plan.name} - FitPilot", payer_name=name or None,
+            )
+        if template_id is None:
+            return "Elige un grupo de horario fijo con get_weekly_schedule."
         templates = await class_catalog.get_class_templates(db, active_only=True)
         tinfo = next((t for t in templates if t.id == int(template_id)), None)
         if tinfo is None:
@@ -409,12 +444,10 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
             day0 = _WEEKDAYS_ES[tinfo.weekday] if 0 <= tinfo.weekday < 7 else ""
             return (f"El horario {day0} {(tinfo.start_time_local or '')[:5]} está lleno por ahora. "
                     "Ofrécele otro horario.")
-        day = _WEEKDAYS_ES[tinfo.weekday] if 0 <= tinfo.weekday < 7 else ""
-        hhmm = (tinfo.start_time_local or "")[:5]
-        cls = tinfo.class_type_name or tinfo.name or "clase"
         action_word = "Renovar" if ctx.member_id is not None else f"Inscribir a {name}"
-        summary = (f"{action_word} con el plan {plan.name} (${plan.price:.2f}), horario {day} {hhmm} "
-                   f"de {cls} — se reservan todas las clases del periodo")
+        summary = f"{action_word}.\n" + await package_facts(
+            db, plan_id=plan_id, template_id=template_id, member_id=ctx.member_id,
+        )
         payload = {
             "plan_id": int(plan_id),
             "template_id": int(template_id),
@@ -624,14 +657,17 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         kind: str, text: str = "", session_id: Optional[int] = None,
         reservation_id: Optional[int] = None, requested_date: Optional[str] = None,
         order_id: Optional[int] = None,
+        plan_id: Optional[int] = None, template_id: Optional[int] = None,
     ) -> str:
-        """Finaliza TODA respuesta. kind=information|purchase|clarification|reservation_confirmation|event_confirmation.
+        """Finaliza TODA respuesta. kind=information|membership_information|purchase|clarification|reservation_confirmation|event_confirmation.
 
         Para confirmar una reserva: session_id, reservation_id y requested_date YYYY-MM-DD son
         obligatorios. El servidor verifica y redacta la confirmación; text solo se usa para otros tipos.
         Si rechaza, corrige la compra o pide aclaración y vuelve a llamar esta herramienta.
         Para confirmar entradas pagadas de eventos usa event_confirmation con order_id.
         Para enviar el link de un evento usa purchase con order_id.
+        Para explicar cobertura, cantidad de clases o inicio de membresía usa membership_information
+        con plan_id y template_id (solo horario fijo). El servidor redacta con el grupo completo.
         """
         from app.services.chatbot.verification import finalize_reply
         try:
@@ -641,6 +677,7 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
                 ctx, kind=kind, text=text, session_id=session_id,
                 reservation_id=reservation_id, requested_date=requested_date,
                 order_id=order_id,
+                plan_id=plan_id, template_id=template_id,
             )
         except (ValueError, TypeError):
             ctx.validated_reply = None
@@ -651,6 +688,8 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         (respond_to_customer, "respond_to_customer", respond_to_customer.__doc__),
         (get_business_info, "get_business_info", "Información del negocio (nombre, dirección, horarios, teléfono, políticas)."),
         (get_membership_plans, "get_membership_plans", "Planes de membresía disponibles con precio y duración."),
+        (get_membership_coverage, "get_membership_coverage", get_membership_coverage.__doc__),
+        (reserve_with_membership, "reserve_with_membership", reserve_with_membership.__doc__),
         (list_available_classes, "list_available_classes", "Clases con cupo disponible en los próximos días (incluye el id de cada clase)."),
         (check_class_availability, "check_class_availability", "Asientos disponibles para una clase (session_id)."),
         (get_my_membership, "get_my_membership", "Estado de la membresía del cliente identificado."),
@@ -658,7 +697,7 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         (get_weekly_schedule, "get_weekly_schedule", "Horario semanal recurrente de clases (día, hora, clase, sede, instructor). Da el id de cada horario (template) para propose_membership."),
         (get_venues, "get_venues", "Sedes del estudio: nombre, dirección y capacidad."),
         (list_instructors, "list_instructors", "Nombres de los instructores del estudio."),
-        (propose_membership, "propose_membership", "Propone comprar un PAQUETE (plan de horario fijo): inscribe/renueva y auto-reserva el horario elegido todo el periodo. Args: plan_id, template_id, full_name (si es cliente nuevo)."),
+        (propose_membership, "propose_membership", "Compra/renueva membresías. Horario fijo: template_id del grupo completo; acceso libre/créditos: sin template_id ni reservas automáticas. Args: plan_id, template_id opcional, full_name si nuevo."),
         (propose_day_pass, "propose_day_pass", "Propone un PASE DIARIO (1 día): paga un plan diario y reserva una clase específica. Args: plan_id, session_id, full_name (si es cliente nuevo)."),
         (confirm_action, "confirm_action", "Ejecuta la compra pendiente tras la confirmación del cliente (solo cuando el pago no es por MercadoPago)."),
         (cancel_action, "cancel_action", "Cancela la acción pendiente."),
@@ -718,8 +757,8 @@ async def _execute_pending(
 
     if action == ACTION_BUY_PACKAGE:
         plan_id = int(payload["plan_id"])
-        template_id = int(payload["template_id"])
-        seat_id = await _first_available_template_seat(db, template_id)
+        template_id = int(payload["template_id"]) if payload.get("template_id") else None
+        seat_id = await _first_available_template_seat(db, template_id) if template_id else None
         if pending.member_id is not None:
             # renew_subscription_with_standing_booking commits internally.
             subscription, _payment, plan, _sb, stats = (
@@ -738,8 +777,8 @@ async def _execute_pending(
                     recorded_by=None,
                 )
             )
-            return (f"¡Listo! Membresía {plan.name} activada. Vence {_fmt_dt(subscription.end_at)}."
-                    f"{_materialized_count(stats)}{_assigned_seat_note(stats)}")
+            facts = await package_facts(db, plan_id=plan_id, template_id=template_id, subscription=subscription)
+            return f"¡Listo! Membresía registrada.\n{facts}{_materialized_count(stats)}{_assigned_seat_note(stats)}"
         # New customer -> enrollment with standing booking (commits internally).
         person, subscription, _payment, plan, _sb, stats = (
             await enrollment_crud.create_member_enrollment_with_standing_booking(
@@ -758,9 +797,9 @@ async def _execute_pending(
                 recorded_by=None,
             )
         )
-        return (f"¡Bienvenido/a {person.full_name}! Inscripción lista con {plan.name}. "
-                f"Vence {_fmt_dt(subscription.end_at)}.{_materialized_count(stats)}"
-                f"{_assigned_seat_note(stats)}")
+        facts = await package_facts(db, plan_id=plan_id, template_id=template_id, subscription=subscription)
+        return (f"¡Bienvenido/a {person.full_name}! Inscripción lista.\n{facts}"
+                f"{_materialized_count(stats)}{_assigned_seat_note(stats)}")
 
     if action == ACTION_BUY_DAY_PASS:
         purchase = await purchase_day_pass(

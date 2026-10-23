@@ -97,14 +97,51 @@ async def reservation_context(db, member_id):
     return "\n".join(lines)
 
 
-async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=None, requested_date=None, order_id=None):
+async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=None, requested_date=None, order_id=None,
+                         plan_id=None, template_id=None):
     """Mandatory final tool; only DB-verified facts can produce a class confirmation."""
     ctx.validated_reply = None
     ctx.verification_result = "rejected"
     ctx.reply_request = dict(kind=kind, text=text, session_id=session_id, reservation_id=reservation_id,
-                             requested_date=requested_date, order_id=order_id)
+                             requested_date=requested_date, order_id=order_id, plan_id=plan_id, template_id=template_id)
     explicit_day = requested_day(ctx.user_text)
     target_day = explicit_day or (date.fromisoformat(requested_date) if requested_date else None)
+    from app.crud.chatbotPendingCrud import get_active_pending
+    from app.crud.memberships.coverage import package_facts
+    pending = await get_active_pending(ctx.db, ctx.conversation_id) if kind in (
+        "information", "clarification", "membership_information", "purchase",
+    ) else None
+    package_pending = pending is not None and pending.action_type == "buy_package"
+    coverage_question = re.search(r"\b(?:membres[ií]a|mensual|semanal|mi mes|empieza|vigencia|cubre|incluye|clases|horario)\b",
+                                  ctx.user_text, re.I)
+    if kind == "membership_information" or (package_pending and coverage_question and kind in ("information", "clarification")):
+        subscription = None
+        if package_pending:
+            plan_id = pending.payload["plan_id"]
+            template_id = pending.payload.get("template_id")
+        elif ctx.member_id:
+            from app.crud.memberships.subscriptions import get_member_active_subscription
+            from app.models import StandingBooking
+            current = await get_member_active_subscription(ctx.db, ctx.member_id)
+            if current and (plan_id is None or plan_id == current.plan_id):
+                subscription = current
+                plan_id = current.plan_id
+                template_id = await ctx.db.scalar(select(StandingBooking.template_id).where(
+                    StandingBooking.subscription_id == current.id,
+                ).order_by(StandingBooking.id).limit(1))
+        if plan_id is None:
+            return "Consulta el plan y su grupo de horario antes de explicar la cobertura."
+        try:
+            ctx.validated_reply = await package_facts(
+                ctx.db, plan_id=plan_id, template_id=template_id, member_id=ctx.member_id,
+                subscription=subscription,
+            )
+        except ValueError as exc:
+            return str(exc)
+        ctx.verification_result = "accepted"
+        logger.info("chatbot_membership_verification conversation=%s plan=%s template=%s result=accepted",
+                    ctx.conversation_id, plan_id, template_id)
+        return "Cobertura verificada. Finaliza el turno sin modificarla."
     if kind == "information" and re.search(r"\b(?:pagar|comprar|reservar|apartar|mi reserva)\b", ctx.user_text, re.I):
         return "La solicitud es de compra/reserva. Usa purchase, clarification o reservation_confirmation, con datos verificados."
     if kind == "reservation_confirmation":
@@ -120,6 +157,12 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
         if row is None:
             return "Esa reserva no confirma la clase solicitada. Busca la clase correcta y propón su compra."
         reservation, session = row
+        if reservation.subscription_id is not None:
+            from app.models import MembershipSubscription
+            subscription = await ctx.db.get(MembershipSubscription, reservation.subscription_id, populate_existing=True)
+            if (subscription is None or subscription.status != "active" or subscription.person_id != ctx.member_id
+                    or not subscription.start_at <= session.start_at < subscription.end_at):
+                return "La reserva ya no tiene una membresía válida para esa clase. El equipo debe revisar su cobertura."
         mismatch = await requested_session_error(ctx.db, session, ctx.user_text, target_day)
         if mismatch:
             return mismatch
@@ -139,8 +182,6 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
     elif kind in ("information", "purchase", "clarification"):
         # A proposed checkout must also refer to the requested day, never yesterday's purchase.
         if kind == "purchase":
-            from app.crud.chatbotPendingCrud import get_active_pending
-            pending = await get_active_pending(ctx.db, ctx.conversation_id)
             if pending is not None and pending.action_type == "buy_day_pass":
                 session = await ctx.db.get(ClassSession, int(pending.payload["session_id"]), populate_existing=True)
                 if session is None or session.status != "scheduled" or session.start_at <= datetime.now(timezone.utc):
@@ -152,6 +193,16 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
                 ctx.validated_reply = f"Pase diario para {fmt_dt(session.start_at)}. Vence al terminar la clase: {fmt_dt(session.end_at)}.\n{pending.summary or ''}"
                 if link:
                     ctx.validated_reply += f"\nPara confirmar tu lugar, realiza el pago aquí: {link}"
+            elif package_pending:
+                try:
+                    ctx.validated_reply = await package_facts(
+                        ctx.db, plan_id=pending.payload["plan_id"], template_id=pending.payload.get("template_id"),
+                        member_id=ctx.member_id,
+                    )
+                except ValueError as exc:
+                    return str(exc)
+                if pending.mp_init_point:
+                    ctx.validated_reply += f"\nPara completar tu compra: {pending.mp_init_point}"
             elif pending is not None:
                 ctx.validated_reply = pending.summary or "Hay una compra pendiente."
                 if pending.mp_init_point:
@@ -168,6 +219,11 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
             elif re.search(r"mercadopago\.|mpago\.", text, re.I):
                 return "No hay una compra pendiente verificable para enviar ese enlace. Propón primero la compra o indica order_id para el evento."
         if ctx.validated_reply is None:
+            membership_topic = re.search(r"\b(?:membres[ií]a|mensual|semanal|paquete|plan|mi mes)\b",
+                                         ctx.user_text + " " + text, re.I)
+            if membership_topic and re.search(r"\b(?:cubre|incluye|incluidas|abarca|empieza|comienza)\b.{0,90}"
+                                              r"\b(?:clases|membres[ií]a|mes|mi[eé]rcoles|pago)\b", text, re.I | re.S):
+                return "La cobertura de membresía requiere membership_information con plan_id y grupo; no la deduzcas de un solo día."
             if _CONFIRMATION.search(text):
                 return "El texto contiene una confirmación. Usa reservation_confirmation con fecha, sesión y reserva verificables."
             ctx.validated_reply = text.strip()

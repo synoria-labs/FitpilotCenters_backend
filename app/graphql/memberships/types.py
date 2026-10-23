@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Optional
 
 import strawberry
+from strawberry.types import Info
 from app.crud.membershipsCrud import MembershipPlanData, SubscriptionData
 from app.models.membershipsModel import Payment as PaymentModel
 from app.graphql.members.types import Member
@@ -43,6 +44,13 @@ class MembershipPlan:
 
 
 @strawberry.type
+class MembershipCoverage:
+    mode: str
+    included_classes: Optional[int]
+    schedule: Optional[str]
+
+
+@strawberry.type
 class Subscription:
     session_id: Optional[int]
     id: int
@@ -54,6 +62,14 @@ class Subscription:
     plan_name: str
     person_name: str
     remaining_days: Optional[int]
+
+    @strawberry.field
+    async def coverage(self, info: Info) -> MembershipCoverage:
+        from app.models import MembershipSubscription
+        from app.crud.memberships.coverage import subscription_coverage
+        subscription = await info.context.db.get(MembershipSubscription, self.id)
+        result = await subscription_coverage(info.context.db, subscription)
+        return MembershipCoverage(mode=result.mode, included_classes=result.included_classes, schedule=result.schedule)
 
     @classmethod
     def from_data(cls, data: SubscriptionData) -> "Subscription":

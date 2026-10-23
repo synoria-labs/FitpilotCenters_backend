@@ -180,7 +180,7 @@ async def renew_subscription_with_standing_booking(
     needs_standing_booking = plan.fixed_time_slot or template_id is not None
 
     # If template_id/seat_id not provided, try to preserve them from the previous subscription's standing bookings.
-    if not template_id and current_subscription:
+    if not template_id and current_subscription and plan.fixed_time_slot:
         if plan.fixed_time_slot:
             logger.info(
                 "Plan requires fixed_time_slot but no template_id provided. Looking for previous standing booking..."
@@ -220,9 +220,8 @@ async def renew_subscription_with_standing_booking(
     else:
         normalized_start = _normalize_to_utc(start_at)
 
-    # Expire all existing active subscriptions before creating the new one
-    # This prevents having multiple active subscriptions for the same member
-    logger.info("Expiring existing active subscriptions for member %s", member_id)
+    # A prepaid renewal must preserve access and bookings until the current term ends.
+    logger.info("Expiring elapsed subscriptions for member %s", member_id)
 
     # First, get IDs of subscriptions to expire
     expired_subs_result = await db.execute(
@@ -230,6 +229,7 @@ async def renew_subscription_with_standing_booking(
             and_(
                 MembershipSubscription.person_id == member_id,
                 MembershipSubscription.status == "active",
+                MembershipSubscription.end_at <= datetime.now(timezone.utc),
             )
         )
     )
@@ -242,6 +242,7 @@ async def renew_subscription_with_standing_booking(
             and_(
                 MembershipSubscription.person_id == member_id,
                 MembershipSubscription.status == "active",
+                MembershipSubscription.end_at <= datetime.now(timezone.utc),
             )
         )
         .values(status="expired", updated_at=datetime.now(timezone.utc))

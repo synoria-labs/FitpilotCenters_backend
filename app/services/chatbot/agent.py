@@ -40,7 +40,17 @@ _PURCHASE_RULES = (
     "- PASE DIARIO (1 día): usa propose_day_pass(plan_id, session_id, full_name si es nuevo). Muestra "
     "el plan diario con get_membership_plans y las clases con list_available_classes (cada clase tiene "
     "un id=session). Reserva ese día.\n"
-    "El asiento/bici se asigna automáticamente; no le pidas el número al cliente."
+    "El asiento/bici se asigna automáticamente; no le pidas el número al cliente.\n"
+    "COBERTURA: un template identifica un GRUPO de horario (misma hora, sede, disciplina e instructor), "
+    "no solo su día. Incluye TODOS los días configurados del grupo dentro de la vigencia: una semana "
+    "puede incluir 5 o 7 clases; un mes depende del calendario. Nunca deduzcas 4–5 clases por mes "
+    "a partir de un miércoles ni uses un class_limit histórico para recortar un horario fijo. "
+    "Para explicar días, cantidad de clases o inicio del periodo consulta get_membership_coverage y "
+    "responde con kind=membership_information, plan_id y template_id del grupo.\n"
+    "ACCESO LIBRE: propose_membership sin template_id; sin límite de clases durante la vigencia, "
+    "cada reserva depende del cupo y no se genera automáticamente. CRÉDITOS: el número contratado "
+    "limita las reservas. Si la clase está cubierta por una membresía usa reserve_with_membership, "
+    "sin cobrar otro pase; luego confirma con reservation_confirmation."
 )
 
 _EVENT_RULES = (

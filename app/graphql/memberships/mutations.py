@@ -123,7 +123,7 @@ class MembershipMutation:
         if error:
             return MembershipPlanMutationResponse(success=False, plan=None, message=error)
 
-        _UNSET = object()
+        from app.crud.memberships.plans import _UNSET
 
         def _opt(value):
             # Treat None as "not provided" so partial updates don't wipe fields,

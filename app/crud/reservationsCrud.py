@@ -104,12 +104,20 @@ async def create_reservation(
     if not person:
         raise ValueError(f"Person {person_id} not found")
 
+    if seat_id is None:
+        seats = await get_available_seats(db, session_id)
+        if seats:
+            seat_id = next((s.id for s in seats if s.is_available), None)
+            if seat_id is None:
+                raise ValueError("No hay bicicletas/asientos disponibles para esta clase.")
+
     # Validate seat if provided
     if seat_id:
         seat_result = await db.execute(
             select(Seat).where(
                 and_(
                     Seat.id == seat_id,
+                    Seat.venue_id == session.venue_id,
                     Seat.is_active == True
                 )
             )
@@ -144,6 +152,9 @@ async def create_reservation(
     if existing_person_reservation.scalar_one_or_none():
         raise ValueError("Person already has an active reservation for this session")
 
+    from app.crud.memberships.coverage import reservation_subscription
+    subscription_id = await reservation_subscription(db, person_id=person_id, session=session)
+
     # Check capacity
     reserved_count_result = await db.execute(
         select(func.count(Reservation.id)).where(
@@ -159,14 +170,20 @@ async def create_reservation(
         raise ValueError("Session is at full capacity")
 
     # Create the reservation
-    reservation = Reservation(
-        session_id=session_id,
-        person_id=person_id,
-        seat_id=seat_id,
-        status='reserved',
-        reserved_at=datetime.now(timezone.utc),
-        source=source
-    )
+    # A canceled reservation can be bought/booked again without violating uq_session_person.
+    reservation = await db.scalar(select(Reservation).where(
+        Reservation.session_id == session_id, Reservation.person_id == person_id,
+    ))
+    if reservation is not None and reservation.status != "canceled":
+        raise ValueError("Person already has a reservation for this session")
+    if reservation is None:
+        reservation = Reservation(session_id=session_id, person_id=person_id)
+    reservation.subscription_id = subscription_id
+    reservation.seat_id = seat_id
+    reservation.status = "reserved"
+    reservation.reserved_at = datetime.now(timezone.utc)
+    reservation.source = source
+    reservation.checkin_at = reservation.checkout_at = None
 
     db.add(reservation)
 

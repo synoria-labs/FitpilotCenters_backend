@@ -46,7 +46,7 @@ def _plan_to_data(plan: MembershipPlan) -> MembershipPlanData:
         price=float(plan.price),
         duration_value=plan.duration_value,
         duration_unit=plan.duration_unit,
-        class_limit=plan.class_limit,
+        class_limit=plan.class_limit if plan.plan_type == "credit_pack" else None,
         plan_type=getattr(plan, "plan_type", "fixed_schedule") or "fixed_schedule",
         fixed_time_slot=plan.fixed_time_slot,
         is_active=bool(getattr(plan, "is_active", True)),

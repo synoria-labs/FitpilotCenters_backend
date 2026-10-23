@@ -125,6 +125,7 @@ class Reservation(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     session_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("class_sessions.id", ondelete="CASCADE"), nullable=False)
     person_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("people.id"), nullable=False)
+    subscription_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("membership_subscriptions.id"))
     seat_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("seats.id"))
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="reserved")
     reserved_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow)

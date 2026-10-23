@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Dict, List, Optional
 
 from sqlalchemy import and_, func, select
@@ -198,6 +198,7 @@ async def _resolve_group_seat(
     window_end: date,
     person_id: int,
     preferred_seat_id: Optional[int],
+    *, start_at: Optional[datetime] = None, end_at: Optional[datetime] = None,
 ) -> tuple[Optional[int], Optional[str]]:
     """Pick a seat free across ALL templates of a timeslot group for the whole window.
 
@@ -235,6 +236,7 @@ async def _resolve_group_seat(
         .where(
             and_(
                 ClassSession.template_id.in_(template_ids),
+                ClassSession.status == "scheduled",
                 between_dates(ClassSession.start_at, window_start, window_end),
                 Reservation.seat_id.isnot(None),
                 Reservation.status.in_(["reserved", "checked_in"]),
@@ -243,6 +245,10 @@ async def _resolve_group_seat(
         )
         .distinct()
     )
+    if start_at is not None:
+        taken_stmt = taken_stmt.where(ClassSession.start_at >= start_at)
+    if end_at is not None:
+        taken_stmt = taken_stmt.where(ClassSession.start_at < end_at)
     taken_ids = {seat_id for (seat_id,) in (await db.execute(taken_stmt)).all()}
 
     free_seats = [s for s in seats if s.id not in taken_ids]

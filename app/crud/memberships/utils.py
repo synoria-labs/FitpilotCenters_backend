@@ -3,14 +3,14 @@ from decimal import Decimal
 from typing import Optional
 
 from app.models import MembershipPlan
+from app.core.timezones import to_local
 
 
 def _normalize_to_utc(dt: datetime) -> datetime:
-    """Ensure datetime includes timezone info, preserving the provided offset."""
-    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+    """Normalize aware instants to UTC; naive API values are interpreted as UTC."""
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=local_tz)
-    return dt
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def _resolve_payment_amount(
@@ -26,10 +26,13 @@ def _resolve_payment_amount(
 
 def _calculate_subscription_end(plan: MembershipPlan, start_at: datetime) -> datetime:
     """Calculate subscription end datetime based on plan duration."""
+    start_at = to_local(start_at)
     if plan.duration_unit == "day":
         end_at = start_at + timedelta(days=plan.duration_value)
     elif plan.duration_unit == "week":
-        end_at = start_at + timedelta(weeks=plan.duration_value)
+        # A complete seven-day interval: buying after today's class still covers next week's
+        # occurrence, while buying before it never includes an eighth day.
+        return (start_at + timedelta(weeks=plan.duration_value)).astimezone(timezone.utc)
     elif plan.duration_unit == "month":
         from dateutil.relativedelta import relativedelta
 
@@ -39,9 +42,7 @@ def _calculate_subscription_end(plan: MembershipPlan, start_at: datetime) -> dat
         end_at = start_at + timedelta(days=plan.duration_value)
 
     # Adjust so the membership ends at the end of the day (23:59:59).
-    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
-    tz = end_at.tzinfo or local_tz
-    return end_at.astimezone(tz).replace(hour=23, minute=59, second=59, microsecond=0)
+    return end_at.replace(hour=23, minute=59, second=59, microsecond=0).astimezone(timezone.utc)
 
 
 def _align_date_to_weekday(start_date: date, template_weekday: Optional[int]) -> date:
@@ -110,7 +111,9 @@ def _calculate_window_end_for_plan(
         return min(subscription_end, window_start + timedelta(days=duration_value - 1))
 
     if plan.duration_unit == "week" and duration_value and duration_value > 0:
-        return min(subscription_end, window_start + timedelta(days=(duration_value * 7) - 1))
+        # The last local date can contain a class before the exclusive end instant.
+        # Callers also filter full start_at/end_at timestamps, not just these dates.
+        return min(subscription_end, window_start + timedelta(days=duration_value * 7))
 
     # For month/year (or any other unit) rely on subscription_end which already honors duration.
     return subscription_end

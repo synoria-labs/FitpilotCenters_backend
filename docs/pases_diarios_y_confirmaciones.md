@@ -5,7 +5,8 @@ Los planes con `duration_unit=day` y `duration_value=1` se venden para una únic
 en una transacción. `membership_subscriptions.session_id` identifica la clase;
 `start_at` es la acreditación y `end_at` es su fin programado. No depende del
 check-in, del cierre manual ni de un barrido periódico. No extiende ni cancela
-otras membresías. Los planes de varios días, semanas y meses siguen su cálculo.
+otras membresías. Los paquetes de horario fijo y el acceso libre siguen las reglas
+de cobertura descritas abajo.
 
 ## API y clientes
 
@@ -39,7 +40,8 @@ tras activar el cambio: indican que se bloqueó un texto no verificado.
 
 ## Despliegue progresivo
 
-1. Aplicar y validar la migración `e5b8c1d4f7a0` (solo columna nullable, FK e índice).
+1. Aplicar y validar las migraciones `e5b8c1d4f7a0` y `f6c9d2e5a8b1` (columnas
+   nullable, FK e índices para vincular pases y reservas con su compra).
    No ejecutar backfill. No recalcula vigencias ni modifica los pases históricos.
 2. Para una ventana con clientes antiguos, desplegar el backend con
    `DAY_PASS_SESSION_REQUIRED=false`. Las compras que ya envían sesión y el chatbot
@@ -66,3 +68,55 @@ igual que la fixture de pruebas. Para el frontend, ejecutar sus pruebas con
 
 La regresión de Karla conserva la reserva de ayer y una membresía histórica
 activa, verifica que ninguna permita confirmar hoy y no actualiza esos registros.
+
+## Cobertura de los paquetes
+
+El número de bicicletas pertenece al cupo de la sesión y a sus asientos, no al
+límite de clases del plan. Cada tipo de membresía tiene una regla diferente:
+
+- **Horario fijo:** todas las ocurrencias del grupo (disciplina, sede, hora e
+  instructor) entre `start_at` inclusive y `end_at` exclusive. Un semanal de
+  lunes a viernes incluye cinco clases; de lunes a domingo, siete. El mensual
+  cuenta los días reales de su calendario; no asume cuatro semanas ni 4–5 clases.
+  Las clases canceladas o desplazadas no son clases disponibles. Los cupos y las
+  excepciones/reprogramaciones siguen siendo controles independientes.
+- **Acceso libre:** sin límite de clases ni horario fijo durante la vigencia.
+  Cada reserva requiere disponibilidad; comprarlo no aparta todas las clases.
+- **Créditos:** `class_limit` es la cantidad de créditos contratados. Las reservas
+  activas, asistencias e inasistencias consumen crédito; las canceladas no. Una
+  suscripción se bloquea durante el consumo para impedir gastar el último crédito
+  simultáneamente en dos clases. Los límites diarios/semanales opcionales solo
+  corresponden a este tipo de plan.
+
+En nuevos semanales, la vigencia es un intervalo completo de siete días desde su
+inicio. Así, comprar después de la clase de hoy incluye la correspondiente clase
+de la siguiente semana, sin añadir una octava clase. Una renovación comienza al
+finalizar la anterior, que conserva su estado y reservas mientras siga vigente.
+No se recalculan fechas ni se actualizan suscripciones históricas.
+
+`Subscription.coverage { mode includedClasses schedule }` expone la cobertura
+efectiva. Para horario fijo se calcula por sus reservas recurrentes y fechas; el
+valor histórico de `membership_plans.class_limit` no recorta ese calendario.
+Al guardar planes fijos o de acceso libre se limpia el límite manual: `NULL` en
+horario fijo significa **calculado por calendario**, y en acceso libre significa
+**sin límite**. El cliente muestra estas reglas por separado.
+
+Las reservas nuevas guardan `reservations.subscription_id` para atribuir el
+consumo a su compra sin modificar el historial. En paquetes de créditos antiguos,
+las reservas sin vínculo dentro de su vigencia se cuentan de forma conservadora.
+Las nuevas reservas regulares validan socio, vigencia, grupo/créditos y cupo antes
+de guardarse; las reprogramaciones autorizadas conservan la cobertura original.
+
+El catálogo del chatbot muestra grupos completos con un `template_id` utilizable.
+`get_membership_coverage` consulta su cobertura y `membership_information` redacta
+la explicación en el servidor; las propuestas antiguas se reconstruyen al leerlas
+en vez de reenviar resúmenes con un solo día. Una compra nueva comienza al
+acreditarse el pago, no al llegar el día de la plantilla elegida. El acceso libre
+y los créditos se compran sin plantilla; `reserve_with_membership` reserva una
+clase cubierta sin volver a cobrar un pase. Los logs añaden
+`chatbot_membership_verification` para auditar estas respuestas.
+
+La regresión de Ana Luisa conserva un resumen antiguo de miércoles y comprueba
+que la respuesta incluya lunes a viernes a las 20:00. Las pruebas también cubren
+semanas de cinco/siete clases antes y después de la hora de clase, todo el mes,
+renovación anticipada, acceso libre, cupo de bicicletas y consumo concurrente.
