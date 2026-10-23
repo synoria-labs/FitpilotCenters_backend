@@ -41,9 +41,14 @@ Fitness»). Se venden por WhatsApp con Mercado Pago y se administran desde la pa
 1. Toca «Quiero reservar». El asistente identifica el evento por la campaña vinculada.
 2. Le pide el nombre completo del participante. Si es un socio que compra para sí, ya lo tiene.
 3. Le repite el evento, la fecha, el horario y el precio, y le manda el enlace de Mercado Pago.
-4. **Apartado:** su bici queda apartada **30 minutos** (configurable por evento). El enlace
-   vence a la misma hora y solo acepta tarjeta o saldo de Mercado Pago. No acepta OXXO, cajero
-   ni transferencia, que tardan días en acreditarse.
+4. El evento permite elegir entre dos modos en **Evento → Vigencia del enlace**:
+   - **Con caducidad** (predeterminado): su bici queda apartada **30 minutos**, configurable de
+     5 a 240 minutos. El enlace vence a la misma hora.
+   - **Enlace sin caducidad**: el agente verifica disponibilidad antes de generar o reenviar
+     el enlace, pero no aparta bicicleta ni reduce el cupo mientras el cliente paga. El cupo se
+     verifica otra vez cuando Mercado Pago acredita el pago. Si ya no hay lugar, el pago queda
+     registrado para revisión del administrador y reembolso manual; no se confirma una entrada.
+   Ambos modos conservan tarjeta o saldo de Mercado Pago; no aceptan OXXO, cajero ni transferencia.
 5. Cuando Mercado Pago acredita el pago, el sistema confirma el lugar y le manda por WhatsApp
    la confirmación con bici, fecha y dirección. **El asistente nunca confirma por su cuenta.**
 
@@ -57,8 +62,9 @@ aparta nada. Nunca convierte la compra en una reserva confirmada por texto.
 | Pago aprobado a tiempo | Confirma la entrada y registra el pago en Finanzas. |
 | Mercado Pago avisa dos veces del mismo pago | No hace nada la segunda vez. |
 | Pago rechazado | El apartado sigue vivo; el cliente puede reintentar con el mismo enlace. |
-| Pago que llega después de que venció el apartado | Si aún hay lugar, lo confirma (puede cambiar la bici). Si no, lo reembolsa y avisa al cliente. |
-| Pago de una compra cancelada o de un evento cancelado | Lo reembolsa y avisa al cliente. |
+| Pago que llega después de que venció un apartado con caducidad | Si aún hay lugar, lo confirma (puede cambiar la bici). Si no, lo reembolsa y avisa al cliente. |
+| Pago de enlace sin caducidad cuando ya no hay lugar | Registra el dinero en Finanzas, sin entrada ni bicicleta; queda «En revisión» con reembolso manual requerido. Avisa al cliente que el administrador debe revisarlo. No solicita un reembolso automáticamente. |
+| Pago de una compra cancelada o de un evento cancelado | Con caducidad, lo reembolsa; con enlace sin caducidad, requiere revisión y reembolso manual. |
 | Segundo pago para una entrada ya pagada | Reembolsa el pago extra; la entrada sigue confirmada. |
 | El importe o la moneda no coinciden | No confirma; deja la compra «En revisión» y avisa que un asesor la contactará. |
 | Falla el reembolso automático | Deja la compra «En revisión» para reembolsarla a mano. |
@@ -68,6 +74,30 @@ Las situaciones anómalas quedan registradas en `webhook_logs`, con `event_type`
 
 Cada 2 minutos un barrido revisa los apartados vencidos. Antes de liberar uno, le pregunta a
 Mercado Pago si ese pago sí se aprobó (por si se perdió el aviso).
+El barrido también concilia los enlaces sin caducidad en rotación y nunca los vence por tiempo.
+
+## Revisar pagos sin cupo y reembolsos manuales
+
+En **Participantes**, «Pago sin cupo · revisar reembolso» muestra el importe, el identificador de
+Mercado Pago y el motivo. El encabezado del evento indica cuántos casos siguen pendientes.
+
+1. Seleccionar la compra y pulsar **Revisar reembolso**.
+2. Verificar el pago en Mercado Pago y marcar **Revisé el pago y autorizo el reembolso**.
+   Se muestran participante, pago, importe y motivo; sin esa confirmación no se
+   puede continuar.
+3. **Verificar y reembolsar** consulta nuevamente Mercado Pago y valida identificador,
+   referencia, importe, moneda y estado antes de solicitar la devolución. Registra la cuenta
+   del administrador y la fecha de revisión. Solo esta decisión explícita puede iniciar el
+   reembolso de estos casos; el chatbot y los procesos periódicos no lo hacen.
+4. Si el administrador ya hizo el reembolso completo directamente en Mercado Pago, se
+   comprueba ese estado y se registra sin solicitar otra devolución. El webhook también puede
+   registrar esa devolución. Una devolución parcial requiere terminar la revisión en Mercado Pago.
+
+Guardar un cambio de modo o de minutos en un evento publicado afecta **compras nuevas**. Cada
+compra conserva su modo y vencimiento originales. Los enlaces sin caducidad tienen `expires=false`
+sin fechas de vencimiento; se pueden desactivar explícitamente al cancelar la compra o el evento.
+Un pago de enlace abierto que llega cuando el evento ya no está a la venta también requiere
+revisión y reembolso manual, y no da acceso al evento.
 
 ## Atender a los clientes desplazados
 
@@ -112,6 +142,24 @@ y no se le reserva una clase que no se va a dar.
    - Las demás se quedan desplazadas, con el motivo, para revisarlas a mano.
 
 ## Detalles técnicos
+
+- **Migración `b8e1f4a7c0d3`**: añade `payment_link_expires` al evento y a cada compra, con
+  predeterminado `true`, conservando el comportamiento y los vencimientos anteriores. Añade
+  `manual_refund_required`, `refund_reviewed_by` y `refund_reviewed_at` a las compras. Los enlaces
+  abiertos pendientes no pueden tener `seat_id` ni `hold_expires_at`; lo exige la base.
+- **Contrato GraphQL**: `SpecialEventInput.paymentLinkExpires` es opcional, y omitirlo al
+  actualizar conserva la selección. El evento expone `paymentLinkExpires` y
+  `manualRefundsPending`. Las compras exponen el modo, la revisión y el reembolso requerido.
+  `refundSpecialEventOrder(reviewConfirmed: Boolean = false)` exige confirmación y una cuenta
+  autorizada para los casos de revisión manual.
+- **Concurrencia**: el bloqueo del evento serializa la comprobación y asignación de cupo al
+  pagar. El bloqueo de la compra serializa la generación del enlace y reutiliza la preferencia
+  ante reintentos, sin mantener bloqueado el inventario durante la llamada a Mercado Pago.
+- **Despliegue**: aplicar primero la migración y desplegar el backend; distribuir después el
+  frontend. Los eventos conservan el modo con caducidad hasta que un administrador elija el
+  nuevo modo y guarde. No se recalculan enlaces ya emitidos. La reversión se bloquea si quedan
+  enlaces abiertos pendientes o reembolsos manuales sin resolver; cerrar y verificar esos
+  enlaces en Mercado Pago antes de revertir.
 
 - **Tablas:**
   - `special_events`, `special_event_seats` y `special_event_orders` (apartado, pago y entrada).

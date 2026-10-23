@@ -147,11 +147,15 @@ async def describe_special_event(db: AsyncSession, event) -> str:
         lines.append(f"Lugares disponibles: {avail.available}.")
     else:
         lines.append(f"No está a la venta ahora: {avail.sales_closed_reason}")
-    lines.append(
-        f"Al iniciar la compra el lugar se aparta {event.hold_minutes} minutos mientras se paga "
-        "con el link de Mercado Pago (tarjeta o saldo de Mercado Pago). Comprar el evento no usa "
-        "ni modifica la membresía; quien tenga clase regular a esa hora también puede comprarlo."
-    )
+    if event.payment_link_expires:
+        lines.append(f"Al iniciar la compra el lugar se aparta {event.hold_minutes} minutos mientras se paga "
+                     "con el link de Mercado Pago (tarjeta o saldo de Mercado Pago).")
+    else:
+        lines.append("El enlace de Mercado Pago no tiene caducidad y NO aparta lugar ni bicicleta. "
+                     "Consulta disponibilidad antes de generar o reenviar el enlace. El cupo se verifica "
+                     "otra vez al acreditarse el pago; si ya no hay lugar, el administrador revisará el pago "
+                     "y gestionará un reembolso manual. No prometas un lugar apartado ni un reembolso realizado.")
+    lines.append("Comprar el evento no usa ni modifica la membresía; quien tenga clase regular a esa hora también puede comprarlo.")
     return "\n".join(lines)
 
 
@@ -161,11 +165,16 @@ def _order_status_es(order, event) -> str:
     if status == "paid":
         return "PAGADA y confirmada (verificado con Mercado Pago)."
     if status == ORDER_AWAITING_PAYMENT:
+        if not order.payment_link_expires:
+            return ("pendiente de pago, SIN lugar apartado. Enlace sin caducidad; el cupo se verifica al pagar. "
+                    f"Link: {order.mp_init_point or '(link no disponible)'}")
         expires = (
             local_time_label(order.hold_expires_at, event.timezone) if order.hold_expires_at else "?"
         )
         link = order.mp_init_point or "(link no disponible)"
         return f"pendiente de pago, apartada hasta las {expires}. Link: {link}"
+    if status == "needs_review" and order.manual_refund_required:
+        return "pago acreditado sin entrada confirmada; requiere revisión del administrador y reembolso manual en Mercado Pago, aún no realizado."
     return {
         "expired": "vencida sin pago (el lugar se liberó).",
         "canceled": "cancelada.",
@@ -588,8 +597,9 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         participant_name: Optional[str] = None,
         participant_phone: Optional[str] = None,
     ) -> str:
-        """Inicia la compra de UNA entrada a un evento especial: aparta un lugar y genera el link de
-        pago de Mercado Pago. Requiere el nombre completo del participante (si es el socio
+        """Inicia la compra de UNA entrada a un evento especial: comprueba cupo y genera el link de
+        Mercado Pago. Solo aparta lugar si el evento usa enlaces con caducidad.
+        Requiere el nombre completo del participante (si es el socio
         identificado comprando para sí, puede omitirse). El teléfono por defecto es el del cliente."""
         name = (participant_name or "").strip()
         if not name and ctx.member_id is not None:
@@ -611,6 +621,16 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         if result.already_paid:
             return f"{result.message} No generes otro pago."
         event = await special_events_crud.get_event(db, int(event_id))
+        if not result.payment_link_expires:
+            return (
+                f"Enlace de pago SIN CADUCIDAD para {name} en «{event.name}» "
+                f"({local_schedule_label(event.start_at, event.end_at, event.timezone)}), "
+                f"{money_label(event.price, event.currency)}. NO hay lugar ni bicicleta apartados. "
+                "El cupo se verificará al acreditarse el pago; si ya no hay lugar, el administrador "
+                "deberá revisar y gestionar un reembolso manual en Mercado Pago. "
+                f"Usa respond_to_customer(kind=purchase, order_id={result.order_id}) para enviar el enlace "
+                "con la disponibilidad verificada de nuevo. Nunca digas «tu lugar está apartado» ni que ya se reembolsó."
+            )
         expires = (
             local_time_label(result.hold_expires_at, event.timezone)
             if result.hold_expires_at

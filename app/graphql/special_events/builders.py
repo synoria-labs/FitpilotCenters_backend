@@ -37,6 +37,7 @@ from app.models.specialEventModel import (
     SpecialEvent,
     SpecialEventDisplacement,
     SpecialEventTakeover,
+    SpecialEventOrder,
 )
 
 
@@ -101,6 +102,10 @@ async def build_event(db: AsyncSession, event: SpecialEvent) -> SpecialEventType
         )
     ).all()
     ready, warning = payments_status()
+    manual_refunds_pending = int(await db.scalar(select(func.count()).select_from(SpecialEventOrder).where(
+        SpecialEventOrder.event_id == event.id, SpecialEventOrder.manual_refund_required.is_(True),
+        SpecialEventOrder.status.in_(("needs_review", "refund_pending")),
+    )) or 0)
     local_start = to_local(event.start_at, event.timezone)
     local_end = to_local(event.end_at, event.timezone) if event.end_at else None
     return SpecialEventType(
@@ -126,6 +131,8 @@ async def build_event(db: AsyncSession, event: SpecialEvent) -> SpecialEventType
         currency=event.currency,
         capacity=event.capacity,
         hold_minutes=event.hold_minutes,
+        payment_link_expires=event.payment_link_expires,
+        manual_refunds_pending=manual_refunds_pending,
         status=event.status,
         sold=avail.paid,
         held=avail.held,
@@ -161,6 +168,10 @@ def build_order(row: orders_crud.OrderRow) -> SpecialEventOrderType:
         payment_method=row.payment_method,
         paid_at=row.paid_at,
         hold_expires_at=row.hold_expires_at,
+        payment_link_expires=row.payment_link_expires,
+        manual_refund_required=row.manual_refund_required,
+        refund_reviewed_by=row.refund_reviewed_by,
+        refund_reviewed_at=row.refund_reviewed_at,
         mp_status=row.mp_status,
         mp_payment_id=row.mp_payment_id,
         review_reason=row.review_reason,
