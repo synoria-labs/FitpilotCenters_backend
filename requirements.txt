@@ -8,7 +8,10 @@ strawberry-graphql[fastapi]>=0.282.0
 # Database
 # Upper bounds cap the next MAJOR so a breaking release can't land silently on a
 # fresh install / CI / deploy (the current resolution stays well within range).
-sqlalchemy>=2.0.25,<3
+# [asyncio] pulls greenlet, which the async engine needs: SQLAlchemy 2.1 stopped installing it
+# by default, so a fresh install (CI, a new Docker image) resolved 2.1.x without it and the app
+# could not even import its engine. Stay on the 2.0 line this code is tested with.
+sqlalchemy[asyncio]>=2.0.25,<2.1
 asyncpg>=0.29.0
 alembic>=1.13.0,<2
 
