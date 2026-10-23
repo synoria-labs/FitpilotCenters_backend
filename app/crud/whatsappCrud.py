@@ -5,7 +5,7 @@ Read helpers power the desktop chat UI (conversation list + message thread).
 Write/upsert helpers are used by the inbound webhook ingest pipeline and the
 outbound send mutation. Primary keys are assigned by the database (never set ``id``).
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional, List, Dict
 
@@ -26,7 +26,9 @@ from app.models import (
     People,
     PersonRole,
     Role,
+    WhatsAppTemplate,
 )
+from app.services.whatsapp_template_components import buttons_from_components
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +98,34 @@ class ChatMediaData:
 
 
 @dataclass
+class ChatTemplateButtonData:
+    """A button of the template a message was sent from, as WhatsApp draws it under the bubble."""
+
+    type: str
+    text: str
+    url: Optional[str] = None
+    phone_number: Optional[str] = None
+
+
+def template_buttons_data(components: Optional[list]) -> List[ChatTemplateButtonData]:
+    """Top-level BUTTONS of a template, in order (carousel-card buttons belong to the cards)."""
+    buttons: List[ChatTemplateButtonData] = []
+    for button in buttons_from_components(components):
+        button_type = str(button.get("type") or "").upper()
+        if not button_type:
+            continue
+        buttons.append(
+            ChatTemplateButtonData(
+                type=button_type,
+                text=str(button.get("text") or ""),
+                url=str(button["url"]) if button.get("url") else None,
+                phone_number=str(button["phone_number"]) if button.get("phone_number") else None,
+            )
+        )
+    return buttons
+
+
+@dataclass
 class ChatMessageData:
     id: int
     conversation_id: int
@@ -108,6 +138,9 @@ class ChatMessageData:
     context_message_id: Optional[str] = None
     media_url: Optional[str] = None
     media: Optional[ChatMediaData] = None
+    template_id: Optional[int] = None
+    # Filled by ``_attach_template_buttons``: the buttons live on the template, not the message.
+    template_buttons: List[ChatTemplateButtonData] = field(default_factory=list)
 
     @classmethod
     def from_model(cls, m: Message) -> "ChatMessageData":
@@ -133,6 +166,7 @@ class ChatMessageData:
             context_message_id=m.context_message_id,
             media_url=media.media_url if media else None,
             media=media,
+            template_id=m.template_id,
         )
 
 
@@ -628,7 +662,32 @@ async def _latest_message_per_conversation(
     latest: Dict[int, ChatMessageData] = {}
     for m in messages:
         latest[m.conversation_id] = ChatMessageData.from_model(m)
+    await _attach_template_buttons(db, list(latest.values()))
     return latest
+
+
+async def _attach_template_buttons(db: AsyncSession, messages: List[ChatMessageData]) -> None:
+    """Fill ``template_buttons`` of template messages from their template, in one query.
+
+    A send persists the rendered text and the header media, not the buttons: those stay in
+    ``whatsapp_templates.components``. Reading them back lets the chat draw them under the
+    bubble like WhatsApp does. They reflect the template as it is now; a template deleted
+    since the send simply yields no buttons.
+    """
+    template_ids = {m.template_id for m in messages if m.template_id is not None}
+    if not template_ids:
+        return
+    rows = await db.execute(
+        select(WhatsAppTemplate.id, WhatsAppTemplate.components).where(
+            WhatsAppTemplate.id.in_(template_ids)
+        )
+    )
+    buttons_by_template = {
+        template_id: template_buttons_data(components) for template_id, components in rows.all()
+    }
+    for message in messages:
+        if message.template_id is not None:
+            message.template_buttons = buttons_by_template.get(message.template_id, [])
 
 
 async def _unread_counts(db: AsyncSession, conv_ids: List[int]) -> Dict[int, int]:
@@ -708,7 +767,9 @@ async def get_conversation_messages(
     )
     messages = list((await db.execute(stmt)).scalars().all())
     messages.reverse()  # display oldest -> newest
-    return [ChatMessageData.from_model(m) for m in messages]
+    data = [ChatMessageData.from_model(m) for m in messages]
+    await _attach_template_buttons(db, data)
+    return data
 
 
 async def get_message_by_id(db: AsyncSession, message_id: int) -> Optional[ChatMessageData]:
@@ -719,7 +780,11 @@ async def get_message_by_id(db: AsyncSession, message_id: int) -> Optional[ChatM
         .where(Message.id == message_id)
     )
     m = (await db.execute(stmt)).scalars().first()
-    return ChatMessageData.from_model(m) if m else None
+    if m is None:
+        return None
+    data = ChatMessageData.from_model(m)
+    await _attach_template_buttons(db, [data])
+    return data
 
 
 # ---------------------------------------------------------------------------
