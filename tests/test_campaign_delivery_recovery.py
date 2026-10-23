@@ -605,3 +605,52 @@ async def test_graphql_accepts_causes_and_returns_typed_cause_details(db, monkey
     }''', variable_values={'id': c.id, 'causes': []}, context_value=context)
     assert not result.errors and result.data['recoverCampaignRecipients']['pending'] == 0
     assert r.status == 'failed'
+
+
+async def test_latest_real_error_survives_a_local_omission_and_not_sent_attempt(db):
+    c, r = await seed(db, status='skipped')
+    r.skip_reason, r.error = 'daily_cap', None
+    a = await attempt(db, c, r)
+    a.state, a.error_code, a.error_detail = 'failed', 131048, 'Spam limit'
+    local = await attempt(db, c, r, 1)
+    local.state, local.wa_message_id = 'not_sent', None
+    assert d.recovery_cause(r, [a, local])[0] == 'other_error'
+    assert (await d.recovery(db, c.id))['eligible'] == 0
+
+
+async def test_stale_invalid_request_can_recover_to_a_different_valid_number(db):
+    c, r = await seed(db, status='sending', number='1234')
+    r.updated_at = d.now() - timedelta(hours=25)
+    a = await attempt(db, c, r)
+    a.state, a.started_at, a.accepted_at, a.wa_message_id = 'started', r.updated_at, None, None
+    person = await db.get(People, r.person_id)
+    person.phone_number = '5218712223333'
+    await db.flush()
+    assert (await d.recovery(db, c.id, execute=True, causes=['bad_number']))['eligible'] == 1
+    assert r.wa_id == '5218712223333'
+
+
+async def test_duplicate_owner_does_not_change_when_cause_selection_changes(db, monkeypatch):
+    c, first = await seed(db, policy='allow_additional', status='sent')
+    await attempt(db, c, first)
+    monkeypatch.setattr(d, 'now', lambda: AT + timedelta(hours=25))
+    alias = CampaignRecipient(campaign_id=c.id, person_id=first.person_id, wa_id=first.wa_id,
+                              dedup_key=f'alias-recovery:{c.id}', status='skipped', skip_reason='recency_block')
+    db.add(alias)
+    await db.flush()
+    for selected in (None, ['unconfirmed'], ['recency_block']):
+        preview = await d.recovery(db, c.id, causes=selected)
+        rows = {row['recipient_id']: row for row in preview['recipients']}
+        assert rows[first.id]['eligible'] and rows[alias.id]['reason'] == 'duplicates'
+    assert (await d.recovery(db, c.id, execute=True, causes=['recency_block']))['eligible'] == 0
+
+
+async def test_new_live_attempt_is_not_overridden_by_old_manual_authorization(db, monkeypatch):
+    c, r = await seed(db, policy='allow_additional', status='sent')
+    await attempt(db, c, r)
+    monkeypatch.setattr(d, 'now', lambda: AT + timedelta(hours=25))
+    await d.recovery(db, c.id, execute=True, causes=['unconfirmed'])
+    live = await attempt(db, c, r, 2)
+    live.started_at, live.state = d.now(), 'started'
+    await db.flush()
+    assert await d.check_recipient(db, c, r) == 'uncertain_previous_send'

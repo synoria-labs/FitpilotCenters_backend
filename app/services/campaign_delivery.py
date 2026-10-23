@@ -40,7 +40,7 @@ def _utc(value):
 
 def recovery_cause(recipient, attempts):
     """Classify the snapshot without losing errors on legacy rows or earlier attempts."""
-    latest = max(attempts, key=lambda a: a.id, default=None)
+    latest = max((a for a in attempts if a.state != "not_sent"), key=lambda a: a.id, default=None)
     if (recipient.delivered_at or recipient.read_at or recipient.replied_at
             or (latest and (latest.delivered_at or latest.read_at))):
         return None, "Entrega o respuesta confirmada."
@@ -407,7 +407,8 @@ async def recovery(db, campaign_id, *, execute=False, causes=None):
         elif cause == "bad_number" and not corrected:
             reason, block_detail = "blocked", "Corrige su número en Socios: debe ser distinto y válido."
         else:
-            active = [a for a in peers if a.state in ("started", "uncertain", "accepted", "sent")]
+            active = [a for a in peers if a.state in ("started", "uncertain", "accepted", "sent")
+                      and (not corrected or a.phone_key == key)]
             if active and (cause != "unconfirmed" or any(
                     _utc(a.started_at) > now() - timedelta(hours=24) for a in active)):
                 reason, block_detail = "review", "Esperando confirmación de Meta; no reenviar antes de 24 h."
