@@ -6,7 +6,7 @@ Mirrors the layering of ``notificationsCrud``:
 * A/B variants (``campaign_variants``) — the MVP keeps a single auto-created variant ``A``.
 * recipient ledger (``campaign_recipients``) — insert is idempotent via ``ON CONFLICT
   (dedup_key) DO NOTHING``; dispatch claims a *batch* with an atomic compare-and-set
-  (``UPDATE ... WHERE status IN ('pending','failed') ... FOR UPDATE SKIP LOCKED RETURNING id``)
+  (``UPDATE ... WHERE status = 'pending' ... FOR UPDATE SKIP LOCKED RETURNING id``)
   so the row itself is the idempotency ledger — no separate log table, and concurrent
   dispatchers take disjoint batches instead of colliding.
 
@@ -73,6 +73,8 @@ class CampaignData:
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
     special_event_id: Optional[int] = None
+    daily_cap_policy: str = "respect"
+    auto_retry_meta_limits: bool = False
 
     @classmethod
     def from_model(cls, m: Campaign) -> "CampaignData":
@@ -102,6 +104,8 @@ class CampaignData:
             created_at=m.created_at,
             updated_at=m.updated_at,
             special_event_id=m.special_event_id,
+            daily_cap_policy=m.daily_cap_policy,
+            auto_retry_meta_limits=m.auto_retry_meta_limits,
         )
 
 
@@ -128,6 +132,9 @@ class CampaignRecipientData:
     converted: bool
     converted_at: Optional[datetime]
     targeted_at: Optional[datetime]
+    phone_key: Optional[str] = None
+    send_after: Optional[datetime] = None
+    attempts: Optional[list] = None
 
     @classmethod
     def from_model(cls, m: CampaignRecipient) -> "CampaignRecipientData":
@@ -153,6 +160,8 @@ class CampaignRecipientData:
             converted=bool(m.converted),
             converted_at=m.converted_at,
             targeted_at=m.targeted_at,
+            phone_key=m.phone_key,
+            send_after=m.send_after,
         )
 
 
@@ -197,7 +206,7 @@ _WRITABLE_FIELDS = (
     # header could never be configured — and failed for the entire audience.
     "header_text_param_key", "button_url_param_key", "location_param",
     "marketing_campaign_id", "conversion_window_days", "conversion_metric",
-    "recency_block_days", "throttle_per_minute",
+    "recency_block_days", "throttle_per_minute", "daily_cap_policy", "auto_retry_meta_limits",
 )
 
 
@@ -548,13 +557,13 @@ async def get_recipient_model(
 
 
 async def list_sendable_recipient_ids(db: AsyncSession, campaign_id: int) -> List[int]:
-    """Ids of recipients that need sending AND are already due (pending or previously failed)."""
+    """Ids of recipients that need sending AND are already due (explicitly queued pending)."""
     now = _utcnow()
     stmt = (
         select(CampaignRecipient.id)
         .where(
             CampaignRecipient.campaign_id == campaign_id,
-            CampaignRecipient.status.in_(["pending", "failed"]),
+            CampaignRecipient.status == "pending",
             or_(
                 CampaignRecipient.send_after.is_(None),
                 CampaignRecipient.send_after <= now,
@@ -581,7 +590,7 @@ async def claim_recipient_batch(
         select(CampaignRecipient.id)
         .where(
             CampaignRecipient.campaign_id == campaign_id,
-            CampaignRecipient.status.in_(["pending", "failed"]),
+            CampaignRecipient.status == "pending",
             or_(
                 CampaignRecipient.send_after.is_(None),
                 CampaignRecipient.send_after <= now,
@@ -634,7 +643,7 @@ async def next_send_after(db: AsyncSession, campaign_id: int) -> Optional[dateti
         select(func.min(CampaignRecipient.send_after))
         .where(
             CampaignRecipient.campaign_id == campaign_id,
-            CampaignRecipient.status.in_(["pending", "failed"]),
+            CampaignRecipient.status == "pending",
             CampaignRecipient.send_after.isnot(None),
             CampaignRecipient.send_after > _utcnow(),
         )
@@ -650,8 +659,9 @@ async def mark_recipient_sent(
     message_id: Optional[int],
     commit: bool = True,
 ) -> CampaignRecipient:
+    await db.refresh(recipient, with_for_update=True)
     now = _utcnow()
-    recipient.status = "sent"
+    recipient.status = "replied" if recipient.replied_at else "read" if recipient.read_at else "delivered" if recipient.delivered_at else "sent"
     recipient.wa_message_id = wa_message_id
     recipient.message_id = message_id
     recipient.sent_at = now
@@ -707,7 +717,14 @@ async def list_recipients(
         stmt = stmt.where(CampaignRecipient.status == status)
     stmt = stmt.order_by(CampaignRecipient.id).offset(offset).limit(limit)
     rows = (await db.execute(stmt)).scalars().all()
-    return [CampaignRecipientData.from_model(r) for r in rows]
+    from app.services.campaign_delivery import attempts_for
+    history = await attempts_for(db, campaign_id)
+    out = [CampaignRecipientData.from_model(r) for r in rows]
+    for r in out:
+        r.attempts = [dict(id=a.id, state=a.state, started_at=a.started_at.isoformat(),
+                          wa_message_id=a.wa_message_id, error_code=a.error_code, error_detail=a.error_detail)
+                      for a in history if a.recipient_id == r.id]
+    return out
 
 
 async def list_recipient_favorite_refs(db: AsyncSession, campaign_id: int) -> List:
@@ -847,13 +864,16 @@ _META_STATUS_MAP = {
 
 
 async def apply_delivery_status(
-    db: AsyncSession, *, wa_message_id: str, meta_status: str, timestamp: datetime
+    db: AsyncSession, *, wa_message_id: str, meta_status: str, timestamp: datetime, errors=None
 ) -> bool:
     """Update the campaign recipient matching ``wa_message_id`` from a Meta status callback.
 
     Idempotent and forward-only. Returns True if a recipient row was updated. Caller commits
     (the webhook ingest commits the whole batch).
     """
+    from app.services.campaign_delivery import apply_status
+    if await apply_status(db, wa_message_id=wa_message_id, meta_status=meta_status, timestamp=timestamp, errors=errors):
+        return True
     mapped = _META_STATUS_MAP.get((meta_status or "").lower())
     if mapped is None:
         return False
@@ -874,7 +894,7 @@ async def apply_delivery_status(
         changed = True
 
     if new_status == "failed":
-        if recipient.status not in ("replied", "skipped", "opted_out"):
+        if recipient.status not in ("replied", "skipped", "opted_out") and not recipient.delivered_at and not recipient.read_at:
             recipient.status = "failed"
             changed = True
     else:
@@ -896,7 +916,7 @@ REPLY_ATTRIBUTION_DAYS = 7
 
 
 async def apply_inbound_reply(
-    db: AsyncSession, *, wa_id: str, timestamp: datetime
+    db: AsyncSession, *, wa_id: str, timestamp: datetime, context_message_id=None
 ) -> bool:
     """Mark the campaign recipient this inbound message replies to as ``replied``.
 
@@ -905,14 +925,29 @@ async def apply_inbound_reply(
     :func:`apply_delivery_status`). Returns True if a recipient row was updated. Caller
     commits (the webhook ingest commits the whole batch).
     """
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    if context_message_id:
+        from app.models.campaignsModel import CampaignSendAttempt
+        attempt = await db.scalar(select(CampaignSendAttempt).where(CampaignSendAttempt.wa_message_id == context_message_id))
+        recipient = await db.get(CampaignRecipient, attempt.recipient_id) if attempt else await get_recipient_by_wa_message_id(db, context_message_id)
+        if recipient is not None:
+            from app.services.campaign_delivery import phone_key
+            if phone_key(recipient.wa_id or recipient.phone_e164) == phone_key(wa_id):
+                recipient.status, recipient.replied_at = "replied", recipient.replied_at or timestamp
+                await db.flush()
+                return True
     digits = re.sub(r"\D", "", wa_id or "")
     if not digits:
         return False
+    from app.crud.whatsappCrud import _phone_match_keys
+    from app.services.campaign_delivery import phone_key
     floor = _utcnow() - timedelta(days=REPLY_ATTRIBUTION_DAYS)
     stmt = (
         select(CampaignRecipient)
         .where(
-            CampaignRecipient.wa_id == digits,
+            or_(CampaignRecipient.wa_id.in_(tuple(_phone_match_keys(digits))),
+                CampaignRecipient.phone_key == phone_key(digits)),
             CampaignRecipient.sent_at.isnot(None),
             CampaignRecipient.sent_at >= floor,
             CampaignRecipient.status.in_(["sent", "delivered", "read"]),

@@ -22,6 +22,7 @@ from app.graphql.campaigns.types import (
     CampaignRecipientType,
     CampaignType,
     CampaignVariableInfo,
+    CampaignRecoveryPreview,
 )
 from app.graphql.whatsapp.template_types import WhatsAppTemplate
 from app.services import segmentation_service
@@ -101,13 +102,17 @@ class CampaignsQuery:
         return CampaignMetrics.from_dict(await get_metrics(db, campaign_id))
 
     @strawberry.field(permission_classes=[IsAuthenticated])
-    async def preview_audience(self, info: Info, audience_spec: Optional[JSON] = None) -> AudiencePreview:
+    async def preview_audience(self, info: Info, audience_spec: Optional[JSON] = None,
+                               campaign_id: Optional[int] = None, recency_block_days: int = 30,
+                               daily_cap_policy: str = "respect") -> AudiencePreview:
         """Count + sample of members matching a spec. Sends nothing; safe to call live."""
         if await require_capability(info, SEND_CAMPAIGNS):
             return AudiencePreview()
         db: AsyncSession = info.context.db
         try:
-            result = await segmentation_service.preview_audience(db, audience_spec)
+            result = await segmentation_service.preview_audience(
+                db, audience_spec, campaign_id=campaign_id, recency_block_days=recency_block_days,
+                daily_cap_policy=daily_cap_policy)
         except segmentation_service.SegmentationError as exc:
             logger.info("preview_audience invalid spec: %s", exc)
             return AudiencePreview()
@@ -119,9 +124,21 @@ class CampaignsQuery:
                 no_phone=skipped.get("no_phone", 0),
                 no_consent=skipped.get("no_consent", 0),
                 recency_block=skipped.get("recency_block", 0),
+                duplicate_phone=skipped.get("duplicate_phone", 0),
+                daily_cap=skipped.get("daily_cap", 0),
             ),
             sample=result["sample"],
         )
+
+    @strawberry.field(permission_classes=[IsAuthenticated])
+    async def preview_campaign_recovery(self, info: Info, campaign_id: int) -> CampaignRecoveryPreview:
+        if error := await require_capability(info, SEND_CAMPAIGNS):
+            return CampaignRecoveryPreview(error=error)
+        from app.services.campaign_delivery import recovery
+        try:
+            return CampaignRecoveryPreview(**await recovery(info.context.db, campaign_id))
+        except ValueError as exc:
+            return CampaignRecoveryPreview(error=str(exc))
 
     @strawberry.field(permission_classes=[IsAuthenticated])
     async def campaign_metrics_batch(

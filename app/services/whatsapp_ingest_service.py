@@ -169,7 +169,7 @@ async def _process_message(
     if msg_type != "reaction":
         try:
             await campaigns_crud.apply_inbound_reply(
-                db, wa_id=contact.wa_id, timestamp=ts
+                db, wa_id=contact.wa_id, timestamp=ts, context_message_id=message.context_message_id
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("campaign reply-status update failed: %s", e)
@@ -193,7 +193,7 @@ async def _process_status(db, st: Dict[str, Any]) -> None:
     # belongs to a campaign). Never let campaign tracking break webhook ingestion.
     try:
         await campaigns_crud.apply_delivery_status(
-            db, wa_message_id=wa_message_id, meta_status=status, timestamp=ts
+            db, wa_message_id=wa_message_id, meta_status=status, timestamp=ts, errors=st.get("errors")
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("campaign delivery-status update failed: %s", e)
