@@ -1,11 +1,11 @@
 """GraphQL types for the WhatsApp chat feature.
 
 Strawberry converts snake_case field names to camelCase in the schema
-(e.g. ``text_content`` -> ``textContent``). The ``message_type``/``template_id``
-fields are kept so media and template support can be added later without schema churn.
+(e.g. ``text_content`` -> ``textContent``). A message sent from a template carries that
+template's buttons (``templateButtons``) so the chat can draw them under the bubble.
 """
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 import strawberry
 
@@ -14,6 +14,7 @@ from app.crud.whatsappCrud import (
     ChatMediaData,
     ChatMembershipData,
     ChatMessageData,
+    ChatTemplateButtonData,
     ConversationData,
 )
 
@@ -90,6 +91,20 @@ class ChatMessageMedia:
 
 
 @strawberry.type
+class ChatTemplateButton:
+    """A button of the template a message was sent from (QUICK_REPLY, URL, PHONE_NUMBER…)."""
+
+    type: str
+    text: str
+    url: Optional[str]
+    phone_number: Optional[str]
+
+    @classmethod
+    def from_data(cls, d: ChatTemplateButtonData) -> "ChatTemplateButton":
+        return cls(type=d.type, text=d.text, url=d.url, phone_number=d.phone_number)
+
+
+@strawberry.type
 class ChatMessage:
     id: int
     conversation_id: int
@@ -102,6 +117,7 @@ class ChatMessage:
     context_message_id: Optional[str]  # reacted-to / referenced message wa id
     media_url: Optional[str]  # deprecated: kept for older clients, use ``media``
     media: Optional[ChatMessageMedia]
+    template_buttons: List[ChatTemplateButton]  # empty unless sent from a template with buttons
 
     @classmethod
     def from_data(cls, d: ChatMessageData) -> "ChatMessage":
@@ -117,6 +133,7 @@ class ChatMessage:
             context_message_id=d.context_message_id,
             media_url=d.media_url,
             media=ChatMessageMedia.from_data(d.media) if d.media else None,
+            template_buttons=[ChatTemplateButton.from_data(b) for b in d.template_buttons],
         )
 
 
