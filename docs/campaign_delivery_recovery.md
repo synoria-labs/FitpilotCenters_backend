@@ -66,6 +66,5 @@ La reparación es idempotente. Los vínculos ambiguos quedan en revisión; nunca
 entrega por similitud de fecha o texto. La reversión de la migración se bloquea cuando existe
 historial, para impedir su pérdida accidental.
 
-Esta migración parte de a7d0e3f6b9c2. Si antes se integra otra migración desde esa misma
-revisión, actualizar la cadena o crear una revisión de unión antes del despliegue; la
-publicación debe tener una sola cabeza de Alembic.
+Esta migración parte de b8e1f4a7c0d3 (enlaces de eventos sin caducidad), ya integrada en
+main. La cadena de Alembic mantiene una sola cabeza.
