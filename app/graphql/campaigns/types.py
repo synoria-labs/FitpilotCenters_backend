@@ -45,6 +45,8 @@ class CampaignType:
     template: Optional[WhatsAppTemplate] = None
     # Special event this campaign promotes (set from the Eventos especiales screen).
     special_event_id: Optional[int] = None
+    daily_cap_policy: str = "respect"
+    auto_retry_meta_limits: bool = False
 
     @classmethod
     def from_data(
@@ -80,6 +82,8 @@ class CampaignType:
             updated_at=data.updated_at,
             template=template,
             special_event_id=data.special_event_id,
+            daily_cap_policy=data.daily_cap_policy,
+            auto_retry_meta_limits=data.auto_retry_meta_limits,
         )
 
 
@@ -105,6 +109,9 @@ class CampaignRecipientType:
     converted: bool
     converted_at: Optional[datetime]
     targeted_at: Optional[datetime]
+    phone_key: Optional[str] = None
+    send_after: Optional[datetime] = None
+    attempts: Optional[JSON] = None
 
     @classmethod
     def from_data(cls, data: CampaignRecipientData) -> "CampaignRecipientType":
@@ -128,11 +135,25 @@ class CampaignRecipientType:
             converted=bool(data.converted),
             converted_at=data.converted_at,
             targeted_at=data.targeted_at,
+            phone_key=data.phone_key,
+            send_after=data.send_after,
+            attempts=data.attempts,
         )
 
 
 @strawberry.type
 class CampaignMetrics:
+    accepted: int = 0
+    unique_phones: int = 0
+    duplicates: int = 0
+    rejected: int = 0
+    needs_review: int = 0
+    retry_pending: int = 0
+    error_counts: Optional[JSON] = None
+    updated_at: Optional[datetime] = None
+    period_start: Optional[datetime] = None
+    period_end: Optional[datetime] = None
+    template_id: Optional[int] = None
     targeted: int = 0
     pending: int = 0
     sent: int = 0
@@ -169,6 +190,8 @@ class AudienceSkipBreakdown:
     no_phone: int = 0
     no_consent: int = 0
     recency_block: int = 0
+    duplicate_phone: int = 0
+    daily_cap: int = 0
 
 
 @strawberry.type
@@ -237,6 +260,8 @@ class CreateCampaignInput:
     conversion_metric: str = "payment"
     recency_block_days: int = 30
     throttle_per_minute: int = 60
+    daily_cap_policy: str = "respect"
+    auto_retry_meta_limits: bool = True
 
 
 @strawberry.input
@@ -257,6 +282,20 @@ class UpdateCampaignInput:
     conversion_metric: Optional[str] = None
     recency_block_days: Optional[int] = None
     throttle_per_minute: Optional[int] = None
+    daily_cap_policy: Optional[str] = None
+    auto_retry_meta_limits: Optional[bool] = None
+
+
+@strawberry.type
+class CampaignRecoveryPreview:
+    eligible: int = 0
+    duplicates: int = 0
+    delivered: int = 0
+    blocked: int = 0
+    review: int = 0
+    scheduled: int = 0
+    recipients: Optional[JSON] = None
+    error: Optional[str] = None
 
 
 @strawberry.type

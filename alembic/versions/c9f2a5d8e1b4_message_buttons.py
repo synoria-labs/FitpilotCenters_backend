@@ -1,13 +1,13 @@
 """Store the buttons sent with an interactive WhatsApp message (e.g. the «Pagar ahora» link).
 
 Revision ID: c9f2a5d8e1b4
-Revises: b8e1f4a7c0d3
+Revises: c9f2a5b8d1e4
 """
 from alembic import op
 import sqlalchemy as sa
 
 revision = "c9f2a5d8e1b4"
-down_revision = "b8e1f4a7c0d3"
+down_revision = "c9f2a5b8d1e4"
 branch_labels = None
 depends_on = None
 

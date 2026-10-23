@@ -77,7 +77,8 @@ class OutboundResult:
 
 def _lock_key(wa_id: str) -> int:
     """Stable signed 64-bit advisory-lock key from a contact's digits (process-independent)."""
-    digits = re.sub(r"\D", "", wa_id or "")
+    from app.services.campaign_delivery import phone_key
+    digits = wa_id if wa_id.startswith("campaign:") else phone_key(wa_id)
     h = hashlib.blake2b(digits.encode("utf-8"), digest_size=8).digest()
     return int.from_bytes(h, "big", signed=True)
 
@@ -133,7 +134,8 @@ def next_allowed_send_at(now: Optional["datetime"] = None) -> "datetime":
 
 
 async def _marketing_gates(
-    db: AsyncSession, *, person_id: Optional[int], contact_id: int, conversation_id: int
+    db: AsyncSession, *, person_id: Optional[int], contact_id: int, conversation_id: int,
+    daily_cap_policy: str = "respect", attempt_id: Optional[int] = None,
 ) -> Optional[OutboundResult]:
     """Policy gates that apply ONLY to marketing-class sends. Returns None when allowed."""
     from app.core.outbound_config import outbound_config
@@ -148,7 +150,9 @@ async def _marketing_gates(
     if _in_quiet_hours():
         return OutboundResult(SendStatus.DEFERRED, reason="quiet_hours")
     cap = outbound_config.MARKETING_DAILY_CAP
-    if cap > 0 and await crud.count_marketing_sends_today(db, contact_id) >= cap:
+    if daily_cap_policy != "allow_additional" and cap > 0 and await crud.count_marketing_sends_today(
+        db, contact_id, exclude_attempt_id=attempt_id
+    ) >= cap:
         return OutboundResult(SendStatus.SUPPRESSED, reason="daily_cap")
     return None
 
@@ -211,6 +215,8 @@ async def _deliver(
     persist_buttons: Optional[list] = None,
     person_id: Optional[int] = None,
     ref: Optional[str] = None,
+    daily_cap_policy: str = "respect",
+    before_send: Optional[Callable] = None,
 ) -> OutboundResult:
     """Coordinate + send one outbound message. Caller owns the transaction (no commit here)."""
     await _acquire_contact_lock(db, wa_id)
@@ -218,7 +224,19 @@ async def _deliver(
     # Marketing-only policy gates: consent / mid-purchase / quiet hours / daily cap.
     if message_class == CLASS_MARKETING:
         gate = await _marketing_gates(
-            db, person_id=person_id, contact_id=contact_id, conversation_id=conversation_id
+            db, person_id=person_id, contact_id=contact_id, conversation_id=conversation_id,
+            daily_cap_policy=daily_cap_policy,
+        )
+        if gate is not None:
+            return gate
+
+    if before_send is not None:
+        attempt_id = await before_send()
+        # Durable intent commits release xact locks. In-flight intents reserve the daily slot.
+        await _acquire_contact_lock(db, wa_id)
+        gate = await _marketing_gates(
+            db, person_id=person_id, contact_id=contact_id, conversation_id=conversation_id,
+            daily_cap_policy=daily_cap_policy, attempt_id=attempt_id,
         )
         if gate is not None:
             return gate
@@ -330,6 +348,8 @@ async def send_template(
     persist_text: Optional[str] = None,
     template_id: Optional[int] = None,
     person_id: Optional[int] = None,
+    daily_cap_policy: str = "respect",
+    before_send: Optional[Callable] = None,
 ) -> OutboundResult:
     return await _deliver(
         db, kind=kind, message_class=message_class,
@@ -343,6 +363,7 @@ async def send_template(
         ),
         persist=persist, persist_text=persist_text, persist_message_type="template",
         persist_template_id=template_id, person_id=person_id,
+        daily_cap_policy=daily_cap_policy, before_send=before_send,
     )
 
 

@@ -329,16 +329,14 @@ async def test_concurrent_open_checkouts_and_payments_do_not_duplicate_links_or_
 async def test_downgrade_is_blocked_while_an_open_link_is_unresolved():
     from alembic import command
     from alembic.config import Config
-    from alembic.script import ScriptDirectory
     from app.db.postgresql import async_session_factory
 
-    head = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
     async with committed_open_event() as event_id:
         async with async_session_factory() as db:
+            version_before = await db.scalar(text("SELECT version_num FROM app.alembic_version"))
             await orders_crud.create_hold(db, event_id, participant_name="Pending buyer", participant_phone="8710000009")
             await db.commit()
         with pytest.raises(RuntimeError, match="Resolve open payment links"):
             await asyncio.to_thread(command.downgrade, Config("alembic.ini"), "a7d0e3f6b9c2")
         async with async_session_factory() as db:
-            # Nothing was undone: the guard aborts the whole downgrade, later migrations included.
-            assert await db.scalar(text("SELECT version_num FROM app.alembic_version")) == head
+            assert await db.scalar(text("SELECT version_num FROM app.alembic_version")) == version_before

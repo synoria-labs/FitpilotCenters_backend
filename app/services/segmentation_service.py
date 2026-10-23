@@ -540,7 +540,8 @@ async def matching_person_ids(db: AsyncSession, spec: Optional[Dict[str, Any]]) 
 
 
 async def _unreachable_breakdown(
-    db: AsyncSession, person_ids: List[int], *, recency_block_days: int
+    db: AsyncSession, person_ids: List[int], *, recency_block_days: int,
+    campaign_id=None, daily_cap_policy="respect",
 ) -> Dict[str, int]:
     """Count, in sets, the members the build will skip and why.
 
@@ -609,15 +610,33 @@ async def _unreachable_breakdown(
     blocked = set()
     if reachable and recency_block_days > 0:
         recent = await campaigns_crud.recently_targeted_person_ids(
-            db, days=recency_block_days
+            db, days=recency_block_days, exclude_campaign_id=campaign_id
         )
         blocked = reachable & recent
         reachable -= blocked
 
+    from app.services.campaign_delivery import phone_key
+    seen, duplicates, daily = set(), set(), set()
+    from app.crud.whatsappCrud import find_contact_by_number, count_marketing_sends_today
+    from app.core.outbound_config import outbound_config
+    for pid, phone, wa_id in sorted(rows):
+        if pid not in reachable:
+            continue
+        key = phone_key(phone or wa_id)
+        if key in seen:
+            duplicates.add(pid)
+            continue
+        seen.add(key)
+        if daily_cap_policy == "respect" and outbound_config.MARKETING_DAILY_CAP > 0:
+            contact = await find_contact_by_number(db, key)
+            if contact and await count_marketing_sends_today(db, contact.id) >= outbound_config.MARKETING_DAILY_CAP:
+                daily.add(pid)
     return {
         "no_phone": len(no_phone),
         "no_consent": len(opted_out),
         "recency_block": len(blocked),
+        "duplicate_phone": len(duplicates),
+        "daily_cap": len(daily),
     }
 
 
@@ -627,6 +646,7 @@ async def preview_audience(
     *,
     sample_size: int = 10,
     recency_block_days: int = 30,
+    campaign_id=None, daily_cap_policy="respect",
 ) -> Dict[str, Any]:
     """Return ``{count, reachable, skipped, sample}`` for the wizard. Persists nothing."""
     ids = await matching_person_ids(db, spec)
@@ -641,7 +661,7 @@ async def preview_audience(
         sample = [(name or "").strip() or "(sin nombre)" for name in rows]
 
     skipped = await _unreachable_breakdown(
-        db, ids, recency_block_days=recency_block_days
+        db, ids, recency_block_days=recency_block_days, campaign_id=campaign_id, daily_cap_policy=daily_cap_policy
     )
     return {
         "count": len(ids),

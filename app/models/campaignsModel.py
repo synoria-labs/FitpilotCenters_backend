@@ -113,6 +113,8 @@ class Campaign(Base):
     conversion_metric: Mapped[str] = mapped_column(String(20), nullable=False, default="payment")
     recency_block_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     throttle_per_minute: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    daily_cap_policy: Mapped[str] = mapped_column(String(24), nullable=False, default="respect")
+    auto_retry_meta_limits: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     started_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
     finished_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
@@ -130,6 +132,7 @@ class Campaign(Base):
     )
 
     __table_args__ = (
+        CheckConstraint("daily_cap_policy IN ('respect','defer','allow_additional')", name="ck_campaign_daily_cap_policy"),
         CheckConstraint(
             "objective IN ('win_back','renewal_push','engagement','broadcast')",
             name="ck_campaign_objective",
@@ -223,6 +226,7 @@ class CampaignRecipient(Base):
     dedup_key: Mapped[str] = mapped_column(String(140), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     skip_reason: Mapped[Optional[str]] = mapped_column(String(40))
+    phone_key: Mapped[Optional[str]] = mapped_column(String(100), index=True)
     # Not eligible for dispatch until this instant. NULL means "now". A quiet-hours deferral
     # pushes this forward instead of marking the recipient failed and retrying every sweep.
     send_after: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
@@ -255,7 +259,7 @@ class CampaignRecipient(Base):
     __table_args__ = (
         CheckConstraint(
             "status IN ('pending','sending','sent','delivered','read','replied',"
-            "'failed','skipped','opted_out')",
+            "'failed','skipped','opted_out','needs_review')",
             name="ck_campaign_recipient_status",
         ),
         CheckConstraint(
@@ -269,4 +273,31 @@ class CampaignRecipient(Base):
         Index("idx_campaign_recipient_person_targeted", "person_id", "targeted_at"),
         Index("idx_campaign_recipient_wa_message", "wa_message_id"),
         Index("idx_campaign_recipient_favorite_class", "campaign_id", "favorite_class_type_id"),
+    )
+
+
+class CampaignSendAttempt(Base):
+    """One durable provider request; never replaced by a retry."""
+    __tablename__ = "campaign_send_attempts"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id", ondelete="CASCADE"), index=True)
+    recipient_id: Mapped[int] = mapped_column(ForeignKey("campaign_recipients.id", ondelete="CASCADE"), index=True)
+    phone_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False, default="started")
+    started_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=_utcnow, nullable=False)
+    accepted_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
+    sent_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
+    delivered_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
+    read_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
+    failed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
+    wa_message_id: Mapped[Optional[str]] = mapped_column(String(120), unique=True)
+    message_id: Mapped[Optional[int]] = mapped_column(BigInteger)
+    error_code: Mapped[Optional[int]] = mapped_column(Integer)
+    error_detail: Mapped[Optional[str]] = mapped_column(Text)
+    errors: Mapped[Optional[list]] = mapped_column(JSON)
+    __table_args__ = (
+        Index("idx_campaign_attempt_phone", "campaign_id", "phone_key"),
+        CheckConstraint("state IN ('started','accepted','sent','delivered','read','failed','uncertain','not_sent')",
+                        name="ck_campaign_attempt_state"),
     )
