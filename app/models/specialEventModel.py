@@ -78,13 +78,16 @@ FOLLOW_UP_STATUSES = (FOLLOW_UP_PENDING, FOLLOW_UP_NOTIFIED, FOLLOW_UP_RESOLVED)
 
 COMPENSATION_TYPES = (
     "make_up_class",  # reposición en otra clase
-    "membership_extension",  # extensión de la membresía
+    "membership_extension",  # clase extra al terminar la membresía (la aplica special_events.bonus)
     "event_access",  # acceso al evento como compensación
     "credit",  # saldo a favor
     "refund",  # devolución
     "not_needed",  # no requirió compensación
     "other",
 )
+# The default compensation and the only one the system applies itself: the membership is
+# extended to one more class after it ends, and that class is booked (see special_events.bonus).
+COMPENSATION_BONUS_CLASS = "membership_extension"
 
 RESTORATION_RESTORED = "restored"
 RESTORATION_KEPT = "kept_displaced"

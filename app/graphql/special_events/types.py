@@ -123,6 +123,9 @@ class SpecialEventDisplacementType:
     restoration_status: Optional[str]
     restoration_note: Optional[str]
     restored_at: Optional[datetime]
+    # Without a compensation yet: the proposed extra class, or why there can be none.
+    bonus_preview: Optional[str] = None
+    bonus_blocker: Optional[str] = None
 
 
 @strawberry.type
