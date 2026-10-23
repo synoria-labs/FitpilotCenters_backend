@@ -13,7 +13,7 @@ Robustness mirrors notifications:
   compare-and-set before sending, so re-runs and concurrent workers never double-send.
 * **Respectful** — only APPROVED templates send; members who revoked WhatsApp consent are
   skipped (and the skip is recorded, not hidden).
-* **Resumable** — only ``pending``/``failed`` recipients are picked up, so a paused/crashed
+* **Resumable** — only explicitly queued ``pending`` recipients are picked up, so a paused/crashed
   run resumes by simply re-running.
 """
 from __future__ import annotations
@@ -534,6 +534,16 @@ async def build_campaign_audience(db: AsyncSession, campaign_id: int) -> Dict[st
         )
         stats["skipped" if status == "skipped" else "pending"] += 1
 
+    from app.services.campaign_delivery import phone_key
+    seen = set()
+    for row in sorted(rows, key=lambda r: r["person_id"]):
+        row["phone_key"] = phone_key(row["wa_id"] or row["phone_e164"]) or None
+        if row["status"] == "pending":
+            if row["phone_key"] in seen:
+                row["status"], row["skip_reason"] = "skipped", "duplicate_phone"
+            seen.add(row["phone_key"])
+    stats["pending"] = sum(row["status"] == "pending" for row in rows)
+    stats["skipped"] = len(rows) - stats["pending"]
     # Rows already in the snapshot are ignored (ON CONFLICT), so re-building is idempotent.
     stats["targeted"] = await crud.insert_recipients_bulk(db, rows)
 
@@ -558,6 +568,18 @@ async def _send_to_recipient(
 
     Raises ``_RateLimited`` if Meta signals a rate limit (the caller pauses the run).
     """
+    from app.services import campaign_delivery as delivery
+    from app.models.campaignsModel import CampaignSendAttempt
+    await delivery.phone_lock(db, campaign.id, delivery.phone_key(recipient.wa_id or recipient.phone_e164))
+    live_campaign = await crud.get_campaign_model(db, campaign.id)
+    if live_campaign is not None:
+        campaign = live_campaign
+    reason = await delivery.check_recipient(db, campaign, recipient)
+    if reason:
+        await crud.mark_recipient_terminal(
+            db, recipient, status="needs_review" if reason == "uncertain_previous_send" else "skipped",
+            skip_reason=reason)
+        return "skipped"
     template_id = _variant_template_id(campaign, variant)
     if not template_id:
         await crud.mark_recipient_failed(db, recipient, error="Campaña sin plantilla.")
@@ -636,42 +658,93 @@ async def _send_to_recipient(
     contact = await chat_crud.upsert_contact(
         db, wa_id=to, phone_number=recipient.phone_e164 or to, authoritative=False
     )
+    if delivery.phone_key(contact.wa_id or contact.phone_number) != recipient.phone_key:
+        await crud.mark_recipient_terminal(db, recipient, status="needs_review", skip_reason="phone_identity_mismatch")
+        return "failed"
     conversation = await chat_crud.get_or_open_conversation(db, contact.id)
     # Route through the unified outbound gateway: per-contact serialization + marketing gates
     # (consent / mid-purchase defer / quiet hours / daily cap). persist=False -> we keep the
     # richer campaign persistence (message + media + recipient ledger) below.
-    gw = await outbound.send_template(
-        db,
-        kind=outbound.KIND_CAMPAIGN,
-        message_class=outbound.CLASS_MARKETING,
-        conversation_id=conversation.id,
-        contact_id=contact.id,
-        wa_id=contact.wa_id,
-        template_name=tpl.template_name,
-        language_code=tpl.template_language,
-        body_params=body_params,
-        components=tpl.components,
-        header_media_url=resolved_media.media_url,
-        header_media_id=resolved_media.media_id,
-        header_text_param=header_text_param,
-        location=location_param,
-        button_url_param=button_url_param,
-        persist=False,
-        person_id=person.id,
-    )
+    attempt = None
+
+    async def before_send():
+        nonlocal attempt
+        await db.refresh(campaign)
+        if campaign.status in ("paused", "canceled") or await delivery.closed_event(db, campaign):
+            raise ValueError("La campaña se pausó o el evento ya no está a la venta.")
+        attempt = CampaignSendAttempt(campaign_id=campaign.id, recipient_id=recipient.id,
+                                      phone_key=recipient.phone_key, state="started")
+        db.add(attempt)
+        await db.commit()  # Durable intent before the network call; a crash cannot cause a blind resend.
+        await delivery.phone_lock(db, campaign.id, recipient.phone_key)
+        await db.refresh(recipient)
+        reason = await delivery.check_recipient(db, campaign, recipient, ignore_attempt_id=attempt.id)
+        if reason:
+            raise delivery.DeliveryBlocked(reason)
+        return attempt.id
+
+    try:
+        gw = await outbound.send_template(
+            db,
+            kind=outbound.KIND_CAMPAIGN,
+            message_class=outbound.CLASS_MARKETING,
+            conversation_id=conversation.id,
+            contact_id=contact.id,
+            wa_id=contact.wa_id,
+            template_name=tpl.template_name,
+            language_code=tpl.template_language,
+            body_params=body_params,
+            components=tpl.components,
+            header_media_url=resolved_media.media_url,
+            header_media_id=resolved_media.media_id,
+            header_text_param=header_text_param,
+            location=location_param,
+            button_url_param=button_url_param,
+            persist=False,
+            person_id=person.id,
+            daily_cap_policy=campaign.daily_cap_policy,
+            before_send=before_send,
+        )
+    except delivery.DeliveryBlocked as exc:
+        attempt.state = "not_sent"
+        if not recipient.delivered_at and not recipient.read_at and not recipient.replied_at:
+            recipient.status, recipient.skip_reason = "skipped", str(exc)
+        await db.commit()
+        return "skipped"
+    except Exception as exc:
+        # The request might have reached Meta. Leave its durable intent for reconciliation.
+        if attempt is not None:
+            attempt.state = "uncertain"
+            attempt.error_detail = f"Respuesta de Meta no confirmada ({type(exc).__name__})."
+            recipient.status, recipient.skip_reason = "needs_review", "uncertain_send"
+            await db.commit()
+            return "failed"
+        raise
+    if attempt is not None and gw.status is not outbound.SendStatus.SENT:
+        attempt.state = "not_sent"
     if gw.status is outbound.SendStatus.SUPPRESSED:
         if gw.reason == "no_consent":
             await crud.mark_recipient_terminal(
                 db, recipient, status="opted_out", skip_reason="no_consent"
             )
             return "opted_out"
-        # daily_cap: contact already got a marketing message today -> terminal skip for this run.
+        if gw.reason == "daily_cap" and campaign.daily_cap_policy == "defer":
+            await crud.defer_recipient(db, recipient, send_after=delivery.next_day(), reason="daily_cap")
+            return "deferred"
         await crud.mark_recipient_terminal(
             db, recipient, status="skipped", skip_reason=gw.reason or "suppressed"
         )
         return "skipped"
     if gw.status is outbound.SendStatus.DEFERRED:
+        if gw.error_code == 131048 and attempt is not None:
+            await delivery.failure(db, campaign, recipient, attempt, 131048, "Límite de spam; revisión requerida.")
+            await db.commit()
+            return "rate_limited"
         if gw.reason == "rate_limited":
+            if attempt is not None:
+                attempt.state, attempt.error_code = "failed", gw.error_code
+                attempt.failed_at, attempt.error_detail = delivery.now(), gw.reason
+                await db.commit()
             await db.rollback()
             raise _RateLimited("rate limited")
         # quiet_hours / pending_action: nothing failed, the moment was just not allowed. Park
@@ -687,9 +760,21 @@ async def _send_to_recipient(
         )
         return "deferred"
     if gw.status is outbound.SendStatus.FAILED:
+        if attempt is not None:
+            await delivery.failure(db, campaign, recipient, attempt, gw.error_code, gw.reason or "Error al enviar.")
+            await db.commit()
+            return "deferred" if recipient.status == "pending" else "failed"
         await crud.mark_recipient_failed(db, recipient, error=gw.reason or "Error al enviar.")
         return "failed"
     result = {"wa_message_id": gw.wa_message_id}
+    if attempt is not None:
+        if not gw.wa_message_id:
+            attempt.state, recipient.status = "uncertain", "needs_review"
+            recipient.skip_reason = "uncertain_send"
+            await db.commit()
+            return "failed"
+        attempt.state, attempt.wa_message_id, attempt.accepted_at = "accepted", gw.wa_message_id, delivery.now()
+        await db.commit()  # The wamid remains routable even if message persistence fails below.
 
     message = await chat_crud.insert_outbound_message(
         db,
@@ -716,6 +801,10 @@ async def _send_to_recipient(
     await crud.mark_recipient_sent(
         db, recipient, wa_message_id=result.get("wa_message_id"), message_id=message.id
     )
+    if attempt is not None:
+        attempt.message_id = message.id
+        await delivery.replay_receipts(db, attempt)
+        await db.commit()
     return "sent"
 
 
@@ -747,6 +836,8 @@ async def run_campaign(
         if campaign is None:
             return {"ok": False, "error": "Campaña no encontrada."}
 
+        from app.services.campaign_delivery import settle_stale_intents
+        await settle_stale_intents(db, campaign_id)
         counts = await crud.recipient_status_counts(db, campaign_id)
         if not counts:
             await build_campaign_audience(db, campaign_id)
@@ -918,7 +1009,15 @@ async def _send_one(
                 await db.rollback()
                 recipient = await crud.get_recipient_model(db, recipient_id)
                 if recipient is not None:
-                    await crud.mark_recipient_failed(db, recipient, error="Error interno.")
+                    from app.models.campaignsModel import CampaignSendAttempt
+                    intent = await db.scalar(select(CampaignSendAttempt).where(
+                        CampaignSendAttempt.recipient_id == recipient_id,
+                        CampaignSendAttempt.state.in_(("started", "accepted", "sent", "uncertain"))).limit(1))
+                    if intent:
+                        recipient.status, recipient.skip_reason = "needs_review", "uncertain_send"
+                        await db.commit()
+                    else:
+                        await crud.mark_recipient_failed(db, recipient, error="Error interno.")
                 return "failed"
 
 
@@ -1138,27 +1237,32 @@ async def get_metrics(db: AsyncSession, campaign_id: int) -> Dict[str, Any]:
     # Conversions are tracked on the recipient rows regardless of current delivery status.
     converted = await _count_converted(db, campaign_id)
     revenue = await crud.conversion_revenue(db, campaign_id)
-    return _metrics_from(counts, converted, revenue)
+    from app.services.campaign_delivery import metrics
+    return _with_evidence(_metrics_from(counts, converted, revenue), await metrics(db, campaign_id))
+
+
+def _with_evidence(result, evidence):
+    result.update(evidence)
+    for key, field in (("delivery_rate", "delivered"), ("read_rate", "read"), ("reply_rate", "replied"),
+                       ("conversion_rate", "converted")):
+        result[key] = round(result[field] / result["sent"], 4) if result["sent"] else 0.0
+    return result
 
 
 async def get_metrics_batch(
     db: AsyncSession, campaign_ids: List[int]
 ) -> Dict[int, Dict[str, Any]]:
-    """Metrics for many campaigns in three queries, not three per campaign.
-
-    This is what lets the campaign list show real numbers: before, every row rendered "—"
-    because there was no way to ask for the whole page at once.
-    """
+    """Use the identical evidence calculation for list and detail views."""
     ids = [int(c) for c in campaign_ids if c is not None]
     if not ids:
         return {}
+    from app.services.campaign_delivery import metric_contexts, metrics
     counts = await crud.recipient_status_counts_for(db, ids)
     converted = await crud.converted_counts_for(db, ids)
     revenue = await crud.conversion_revenue_for(db, ids)
-    return {
-        cid: _metrics_from(counts.get(cid, {}), converted.get(cid, 0), revenue.get(cid))
-        for cid in ids
-    }
+    contexts = await metric_contexts(db, ids)
+    return {cid: _with_evidence(_metrics_from(counts.get(cid, {}), converted.get(cid, 0), revenue.get(cid)),
+                                await metrics(db, cid, context=contexts[cid])) for cid in ids}
 
 
 async def _count_converted(db: AsyncSession, campaign_id: int) -> int:

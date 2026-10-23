@@ -333,9 +333,10 @@ async def test_downgrade_is_blocked_while_an_open_link_is_unresolved():
 
     async with committed_open_event() as event_id:
         async with async_session_factory() as db:
+            version_before = await db.scalar(text("SELECT version_num FROM app.alembic_version"))
             await orders_crud.create_hold(db, event_id, participant_name="Pending buyer", participant_phone="8710000009")
             await db.commit()
         with pytest.raises(RuntimeError, match="Resolve open payment links"):
             await asyncio.to_thread(command.downgrade, Config("alembic.ini"), "a7d0e3f6b9c2")
         async with async_session_factory() as db:
-            assert await db.scalar(text("SELECT version_num FROM app.alembic_version")) == "b8e1f4a7c0d3"
+            assert await db.scalar(text("SELECT version_num FROM app.alembic_version")) == version_before

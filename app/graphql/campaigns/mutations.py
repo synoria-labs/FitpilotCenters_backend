@@ -131,6 +131,9 @@ class CampaignsMutation:
         error = await require_capability(info, SEND_CAMPAIGNS)
         if error:
             return CampaignResult(success=False, error=error)
+        from app.services.campaign_delivery import POLICIES
+        if input.daily_cap_policy not in POLICIES:
+            return CampaignResult(success=False, error="Política de límite diario no válida.")
         if input.objective not in CAMPAIGN_OBJECTIVES:
             return CampaignResult(success=False, error="Objetivo de campaña desconocido.")
         if not (input.name or "").strip():
@@ -168,6 +171,8 @@ class CampaignsMutation:
                 conversion_metric=input.conversion_metric,
                 recency_block_days=input.recency_block_days,
                 throttle_per_minute=input.throttle_per_minute,
+                daily_cap_policy=input.daily_cap_policy,
+                auto_retry_meta_limits=input.auto_retry_meta_limits,
             )
         except Exception as exc:  # noqa: BLE001
             await db.rollback()
@@ -186,10 +191,25 @@ class CampaignsMutation:
         campaign = await crud.get_campaign_model(db, id)
         if campaign is None:
             return CampaignResult(success=False, error="Campaña no encontrada.")
-        if campaign.status != STATUS_DRAFT:
+        if campaign.status in (STATUS_SENDING, STATUS_CANCELED):
             return CampaignResult(
-                success=False, error="Solo se pueden editar campañas en borrador."
+                success=False, error="Pausa el envío antes de editar su política."
             )
+        if campaign.status != STATUS_DRAFT:
+            # Published audiences/content stay frozen; delivery policy is independently editable.
+            from app.services.campaign_delivery import POLICIES
+            from dataclasses import fields as input_fields
+            if any(getattr(input, f.name) is not None for f in input_fields(input)
+                   if f.name not in ("daily_cap_policy", "auto_retry_meta_limits")):
+                return CampaignResult(success=False, error="El contenido solo se puede editar en borrador.")
+            if input.daily_cap_policy is not None and input.daily_cap_policy not in POLICIES:
+                return CampaignResult(success=False, error="Política de límite diario no válida.")
+            fields = {k: getattr(input, k) for k in ("daily_cap_policy", "auto_retry_meta_limits")
+                      if getattr(input, k) is not None}
+            if not fields:
+                return CampaignResult(success=False, error="Solo puedes editar la política de envío.")
+            await crud.update_campaign(db, campaign, **fields)
+            return await _campaign_result(db, id)
 
         objective = input.objective or campaign.objective
         if objective not in CAMPAIGN_OBJECTIVES:
@@ -201,13 +221,16 @@ class CampaignsMutation:
             "header_media_url", "header_media_asset_id", "header_text_param_key",
             "button_url_param_key", "location_param", "marketing_campaign_id",
             "conversion_window_days", "conversion_metric", "recency_block_days",
-            "throttle_per_minute",
+            "throttle_per_minute", "daily_cap_policy", "auto_retry_meta_limits",
         ):
             value = getattr(input, key)
             if value is not None:
                 fields[key] = value
         if input.param_mapping is not None:
             fields["param_mapping"] = [str(v) for v in input.param_mapping]
+        from app.services.campaign_delivery import POLICIES
+        if fields.get("daily_cap_policy", "respect") not in POLICIES:
+            return CampaignResult(success=False, error="Política de límite diario no válida.")
 
         template_id = fields.get("template_id", campaign.template_id)
         mapping = fields.get(
@@ -392,8 +415,23 @@ class CampaignsMutation:
             return CampaignRunResult(success=False, error="Campaña no encontrada.")
         if campaign.status == STATUS_SENDING:
             return CampaignRunResult(success=False, error="La campaña ya se está enviando.")
-        asyncio.create_task(campaign_service.trigger_in_background(id))
-        return CampaignRunResult(success=True)
+        from app.services.campaign_delivery import recovery
+        try:
+            result = await recovery(db, id, execute=True)
+        except ValueError as exc:
+            return CampaignRunResult(success=False, error=str(exc))
+        return CampaignRunResult(success=True, pending=result["eligible"])
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated])
+    async def recover_campaign_recipients(self, info: Info, campaign_id: int) -> CampaignRunResult:
+        if error := await require_capability(info, SEND_CAMPAIGNS):
+            return CampaignRunResult(success=False, error=error)
+        from app.services.campaign_delivery import recovery
+        try:
+            result = await recovery(info.context.db, campaign_id, execute=True)
+            return CampaignRunResult(success=True, pending=result["eligible"])
+        except ValueError as exc:
+            return CampaignRunResult(success=False, error=str(exc))
 
     @strawberry.mutation(permission_classes=[IsAuthenticated])
     async def run_campaign_sweep(self, info: Info) -> CampaignRunResult:

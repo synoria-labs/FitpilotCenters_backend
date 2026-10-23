@@ -1038,7 +1038,7 @@ async def insert_outbound_message(
     return msg
 
 
-async def count_marketing_sends_today(db: AsyncSession, contact_id: int) -> int:
+async def count_marketing_sends_today(db: AsyncSession, contact_id: int, *, exclude_attempt_id=None) -> int:
     """Count MARKETING outbound messages sent to a contact today (local day).
 
     Backs the per-contact marketing frequency cap. ``app.messages`` stores naive-UTC timestamps
@@ -1057,7 +1057,22 @@ async def count_marketing_sends_today(db: AsyncSession, contact_id: int) -> int:
         Message.message_class == "marketing",
         Message.timestamp >= start_utc,
     )
-    return int((await db.execute(stmt)).scalar() or 0)
+    total = int((await db.execute(stmt)).scalar() or 0)
+    from app.models.campaignsModel import CampaignSendAttempt
+    from app.services.campaign_delivery import phone_key
+    contact = await db.get(Contact, contact_id)
+    if contact is None:
+        return total
+    # Started/uncertain requests reserve their slot even if the worker loses its response.
+    reserved = select(func.count(CampaignSendAttempt.id)).where(
+        CampaignSendAttempt.phone_key == phone_key(contact.wa_id or contact.phone_number),
+        CampaignSendAttempt.started_at >= start_utc.replace(tzinfo=timezone.utc),
+        CampaignSendAttempt.state.in_(("started", "uncertain", "accepted", "sent")),
+        ~select(Message.id).where(Message.wa_message_id == CampaignSendAttempt.wa_message_id).exists(),
+    )
+    if exclude_attempt_id is not None:
+        reserved = reserved.where(CampaignSendAttempt.id != exclude_attempt_id)
+    return total + int(await db.scalar(reserved) or 0)
 
 
 async def insert_message_status(
