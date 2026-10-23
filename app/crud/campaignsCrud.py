@@ -628,7 +628,8 @@ async def defer_recipient(
     """
     recipient.status = "pending"
     recipient.send_after = send_after
-    recipient.skip_reason = reason
+    if recipient.skip_reason != "recovery_unconfirmed":
+        recipient.skip_reason = reason
     recipient.error = None
     recipient.updated_at = _utcnow()
     await db.flush()

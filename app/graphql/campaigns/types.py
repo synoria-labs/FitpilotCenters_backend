@@ -287,6 +287,17 @@ class UpdateCampaignInput:
 
 
 @strawberry.type
+class CampaignRecoveryCause:
+    key: str
+    label: str
+    total: int
+    eligible: int
+    blocked: int
+    selected_by_default: bool
+    note: str
+
+
+@strawberry.type
 class CampaignRecoveryPreview:
     eligible: int = 0
     duplicates: int = 0
@@ -296,6 +307,11 @@ class CampaignRecoveryPreview:
     scheduled: int = 0
     recipients: Optional[JSON] = None
     error: Optional[str] = None
+    causes: List[CampaignRecoveryCause] = strawberry.field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(**dict(data, causes=[CampaignRecoveryCause(**c) for c in data.get("causes", [])]))
 
 
 @strawberry.type
