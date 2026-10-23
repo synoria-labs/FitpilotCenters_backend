@@ -32,6 +32,21 @@ async def lock_class_session(db: AsyncSession, session_id: int) -> None:
     )
 
 
+async def lock_special_event(db: AsyncSession, event_id: int) -> None:
+    """Serialize seat holds, payment confirmations and capacity changes for one event.
+
+    Same TOCTOU as ``lock_class_session``: "count active orders, compare to capacity, insert"
+    has no backing constraint for the count, so two buyers racing for the last seat could both
+    pass. Callers MUST take this lock BEFORE counting and BEFORE locking any order row (the
+    payment webhook reads the order's event id unlocked, then locks the event, then the row),
+    so the lock order is always event -> order and two flows cannot deadlock.
+    """
+    await db.execute(
+        sa_text("SELECT pg_advisory_xact_lock(:k)"),
+        {"k": _lock_key("special_event", event_id)},
+    )
+
+
 # Fixed key: one coarse lock serializes ALL multi-session batch runs against
 # each other (materialization + reschedule share it).
 _MATERIALIZE_BATCH_KEY = _lock_key("materialize_batch", 0)

@@ -72,6 +72,7 @@ class CampaignData:
     finished_at: Optional[datetime]
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
+    special_event_id: Optional[int] = None
 
     @classmethod
     def from_model(cls, m: Campaign) -> "CampaignData":
@@ -100,6 +101,7 @@ class CampaignData:
             finished_at=m.finished_at,
             created_at=m.created_at,
             updated_at=m.updated_at,
+            special_event_id=m.special_event_id,
         )
 
 

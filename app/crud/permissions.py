@@ -30,6 +30,9 @@ SEND_CAMPAIGNS = "send_campaigns"  # create/schedule/trigger WhatsApp campaigns
 VIEW_MEMBERS = "view_members"  # read the member directory + detail (PII)
 VIEW_FINANCES = "view_finances"  # read payments, metrics, dashboard KPIs
 VIEW_CHATS = "view_chats"  # read WhatsApp conversations/messages
+# Special events: create/publish/cancel events, take over regular class slots, see
+# participants and follow up displaced clients. Admin-only by default.
+MANAGE_SPECIAL_EVENTS = "manage_special_events"
 ALL_CAPABILITIES: List[str] = [
     MANAGE_MEMBERSHIP_PLANS,
     MANAGE_OWNER_AGENT,
@@ -44,6 +47,7 @@ ALL_CAPABILITIES: List[str] = [
     VIEW_MEMBERS,
     VIEW_FINANCES,
     VIEW_CHATS,
+    MANAGE_SPECIAL_EVENTS,
 ]
 
 ADMIN_ROLE_CODE = "admin"

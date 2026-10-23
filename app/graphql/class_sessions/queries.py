@@ -63,7 +63,9 @@ def _to_session_with_seats_items(data: List[dict]) -> List[SessionWithSeats]:
                 venue_id=item['venue_id'],
                 template_id=item.get('template_id'),
                 class_type_name=item.get('class_type_name'),
-                seats=seats
+                seats=seats,
+                status=item.get('status') or 'scheduled',
+                displaced_by_event=item.get('displaced_by_event'),
             )
         )
 

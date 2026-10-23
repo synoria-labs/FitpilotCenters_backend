@@ -6,7 +6,8 @@ with the webhook secret (HMAC-SHA256 over MercadoPago's documented manifest).
 import hashlib
 import hmac
 import logging
-from typing import Any, Dict, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Sequence
 
 import httpx
 
@@ -25,31 +26,50 @@ def _auth_headers() -> Dict[str, str]:
     return {"Authorization": f"Bearer {cfg.ACCESS_TOKEN}"}
 
 
+def _mp_datetime(value: datetime) -> str:
+    """Mercado Pago wants ISO 8601 with milliseconds and an explicit offset."""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat(timespec="milliseconds")
+
+
 async def create_preference(
     *,
     amount,
     description: str,
     external_reference: str,
     payer_name: Optional[str] = None,
+    currency: Optional[str] = None,
+    expires_at: Optional[datetime] = None,
+    binary_mode: bool = False,
+    excluded_payment_types: Optional[Sequence[str]] = None,
+    item_id: Optional[str] = None,
 ) -> Dict[str, Optional[str]]:
     """Create a Checkout Pro preference and return its id + payment link (init_point).
 
     With a TEST access token the sandbox link is returned. ``external_reference`` is echoed back
     on the payment so the webhook can match it to the pending action.
+
+    The optional arguments let a caller bound the purchase: ``expires_at`` makes the link stop
+    accepting payments (a seat hold is only worth what its link is), ``binary_mode`` asks for an
+    immediate approved/rejected answer instead of a long ``in_process``, and
+    ``excluded_payment_types`` (e.g. ``ticket``/``atm`` cash vouchers that settle days later)
+    keeps out methods that cannot confirm within the hold.
     """
     if not cfg.is_configured():
         raise MercadoPagoError("MercadoPago no está configurado (falta MP_ACCESS_TOKEN).")
 
     url = f"{cfg.API_BASE}/checkout/preferences"
+    item: Dict[str, Any] = {
+        "title": (description or "Pago FitPilot")[:250],
+        "quantity": 1,
+        "unit_price": float(amount),
+        "currency_id": currency or cfg.CURRENCY,
+    }
+    if item_id:
+        item["id"] = item_id[:256]
     body: Dict[str, Any] = {
-        "items": [
-            {
-                "title": (description or "Pago FitPilot")[:250],
-                "quantity": 1,
-                "unit_price": float(amount),
-                "currency_id": cfg.CURRENCY,
-            }
-        ],
+        "items": [item],
         "external_reference": external_reference,
         "metadata": {"external_reference": external_reference},
     }
@@ -57,6 +77,16 @@ async def create_preference(
         body["notification_url"] = cfg.NOTIFICATION_URL
     if payer_name:
         body["payer"] = {"name": payer_name}
+    if expires_at is not None:
+        body["expires"] = True
+        body["expiration_date_from"] = _mp_datetime(datetime.now(timezone.utc) - timedelta(minutes=1))
+        body["expiration_date_to"] = _mp_datetime(expires_at)
+    if binary_mode:
+        body["binary_mode"] = True
+    if excluded_payment_types:
+        body["payment_methods"] = {
+            "excluded_payment_types": [{"id": t} for t in excluded_payment_types]
+        }
 
     headers = {**_auth_headers(), "Content-Type": "application/json"}
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -85,6 +115,48 @@ async def get_payment(payment_id) -> Dict[str, Any]:
         logger.warning("MercadoPago get_payment failed (%s): %s", resp.status_code, resp.text[:300])
         raise MercadoPagoError(f"No se pudo consultar el pago (HTTP {resp.status_code}).")
     return resp.json()
+
+
+async def search_payments(external_reference: str) -> List[Dict[str, Any]]:
+    """Payments carrying ``external_reference``, newest first.
+
+    Used by the reconciliation sweep to catch an approval whose webhook never arrived (or
+    arrived while we were down), instead of relying on Mercado Pago's retries alone.
+    """
+    if not cfg.is_configured():
+        raise MercadoPagoError("MercadoPago no está configurado (falta MP_ACCESS_TOKEN).")
+    url = f"{cfg.API_BASE}/v1/payments/search"
+    params = {
+        "external_reference": external_reference,
+        "sort": "date_created",
+        "criteria": "desc",
+    }
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        resp = await client.get(url, headers=_auth_headers(), params=params)
+    if resp.status_code >= 400:
+        logger.warning("MercadoPago search failed (%s): %s", resp.status_code, resp.text[:300])
+        raise MercadoPagoError(f"No se pudo consultar los pagos (HTTP {resp.status_code}).")
+    data = resp.json() or {}
+    return list(data.get("results") or [])
+
+
+async def expire_preference(preference_id: str) -> None:
+    """Close a payment link now (e.g. the purchase was canceled before paying)."""
+    if not cfg.is_configured() or not preference_id:
+        return
+    url = f"{cfg.API_BASE}/checkout/preferences/{preference_id}"
+    body = {
+        "expires": True,
+        "expiration_date_to": _mp_datetime(datetime.now(timezone.utc)),
+    }
+    headers = {**_auth_headers(), "Content-Type": "application/json"}
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        resp = await client.put(url, json=body, headers=headers)
+    if resp.status_code >= 400:
+        logger.warning(
+            "MercadoPago expire_preference failed (%s): %s", resp.status_code, resp.text[:300]
+        )
+        raise MercadoPagoError(f"No se pudo cerrar el link de pago (HTTP {resp.status_code}).")
 
 
 async def refund_payment(

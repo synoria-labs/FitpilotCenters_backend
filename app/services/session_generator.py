@@ -13,6 +13,7 @@ from app.crud.classSessionCrud import (
     get_sessions_by_template
 )
 from app.crud.standingBookingsCrud import materialize_standing_bookings
+from app.core.timezones import local_date, to_local
 from app.models.classModel import ClassTemplate
 from sqlalchemy import select
 
@@ -276,7 +277,7 @@ class SessionGeneratorService:
         existing_sessions: List
     ) -> List[str]:
         """Find dates where sessions should exist but don't"""
-        existing_dates = {session.start_at.date() for session in existing_sessions}
+        existing_dates = {local_date(session.start_at) for session in existing_sessions}
         missing_dates = []
 
         current_date = start_date
@@ -342,8 +343,8 @@ class SessionGeneratorService:
             "sessions": [
                 {
                     "id": session.id,
-                    "date": session.start_at.date().isoformat(),
-                    "start_time": session.start_at.time().isoformat()
+                    "date": local_date(session.start_at).isoformat(),
+                    "start_time": to_local(session.start_at).time().isoformat()
                 }
                 for session in sessions_created
             ]

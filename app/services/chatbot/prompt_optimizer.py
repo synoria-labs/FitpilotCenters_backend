@@ -33,16 +33,19 @@ _TOOL_INVENTORY_ES = (
     "precios y planes (get_membership_plans), horario semanal de clases (get_weekly_schedule), "
     "sedes y direccion (get_venues), instructores (list_instructors), cupo y disponibilidad "
     "(list_available_classes, check_class_availability), membresia y reservas del socio "
-    "(get_my_membership, list_my_reservations) y el flujo de compra/confirmacion "
-    "(propose_membership, propose_day_pass, confirm_action, cancel_action)."
+    "(get_my_membership, list_my_reservations), el flujo de compra/confirmacion "
+    "(propose_membership, propose_day_pass, confirm_action, cancel_action) y los eventos "
+    "especiales con su precio, cupo y compra (list_special_events, get_special_event, "
+    "start_event_purchase, check_event_order_status, cancel_event_order)."
 )
 
 # The runtime also injects these as fixed blocks (see build_system_prompt in agent.py); the
 # configured prompt must not duplicate them.
 _FIXED_BLOCKS_ES = (
     "El sistema tambien inyecta automaticamente, como bloques fijos: la fecha y hora actual, "
-    "las reglas de uso de herramientas, el flujo de compra (paquete vs pase diario) y el flujo "
-    "de confirmacion/cancelacion, ademas de la identificacion del socio. No los repitas."
+    "las reglas de uso de herramientas, el flujo de compra (paquete vs pase diario), las reglas "
+    "de eventos especiales y el flujo de confirmacion/cancelacion, ademas de la identificacion "
+    "del socio. No los repitas."
 )
 
 

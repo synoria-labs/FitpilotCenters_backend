@@ -207,6 +207,160 @@ async def _build_campaign_context_note(
     )
 
 
+_EVENT_CAMPAIGN_RECENCY_DAYS = 14
+
+
+def _button_intent(text: str) -> Optional[str]:
+    """Map a campaign quick-reply label to an intent ("Quiero reservar" / "Más información")."""
+    import unicodedata
+
+    t = unicodedata.normalize("NFKD", (text or "").strip().lower())
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    if "reserv" in t or "comprar" in t or "apartar" in t:
+        return "reserve"
+    if "inform" in t or t in ("info", "mas info", "detalles"):
+        return "info"
+    return None
+
+
+async def _event_from_campaign_message(db: AsyncSession, context_message_id: Optional[str]):
+    """The special event linked to the campaign message the customer replied to, if any."""
+    if not context_message_id:
+        return None
+    recipient = await campaigns_crud.get_recipient_by_wa_message_id(db, context_message_id)
+    if recipient is None:
+        return None
+    campaign, _template = await campaigns_crud.get_campaign_and_template(db, recipient.campaign_id)
+    event_id = getattr(campaign, "special_event_id", None) if campaign else None
+    if not event_id:
+        return None
+    from app.crud.special_events import events as special_events_crud
+
+    return await special_events_crud.get_event(db, event_id)
+
+
+async def _event_from_recent_campaign(db: AsyncSession, wa_id: Optional[str]):
+    """The event promoted by the latest event campaign sent to this number (last 14 days).
+
+    Keeps the event in context on the turns after the button tap (e.g. when the customer just
+    answers with the participant's name), without depending on the campaign's wording.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import func, or_, select
+
+    from app.crud.special_events import events as special_events_crud
+    from app.crud.special_events.common import participant_key
+    from app.models import Campaign, CampaignRecipient
+
+    key = participant_key(wa_id)
+    if not key:
+        return None
+    since = datetime.now(timezone.utc) - timedelta(days=_EVENT_CAMPAIGN_RECENCY_DAYS)
+    wa_digits = func.right(
+        func.regexp_replace(func.coalesce(CampaignRecipient.wa_id, ""), r"\D", "", "g"), 10
+    )
+    phone_digits = func.right(
+        func.regexp_replace(func.coalesce(CampaignRecipient.phone_e164, ""), r"\D", "", "g"), 10
+    )
+    row = (
+        await db.execute(
+            select(Campaign.special_event_id)
+            .join(CampaignRecipient, CampaignRecipient.campaign_id == Campaign.id)
+            .where(
+                Campaign.special_event_id.is_not(None),
+                CampaignRecipient.sent_at.is_not(None),
+                CampaignRecipient.sent_at >= since,
+                or_(wa_digits == key, phone_digits == key),
+            )
+            .order_by(CampaignRecipient.sent_at.desc())
+            .limit(1)
+        )
+    ).first()
+    if row is None:
+        return None
+    return await special_events_crud.get_event(db, row[0])
+
+
+async def _build_special_event_note(
+    db: AsyncSession,
+    conversation_id: int,
+    wa_id: Optional[str],
+    context_message_id: Optional[str],
+    message_type: str,
+    user_text: str,
+) -> Optional[str]:
+    """Structured special-event context for this turn: the event behind a campaign button, what
+    the button means, and the customer's verified orders. All facts come from the database."""
+    from datetime import datetime, timezone
+
+    from app.crud.special_events import events as special_events_crud
+    from app.crud.special_events import orders as special_event_orders_crud
+    from app.crud.special_events.common import local_schedule_label, money_label
+    from app.services.chatbot.tools import _order_status_es
+
+    parts: List[str] = []
+    tapped_event = await _event_from_campaign_message(db, context_message_id)
+    event = tapped_event or await _event_from_recent_campaign(db, wa_id)
+    if event is not None and event.status != "draft":
+        now = datetime.now(timezone.utc)
+        if event.status == "published" and event.start_at > now:
+            avail = await special_events_crud.availability(db, event, now=now)
+            spots = (
+                f"{avail.available} lugar(es) disponible(s)"
+                if avail.sales_open
+                else avail.sales_closed_reason or "sin lugares"
+            )
+            origin = "la campaña a la que respondió" if tapped_event else "una campaña reciente"
+            parts.append(
+                f"🎟️ Evento especial en contexto (de {origin}): #{event.id} «{event.name}» — "
+                f"{local_schedule_label(event.start_at, event.end_at, event.timezone)} — "
+                f"{money_label(event.price, event.currency)} por participante — {spots}. "
+                f"Datos verificados del sistema; detalle con get_special_event({event.id})."
+            )
+            intent = (
+                _button_intent(user_text)
+                if tapped_event is not None and message_type in ("button", "interactive")
+                else None
+            )
+            if intent == "reserve":
+                parts.append(
+                    f"El cliente tocó «{user_text}»: quiere comprar ESTE evento. Pide solo lo que "
+                    "falte (el nombre completo del participante), confirma evento, fecha, horario y "
+                    f"precio, y llama a start_event_purchase(event_id={event.id}). No ofrezcas "
+                    "planes ni pase diario para esto."
+                )
+            elif intent == "info":
+                parts.append(
+                    f"El cliente tocó «{user_text}»: explícale el evento con "
+                    f"get_special_event({event.id}) (qué incluye, fecha, horario, lugar, precio y "
+                    "lugares) y ofrécele reservar su lugar."
+                )
+        elif tapped_event is not None:
+            state = "fue cancelado" if event.status == "canceled" else "ya no está a la venta"
+            parts.append(
+                f"El cliente respondió a la campaña del evento «{event.name}», que {state}. "
+                "Díselo con amabilidad y no intentes venderlo."
+            )
+
+    orders = await special_event_orders_crud.live_orders_for_conversation(
+        db, conversation_id=conversation_id, wa_id=wa_id
+    )
+    for order in orders[:5]:
+        if order.status not in ("awaiting_payment", "paid", "needs_review", "refund_pending"):
+            continue
+        order_event = await special_events_crud.get_event(db, order.event_id)
+        parts.append(
+            f"Compra de evento #{order.id} ({order.participant_name}, «{order_event.name}»): "
+            f"{_order_status_es(order, order_event)}"
+        )
+    if any(o.status == "awaiting_payment" for o in orders):
+        parts.append(
+            "Si pregunta por su pago pendiente, reenvía ese mismo link; no generes otro."
+        )
+    return "\n".join(parts) if parts else None
+
+
 async def _run_agent_reply(
     conversation_id: int,
     contact_id: int,
@@ -236,12 +390,21 @@ async def _run_agent_reply(
             )
             business_info = await build_business_info(db, config)
             history = await _load_history(db, conversation_id, exclude_message_id=message_id)
-            require_mp = bool(config.require_mp_payment) and mercadopago_config.is_configured()
+            mp_required = bool(config.require_mp_payment)
+            require_mp = mp_required and mercadopago_config.is_configured()
             pending_note = await _build_pending_note(db, conversation_id)
             member_note = _build_member_note(member)
             campaign_note = await _build_campaign_context_note(
                 db, context_message_id, message_type, text
             )
+            try:
+                event_note = await _build_special_event_note(
+                    db, conversation_id, contact_wa_id, context_message_id, message_type, text
+                )
+            except Exception:  # noqa: BLE001 - extra context must never block the reply
+                await db.rollback()
+                logger.exception("special event note failed for conversation %s", conversation_id)
+                event_note = None
 
             ctx = ChatbotContext(
                 db=db,
@@ -249,12 +412,13 @@ async def _run_agent_reply(
                 member_id=member_id,
                 wa_id=contact_wa_id,
                 require_mp_payment=require_mp,
+                mp_required=mp_required,
             )
             tools = build_tools(ctx)
             reply = await run_agent(
                 config, tools, business_info, member_id, history, text,
                 pending_note=pending_note, member_note=member_note,
-                campaign_note=campaign_note,
+                campaign_note=campaign_note, event_note=event_note,
             )
             if not reply:
                 return

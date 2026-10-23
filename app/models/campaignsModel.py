@@ -98,6 +98,11 @@ class Campaign(Base):
     marketing_campaign_id: Mapped[Optional[int]] = mapped_column(
         BigInteger, ForeignKey("marketing_campaigns.id", ondelete="SET NULL")
     )
+    # The special event this campaign promotes. Lets the chatbot resolve a button tap ("Quiero
+    # reservar") to the event's structured data instead of guessing from the campaign name.
+    special_event_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("special_events.id", ondelete="SET NULL")
+    )
 
     # Scheduling. ``scheduled_at`` NULL => send immediately when triggered.
     scheduled_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))

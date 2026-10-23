@@ -37,8 +37,23 @@ from app.crud.memberships import plans as plans_crud
 from app.crud.memberships import enrollment as enrollment_crud
 from app.crud.memberships import subscriptions as subscriptions_crud
 from app.crud.standing_bookings import catalog as class_catalog
+from app.crud.special_events import events as special_events_crud
+from app.crud.special_events import orders as special_event_orders_crud
+from app.crud.special_events.common import (
+    SpecialEventError,
+    local_schedule_label,
+    local_time_label,
+    money_label,
+)
 from app.models import Venue
+from app.models.specialEventModel import (
+    EVENT_CANCELED,
+    EVENT_DRAFT,
+    EVENT_PUBLISHED,
+    ORDER_AWAITING_PAYMENT,
+)
 from app.services import mercadopago_service
+from app.services import special_event_payments
 from app.services.chatbot.timefmt import fmt_dt as _fmt_dt
 from app.models.chatbotModel import (
     ACTION_BUY_DAY_PASS,
@@ -64,7 +79,11 @@ class ChatbotContext:
     conversation_id: int
     member_id: Optional[int]
     wa_id: Optional[str]
+    # Effective switch: the business requires Mercado Pago AND it is configured.
     require_mp_payment: bool = False
+    # The business requires Mercado Pago (chatbot_config). When it is required but the gateway
+    # is not configured, purchases must be refused — never downgraded to "confirm by text".
+    mp_required: bool = False
 
 
 def _to_decimal(value) -> Optional[Decimal]:
@@ -90,6 +109,62 @@ async def _first_available_session_seat(db: AsyncSession, session_id: int) -> Op
     except Exception:  # noqa: BLE001
         return None
     return next((s.id for s in seats if s.is_available), None)
+
+
+async def describe_special_event(db: AsyncSession, event) -> str:
+    """Structured facts about an event, straight from the database (never from campaign text)."""
+    from app.models import People
+
+    avail = await special_events_crud.availability(db, event)
+    address = event.address
+    if not address:
+        venue = await db.get(Venue, event.venue_id)
+        address = venue.address if venue else None
+    instructor = await db.get(People, event.instructor_id) if event.instructor_id else None
+    lines = [
+        f"Evento #{event.id}: «{event.name}» (evento especial, distinto de las clases regulares).",
+        f"Cuándo: {local_schedule_label(event.start_at, event.end_at, event.timezone)} (hora de México).",
+    ]
+    if address:
+        lines.append(f"Dónde: {address}")
+    if instructor and instructor.full_name:
+        lines.append(f"Instructora: {instructor.full_name}")
+    if event.description:
+        lines.append(f"Descripción: {event.description}")
+    if event.includes:
+        items = [i.strip() for i in event.includes.splitlines() if i.strip()]
+        lines.append("Incluye: " + "; ".join(items))
+    lines.append(f"Precio: {money_label(event.price, event.currency)} por participante.")
+    if avail.sales_open:
+        lines.append(f"Lugares disponibles: {avail.available}.")
+    else:
+        lines.append(f"No está a la venta ahora: {avail.sales_closed_reason}")
+    lines.append(
+        f"Al iniciar la compra el lugar se aparta {event.hold_minutes} minutos mientras se paga "
+        "con el link de Mercado Pago (tarjeta o saldo de Mercado Pago). Comprar el evento no usa "
+        "ni modifica la membresía; quien tenga clase regular a esa hora también puede comprarlo."
+    )
+    return "\n".join(lines)
+
+
+def _order_status_es(order, event) -> str:
+    """Customer-facing status of an event order. Only 'paid' is a confirmed ticket."""
+    status = order.status
+    if status == "paid":
+        return "PAGADA y confirmada (verificado con Mercado Pago)."
+    if status == ORDER_AWAITING_PAYMENT:
+        expires = (
+            local_time_label(order.hold_expires_at, event.timezone) if order.hold_expires_at else "?"
+        )
+        link = order.mp_init_point or "(link no disponible)"
+        return f"pendiente de pago, apartada hasta las {expires}. Link: {link}"
+    return {
+        "expired": "vencida sin pago (el lugar se liberó).",
+        "canceled": "cancelada.",
+        "refund_pending": "en proceso de reembolso.",
+        "refunded": "reembolsada.",
+        "needs_review": "en revisión por el equipo (un asesor la contactará).",
+    }.get(status, status)
 
 
 def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
@@ -198,7 +273,12 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         for r in reservations:
             name = r.session_name or "Clase"
             seat = f" asiento {r.seat_label}" if r.seat_label else ""
-            out.append(f"Reserva #{r.id}: {name} — {_fmt_dt(r.session_start)}{seat} ({r.status})")
+            status = (
+                "clase reemplazada por un evento especial; el equipo le dará seguimiento"
+                if r.status == "displaced"
+                else r.status
+            )
+            out.append(f"Reserva #{r.id}: {name} — {_fmt_dt(r.session_start)}{seat} ({status})")
         return "\n".join(out)
 
     async def get_weekly_schedule() -> str:
@@ -247,6 +327,13 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
     ) -> str:
         """Store the pending action. If MercadoPago is required (and amount>0), create a payment
         link (status awaiting_payment) and return it; otherwise leave it pending for a 'Sí'."""
+        if ctx.mp_required and not ctx.require_mp_payment and amount and float(amount) > 0:
+            # Required but not configured: say so. Falling back to a text confirmation would
+            # record a COMPLETED payment nobody collected.
+            logger.error("Chatbot purchase refused: Mercado Pago required but not configured")
+            return ("No puedo generar el link de pago en este momento: el cobro en línea no está "
+                    "disponible. Dile al cliente que un asesor lo contactará para completar la "
+                    "compra; NO la confirmes ni la registres por texto.")
         if ctx.require_mp_payment and amount and float(amount) > 0:
             external_reference = f"chatbot-{uuid.uuid4().hex}"
             try:
@@ -407,6 +494,123 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         canceled = await pending_crud.cancel_pending(db, ctx.conversation_id, commit=True)
         return "Acción cancelada." if canceled else "No había ninguna acción pendiente."
 
+    # --------------------------- special events ----------------------------
+    async def list_special_events() -> str:
+        """Eventos especiales a la venta (fechas únicas con precio propio). No son clases regulares."""
+        events = await special_events_crud.list_events(db, statuses=[EVENT_PUBLISHED])
+        now = datetime.now(timezone.utc)
+        lines: List[str] = []
+        for event in events:
+            if event.start_at <= now:
+                continue
+            avail = await special_events_crud.availability(db, event, now=now)
+            spots = (
+                f"{avail.available} lugar(es) disponible(s)"
+                if avail.sales_open
+                else (avail.sales_closed_reason or "sin lugares")
+            )
+            lines.append(
+                f"#{event.id} «{event.name}» — "
+                f"{local_schedule_label(event.start_at, event.end_at, event.timezone)} — "
+                f"{money_label(event.price, event.currency)} por participante — {spots}"
+            )
+        return "\n".join(lines) if lines else "No hay eventos especiales a la venta en este momento."
+
+    async def get_special_event(event_id: int) -> str:
+        """Detalle verificado de un evento especial: fecha, horario, lugar, instructora, qué incluye,
+        precio, lugares disponibles y cómo se aparta el lugar."""
+        event = await special_events_crud.get_event(db, int(event_id))
+        if event is None or event.status == EVENT_DRAFT:
+            return "No encontré ese evento. Usa list_special_events."
+        if event.status == EVENT_CANCELED:
+            return f"El evento «{event.name}» fue cancelado; ya no está a la venta."
+        return await describe_special_event(db, event)
+
+    async def start_event_purchase(
+        event_id: int,
+        participant_name: Optional[str] = None,
+        participant_phone: Optional[str] = None,
+    ) -> str:
+        """Inicia la compra de UNA entrada a un evento especial: aparta un lugar y genera el link de
+        pago de Mercado Pago. Requiere el nombre completo del participante (si es el socio
+        identificado comprando para sí, puede omitirse). El teléfono por defecto es el del cliente."""
+        name = (participant_name or "").strip()
+        if not name and ctx.member_id is not None:
+            member = await membersCrud.get_member_by_id(db, ctx.member_id)
+            name = (getattr(member, "full_name", None) or "").strip()
+        if not name:
+            return "Necesito el nombre completo del participante. Pídeselo antes de generar el pago."
+        phone = (participant_phone or "").strip() or ctx.wa_id
+        result = await special_event_payments.start_whatsapp_purchase(
+            db,
+            event_id=int(event_id),
+            participant_name=name,
+            participant_phone=phone,
+            conversation_id=ctx.conversation_id,
+            wa_id=ctx.wa_id,
+        )
+        if not result.ok:
+            return f"No se pudo apartar el lugar: {result.message}"
+        if result.already_paid:
+            return f"{result.message} No generes otro pago."
+        event = await special_events_crud.get_event(db, int(event_id))
+        expires = (
+            local_time_label(result.hold_expires_at, event.timezone)
+            if result.hold_expires_at
+            else "?"
+        )
+        return (
+            f"Lugar APARTADO (todavía no pagado) para {name} en «{event.name}» "
+            f"({local_schedule_label(event.start_at, event.end_at, event.timezone)}), "
+            f"{money_label(event.price, event.currency)}. El apartado vence a las {expires} "
+            f"(hora de México). Link de pago de Mercado Pago: {result.init_point}\n"
+            "Envíale este link tal cual. La entrada NO está confirmada hasta que Mercado Pago "
+            "acredite el pago; la confirmación le llegará sola por WhatsApp. No la confirmes tú."
+        )
+
+    async def check_event_order_status() -> str:
+        """Estado VERIFICADO de las compras de eventos especiales de este cliente (pagada,
+        pendiente de pago, vencida, reembolsada...). Úsalo antes de afirmar que algo está pagado."""
+        orders = await special_event_orders_crud.live_orders_for_conversation(
+            db, conversation_id=ctx.conversation_id, wa_id=ctx.wa_id
+        )
+        if not orders:
+            return "Este cliente no tiene compras de eventos especiales."
+        lines: List[str] = []
+        for order in orders:
+            event = await special_events_crud.get_event(db, order.event_id)
+            lines.append(
+                f"Compra #{order.id} — {order.participant_name} — «{event.name}»: "
+                f"{_order_status_es(order, event)}"
+            )
+        return "\n".join(lines)
+
+    async def cancel_event_order(order_id: Optional[int] = None) -> str:
+        """Cancela una compra de evento especial que AÚN NO se ha pagado (libera el lugar)."""
+        orders = await special_event_orders_crud.live_orders_for_conversation(
+            db, conversation_id=ctx.conversation_id, wa_id=ctx.wa_id
+        )
+        targets = [
+            o for o in orders
+            if o.status == ORDER_AWAITING_PAYMENT and (order_id is None or o.id == int(order_id))
+        ]
+        if not targets:
+            return "No hay compras de eventos pendientes de pago que cancelar."
+        preferences: List[str] = []
+        for order in targets:
+            try:
+                await special_event_orders_crud.cancel_order(
+                    db, order.id, actor_account_id=None, reason="Cancelado por el cliente"
+                )
+                if order.mp_preference_id:
+                    preferences.append(order.mp_preference_id)
+            except SpecialEventError as exc:
+                await db.rollback()
+                return f"No se pudo cancelar: {exc}"
+        await db.commit()
+        await special_event_payments.expire_payment_links(preferences)
+        return f"Listo, cancelé {len(targets)} compra(s) pendiente(s) de pago; el lugar quedó libre."
+
     factories = [
         (get_business_info, "get_business_info", "Información del negocio (nombre, dirección, horarios, teléfono, políticas)."),
         (get_membership_plans, "get_membership_plans", "Planes de membresía disponibles con precio y duración."),
@@ -421,6 +625,11 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         (propose_day_pass, "propose_day_pass", "Propone un PASE DIARIO (1 día): paga un plan diario y reserva una clase específica. Args: plan_id, session_id, full_name (si es cliente nuevo)."),
         (confirm_action, "confirm_action", "Ejecuta la compra pendiente tras la confirmación del cliente (solo cuando el pago no es por MercadoPago)."),
         (cancel_action, "cancel_action", "Cancela la acción pendiente."),
+        (list_special_events, "list_special_events", "Eventos especiales a la venta (fecha, horario, precio y lugares). No son clases regulares ni membresías."),
+        (get_special_event, "get_special_event", "Detalle verificado de un evento especial (qué incluye, lugar, instructora, precio, disponibilidad). Arg: event_id."),
+        (start_event_purchase, "start_event_purchase", "Aparta un lugar en un evento especial y genera el link de pago de Mercado Pago. Args: event_id, participant_name (nombre completo del participante), participant_phone (opcional)."),
+        (check_event_order_status, "check_event_order_status", "Estado verificado de las compras de eventos del cliente. Úsalo antes de decir que una entrada está pagada."),
+        (cancel_event_order, "cancel_event_order", "Cancela una compra de evento aún no pagada. Arg opcional: order_id."),
     ]
     return [
         StructuredTool.from_function(coroutine=fn, name=name, description=desc)

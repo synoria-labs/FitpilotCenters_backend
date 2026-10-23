@@ -34,6 +34,19 @@ SENSITIVE = {
         "pause_campaign", "resume_campaign", "cancel_campaign",
         "retry_campaign_failures", "run_campaign_sweep",
     ],
+    # Creating events and taking over regular classes is limited to authorized staff.
+    "special_events/queries.py": [
+        "special_events", "special_event", "special_event_takeover_preview",
+        "special_event_restore_preview", "special_event_displacements",
+        "special_event_form_options",
+    ],
+    "special_events/mutations.py": [
+        "create_special_event", "update_special_event", "publish_special_event",
+        "unpublish_special_event", "cancel_special_event", "apply_special_event_takeover",
+        "restore_regular_schedule", "update_displacement_follow_up",
+        "add_special_event_participant", "cancel_special_event_order",
+        "refund_special_event_order", "link_campaign_to_special_event",
+    ],
 }
 
 
