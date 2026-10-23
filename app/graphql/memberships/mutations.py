@@ -212,6 +212,7 @@ class MembershipMutation:
                 db=db,
                 person_id=input.person_id,
                 plan_id=input.plan_id,
+                session_id=getattr(input, "session_id", None),
                 start_at=input.start_at,
                 created_by=created_by
             )
@@ -236,6 +237,7 @@ class MembershipMutation:
                 start_at=sub_with_relations.start_at,
                 end_at=sub_with_relations.end_at,
                 status=sub_with_relations.status,
+                session_id=sub_with_relations.session_id,
                 plan_name=sub_with_relations.plan.name,
                 person_name=sub_with_relations.person.full_name or "Sin nombre",
                 remaining_days=(sub_with_relations.end_at - sub_with_relations.start_at).days
@@ -277,6 +279,7 @@ class MembershipMutation:
                         email=input.email,
                         phone_number=input.phone_number,  # WhatsApp number stored here
                         plan_id=input.plan_id,
+                        session_id=getattr(input, "session_id", None),
                         start_at=input.start_at,
                         payment_method=input.payment_method,
                         payment_amount=input.payment_amount,
@@ -298,6 +301,7 @@ class MembershipMutation:
                     email=input.email,
                     phone_number=input.phone_number,  # WhatsApp number stored here
                     plan_id=input.plan_id,
+                    session_id=getattr(input, "session_id", None),
                     start_at=input.start_at,
                     payment_method=input.payment_method,
                     payment_amount=input.payment_amount,
@@ -321,6 +325,7 @@ class MembershipMutation:
                 start_at=subscription.start_at,
                 end_at=subscription.end_at,
                 status=subscription.status,
+                session_id=subscription.session_id,
                 plan_name=plan.name,
                 person_name=person.full_name or "Sin nombre",
                 remaining_days=remaining_days
@@ -404,6 +409,7 @@ class MembershipMutation:
                 db=db,
                 member_id=input.member_id,
                 plan_id=input.plan_id,
+                session_id=getattr(input, "session_id", None),
                 template_id=input.template_id,
                 seat_id=input.seat_id,
                 start_at=input.start_at,
@@ -450,6 +456,7 @@ class MembershipMutation:
                 start_at=subscription.start_at,
                 end_at=subscription.end_at,
                 status=subscription.status,
+                session_id=subscription.session_id,
                 plan_name=plan.name,
                 person_name="", # Will be populated from member data if needed
                 remaining_days=remaining_days

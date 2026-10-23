@@ -16,6 +16,7 @@ from .standing_bookings import (
 )
 from .subscriptions import create_membership_subscription, get_member_active_subscription
 from .utils import _normalize_to_utc, _resolve_payment_amount
+from .day_passes import uses_class_expiry, purchase_day_pass
 
 
 async def create_member_enrollment(
@@ -25,6 +26,8 @@ async def create_member_enrollment(
     email: Optional[str] = None,
     phone_number: Optional[str] = None,
     plan_id: int,
+    session_id: Optional[int] = None,
+    seat_id: Optional[int] = None,
     start_at: Optional[datetime] = None,
     payment_method: str = "cash",
     payment_amount: Optional[Decimal | float] = None,
@@ -38,6 +41,17 @@ async def create_member_enrollment(
     """Create member, subscription and payment in a single transaction."""
     plan_result = await db.execute(select(MembershipPlan).where(MembershipPlan.id == plan_id))
     plan = plan_result.scalar_one()
+
+    if uses_class_expiry(plan, session_id):
+        purchase = await purchase_day_pass(
+            db, plan_id=plan_id, session_id=session_id, seat_id=seat_id,
+            full_name=full_name, email=email, phone_number=phone_number,
+            payment_method=payment_method, payment_amount=payment_amount,
+            payment_status=payment_status, payment_comment=payment_comment,
+            payment_provider=payment_provider, provider_payment_id=provider_payment_id,
+            external_reference=external_reference, recorded_by=recorded_by,
+        )
+        return purchase.person, purchase.subscription, purchase.payment, purchase.plan
 
     normalized_start = _normalize_to_utc(start_at or datetime.now().astimezone())
 
@@ -117,6 +131,7 @@ async def renew_subscription_with_standing_booking(
     recorded_by: Optional[int] = None,
     auto_materialize: bool = True,
     commit: bool = True,
+    session_id: Optional[int] = None,
 ) -> tuple[MembershipSubscription, Payment, MembershipPlan, Optional[int], dict]:
     """
     Renew a subscription and handle standing booking creation for fixed time slot plans.
@@ -146,6 +161,18 @@ async def renew_subscription_with_standing_booking(
     except Exception as exc:
         logger.error("Failed to get plan %s: %s", plan_id, exc)
         raise ValueError(f"Plan {plan_id} not found") from exc
+
+    if uses_class_expiry(plan, session_id):
+        purchase = await purchase_day_pass(
+            db, plan_id=plan_id, session_id=session_id, person_id=member_id, seat_id=seat_id,
+            payment_method=payment_method, payment_amount=payment_amount,
+            payment_status=payment_status, payment_comment=payment_comment,
+            payment_provider=payment_provider, provider_payment_id=provider_payment_id,
+            external_reference=external_reference, recorded_by=recorded_by,
+        )
+        if commit:
+            await db.commit()
+        return purchase.subscription, purchase.payment, purchase.plan, None, {"created_reservations": 1}
 
     # Get current active subscription to calculate renewal start date
     current_subscription = await get_member_active_subscription(db, member_id)
@@ -318,6 +345,7 @@ async def create_member_enrollment_with_standing_booking(
     recorded_by: Optional[int] = None,
     auto_materialize: bool = True,
     commit: bool = True,
+    session_id: Optional[int] = None,
 ) -> tuple[People, MembershipSubscription, Payment, MembershipPlan, Optional[int], dict]:
     """
     Create member enrollment with automatic standing booking for fixed time slot plans.
@@ -340,6 +368,8 @@ async def create_member_enrollment_with_standing_booking(
         email=email,
         phone_number=phone_number,  # WhatsApp number stored in phone_number
         plan_id=plan_id,
+        session_id=session_id,
+        seat_id=seat_id,
         start_at=start_at,
         payment_method=payment_method,
         payment_amount=payment_amount,
@@ -353,6 +383,11 @@ async def create_member_enrollment_with_standing_booking(
 
     standing_booking_id = None
     materialization_stats = _init_materialization_stats()
+
+    if subscription.session_id is not None:
+        if commit:
+            await db.commit()
+        return person, subscription, payment, plan, None, {"created_reservations": 1}
 
     # Handle fixed time-slot effects via shared helper
     if template_id:

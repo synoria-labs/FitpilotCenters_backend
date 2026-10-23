@@ -510,8 +510,8 @@ async def _recently_lapsed_subscriptions(
         )
         .where(
             and_(
-                MembershipSubscription.status == "active",
-                MembershipSubscription.end_at < now,
+                MembershipSubscription.status.in_(("active", "expired")),
+                MembershipSubscription.end_at <= now,
                 MembershipSubscription.end_at >= floor,
             )
         )

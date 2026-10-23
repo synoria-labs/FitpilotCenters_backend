@@ -350,8 +350,9 @@ def _membership_data(
 
     if status in {"pending", "canceled"}:
         effective_status = status
-    elif remaining_days is not None:
-        effective_status = "active" if remaining_days >= 0 else "expired"
+    elif status == "active" and end_at is not None:
+        aware_end = end_at if end_at.tzinfo else end_at.replace(tzinfo=timezone.utc)
+        effective_status = "active" if aware_end > datetime.now(timezone.utc) else "expired"
     else:
         effective_status = status or "unknown"
 

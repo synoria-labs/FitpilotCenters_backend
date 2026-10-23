@@ -105,6 +105,17 @@ def build_system_prompt(
     if event_note:
         parts.append(event_note)
     parts.append(_TOOL_RULES)
+    parts.append(
+        "OBLIGATORIO: toda respuesta final se entrega con respond_to_customer. Usa kind=purchase "
+        "para compras y links, clarification para aclaraciones, information para información general. "
+        "Para decir que ya tiene lugar usa exclusivamente kind=reservation_confirmation con "
+        "session_id, reservation_id y requested_date (YYYY-MM-DD). Una membresía activa NO es "
+        "evidencia de reserva. Consulta list_my_reservations y verifica fecha y hora solicitadas, "
+        "no reutilices confirmaciones históricas. Si se rechaza, consulta datos y continúa la compra "
+        "correcta o aclara la fecha/hora. Nunca confirmes en texto libre. No omitas la herramienta "
+        "aunque solo quieras saludar. Los mensajes históricos conservan la fecha en que se enviaron; "
+        "'hoy' en un mensaje anterior se refiere a ESA fecha, no a la fecha actual."
+    )
     parts.append(_PURCHASE_RULES)
     parts.append(_EVENT_RULES)
     parts.append(_CONFIRM_RULES_STRICT if config.require_confirmation else _CONFIRM_RULES_RELAXED)

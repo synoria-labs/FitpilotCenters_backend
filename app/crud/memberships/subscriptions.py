@@ -9,6 +9,7 @@ from app.models import MembershipPlan, MembershipSubscription, People
 
 from .data import SubscriptionData, _subscription_to_data
 from .utils import _calculate_subscription_end, _normalize_to_utc
+from .day_passes import uses_class_expiry, purchase_day_pass
 
 
 def _subscription_query_with_relations():
@@ -27,6 +28,7 @@ async def create_membership_subscription(
     status: str = "active",
     plan: Optional[MembershipPlan] = None,
     commit: bool = True,
+    session_id: Optional[int] = None,
 ) -> MembershipSubscription:
     """Create a new membership subscription."""
     normalized_start = _normalize_to_utc(start_at or datetime.now().astimezone())
@@ -34,6 +36,16 @@ async def create_membership_subscription(
     if plan is None:
         plan_result = await db.execute(select(MembershipPlan).where(MembershipPlan.id == plan_id))
         plan = plan_result.scalar_one()
+
+    if uses_class_expiry(plan, session_id):
+        if status != "active":
+            raise ValueError("El pase diario se activa únicamente al acreditar el pago.")
+        purchase = await purchase_day_pass(
+            db, person_id=person_id, plan_id=plan_id, session_id=session_id, recorded_by=created_by,
+        )
+        if commit:
+            await db.commit()
+        return purchase.subscription
 
     end_at = _calculate_subscription_end(plan, normalized_start)
 
@@ -79,6 +91,7 @@ async def get_member_active_subscription(
             and_(
                 MembershipSubscription.person_id == member_id,
                 MembershipSubscription.status == "active",
+                MembershipSubscription.end_at > datetime.now().astimezone(),
             )
         )
         .order_by(MembershipSubscription.end_at.desc())
@@ -139,7 +152,11 @@ async def get_membership_subscriptions(
     # Apply filters
     conditions = []
 
-    if status:
+    if status == "active":
+        conditions.extend([MembershipSubscription.status == "active", MembershipSubscription.end_at > now])
+    elif status == "expired":
+        conditions.append(or_(MembershipSubscription.status == "expired", and_(MembershipSubscription.status == "active", MembershipSubscription.end_at <= now)))
+    elif status:
         conditions.append(MembershipSubscription.status == status)
 
     if search:

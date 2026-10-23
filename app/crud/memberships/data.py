@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Optional
 
 from app.models import MembershipPlan, MembershipSubscription
+from .day_passes import effective_status
 
 
 @dataclass
@@ -33,6 +34,7 @@ class SubscriptionData:
     plan_name: str
     person_name: str
     remaining_days: Optional[int]
+    session_id: Optional[int] = None
 
 
 def _plan_to_data(plan: MembershipPlan) -> MembershipPlanData:
@@ -67,7 +69,8 @@ def _subscription_to_data(
         plan_id=subscription.plan_id,
         start_at=subscription.start_at,
         end_at=subscription.end_at,
-        status=subscription.status,
+        status=effective_status(subscription, now),
+        session_id=getattr(subscription, "session_id", None),
         plan_name=plan_name or "Sin nombre",
         person_name=person_name or "Sin nombre",
         remaining_days=(subscription.end_at - now).days if subscription.end_at and subscription.end_at > now else 0,

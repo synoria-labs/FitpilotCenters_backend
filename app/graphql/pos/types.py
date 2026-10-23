@@ -280,6 +280,7 @@ class SaleLineInputType:
     phone_number: Optional[str] = None
     start_at: Optional[datetime] = None
     template_id: Optional[int] = None
+    session_id: Optional[int] = None
     seat_id: Optional[int] = None
     product_id: Optional[int] = None
 

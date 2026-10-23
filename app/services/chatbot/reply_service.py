@@ -11,6 +11,7 @@ realtime stream (the DB trigger fans the INSERT out to subscribers).
 """
 import asyncio
 import logging
+from datetime import timezone
 from typing import List, Optional, Set
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
@@ -33,6 +34,8 @@ from app.services import whatsapp_outbound as outbound
 from app.services.chatbot.agent import run_agent
 from app.services.chatbot.business_context import build_business_info
 from app.services.chatbot.tools import ChatbotContext, build_tools
+from app.services.chatbot.timefmt import fmt_dt
+from app.services.chatbot.verification import reservation_context, finalize_reply
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +104,10 @@ async def _load_history(
         text = (r.text_content or "").strip()
         if not text:
             continue
+        stamp = getattr(r, "timestamp", None) or getattr(r, "created_at", None)
+        if stamp is not None and stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        text = f"[Enviado: {fmt_dt(stamp) if stamp else 'fecha desconocida'}; hora de México] {text}"
         if r.direction == "inbound":
             messages.append(HumanMessage(content=text))
         else:
@@ -108,6 +115,8 @@ async def _load_history(
             # responding to (and not mistake a campaign/notification for its own prior turn).
             if getattr(r, "message_class", None) == "marketing" or r.message_type == "template":
                 text = f"[mensaje automático/campaña] {text}"
+            elif "pago acreditado" in text.lower():
+                text = f"[notificación automática de pago; corresponde a su fecha de envío] {text}"
             messages.append(AIMessage(content=text))
     return messages
 
@@ -152,15 +161,21 @@ def _build_member_note(member) -> Optional[str]:
     m = getattr(member, "active_membership", None)
     status = (getattr(m, "status", None) or "").strip().lower() if m is not None else ""
     days = getattr(m, "remaining_days", None) if m is not None else None
+    end_at = getattr(m, "end_date", None) if m is not None else None
 
     if status == "active":
         detail = f"membresía ACTIVA, {days} días restantes" if days is not None else "membresía ACTIVA"
+        if end_at is not None:
+            detail = f"membresía ACTIVA hasta {fmt_dt(end_at)} (hora de México)"
         return (
             f"Socio identificado: {name}. {detail}. Salúdalo por su nombre y personaliza tu "
-            "respuesta; no insistas en renovar salvo que falten pocos días."
+            "respuesta. Esto NO acredita una reserva para la fecha solicitada: verifica la sesión "
+            "con las herramientas. Un pase diario anterior no cubre una nueva clase."
         )
     if status == "expired":
         detail = f"VENCIDA hace {abs(days)} días" if days is not None else "VENCIDA"
+        if end_at is not None:
+            detail = f"VENCIDA desde {fmt_dt(end_at)} (hora de México)"
         return (
             f"Socio identificado: {name}. Su membresía está {detail}. Salúdalo por su nombre y, "
             "con tacto, invítalo a renovar."
@@ -394,6 +409,7 @@ async def _run_agent_reply(
             require_mp = mp_required and mercadopago_config.is_configured()
             pending_note = await _build_pending_note(db, conversation_id)
             member_note = _build_member_note(member)
+            member_note = (member_note or "") + "\n" + await reservation_context(db, member_id)
             campaign_note = await _build_campaign_context_note(
                 db, context_message_id, message_type, text
             )
@@ -413,6 +429,7 @@ async def _run_agent_reply(
                 wa_id=contact_wa_id,
                 require_mp_payment=require_mp,
                 mp_required=mp_required,
+                user_text=text,
             )
             tools = build_tools(ctx)
             reply = await run_agent(
@@ -420,8 +437,12 @@ async def _run_agent_reply(
                 pending_note=pending_note, member_note=member_note,
                 campaign_note=campaign_note, event_note=event_note,
             )
-            if not reply:
-                return
+            # Never send unverified model output, even when it omitted the final tool.
+            reply = ctx.validated_reply or (
+                "Necesito verificar la fecha y el horario antes de confirmar una reserva. "
+                "¿Para qué fecha y hora deseas comprar tu clase?"
+            )
+            logger.info("chatbot_turn conversation=%s tools=%s verification=%s", conversation_id, ctx.tools_used, ctx.verification_result)
 
             # The agent took time to run; re-check the bot wasn't disabled/paused meanwhile (STOP,
             # human takeover, or robot button off) so it doesn't talk over a human or reply right
@@ -438,6 +459,10 @@ async def _run_agent_reply(
                     conversation_id,
                 )
                 return
+
+            if ctx.reply_request:
+                await finalize_reply(ctx, **ctx.reply_request)
+                reply = ctx.validated_reply or "No pude verificar esa reserva. Revisemos la fecha y el horario antes de confirmarla."
 
             await send_and_persist_reply(
                 db,

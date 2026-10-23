@@ -44,6 +44,7 @@ class MembershipPlan:
 
 @strawberry.type
 class Subscription:
+    session_id: Optional[int]
     id: int
     person_id: int
     plan_id: int
@@ -58,6 +59,7 @@ class Subscription:
     def from_data(cls, data: SubscriptionData) -> "Subscription":
         return cls(
             id=data.id,
+            session_id=data.session_id,
             person_id=data.person_id,
             plan_id=data.plan_id,
             start_at=data.start_at,
@@ -227,6 +229,7 @@ class UpdateMembershipPlanInput:
 
 @strawberry.input
 class CreateSubscriptionInput:
+    session_id: Optional[int] = None
     person_id: int
     plan_id: int
     start_at: Optional[datetime] = None
@@ -234,6 +237,7 @@ class CreateSubscriptionInput:
 
 @strawberry.input
 class CreateMemberEnrollmentInput:
+    session_id: Optional[int] = None
     full_name: str
     email: Optional[str] = None
     phone_number: Optional[str] = None  # WhatsApp number goes here
@@ -253,6 +257,7 @@ class CreateMemberEnrollmentInput:
 
 @strawberry.input
 class RenewSubscriptionInput:
+    session_id: Optional[int] = None
     member_id: int
     plan_id: int
     template_id: Optional[int] = None

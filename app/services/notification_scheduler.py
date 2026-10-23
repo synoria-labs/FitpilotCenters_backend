@@ -96,6 +96,20 @@ async def _run_special_event_sweep_job() -> None:
         logger.exception("Special event sweep job failed")
 
 
+async def _run_day_pass_expiry_job() -> None:
+    from app.crud.memberships.day_passes import expire_day_passes
+    from app.db.postgresql import async_session_factory
+
+    try:
+        async with async_session_factory() as db:
+            count = await expire_day_passes(db)
+            await db.commit()
+            if count:
+                logger.info("Day passes expired: %s", count)
+    except Exception:
+        logger.exception("Day-pass expiry sweep failed")
+
+
 class NotificationScheduler:
     def __init__(self) -> None:
         self._scheduler = None
@@ -111,6 +125,11 @@ class NotificationScheduler:
             return
         hour = _sweep_hour()
         self._scheduler = AsyncIOScheduler(timezone=_TIMEZONE)
+        self._scheduler.add_job(
+            _run_day_pass_expiry_job, trigger=IntervalTrigger(minutes=1, timezone=_TIMEZONE),
+            id="day_pass_expiry", replace_existing=True, max_instances=1,
+            coalesce=True, misfire_grace_time=120,
+        )
         self._scheduler.add_job(
             _run_sweeps_job,
             trigger=CronTrigger(hour=hour, minute=0, timezone=_TIMEZONE),
