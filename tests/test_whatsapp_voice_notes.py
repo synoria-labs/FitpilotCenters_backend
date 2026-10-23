@@ -130,6 +130,7 @@ async def test_send_media_message_sends_voice_note_as_ogg_opus(monkeypatch):
                 downloaded=True,
                 download_failed=False,
             ),
+            template_buttons=[],
         )
 
     monkeypatch.setattr(

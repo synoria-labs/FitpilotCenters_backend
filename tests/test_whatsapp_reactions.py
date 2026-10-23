@@ -86,6 +86,7 @@ def _reaction_message(emoji: str) -> SimpleNamespace:
         timestamp=datetime.now(timezone.utc),
         wa_message_id="wamid.react.out",
         context_message_id=TARGET_WAMID,
+        template_id=None,
     )
 
 
