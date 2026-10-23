@@ -2,6 +2,7 @@
 import os
 
 from app.core.env import load_environment
+from app.core.ai_models import DEFAULT_AI_MODEL
 
 load_environment()
 
@@ -16,7 +17,7 @@ class OwnerAgentEnv:
     # Absolute server kill-switch. DB config can only enable the agent when this is true.
     SERVER_ENABLED: bool = _as_bool(os.getenv("OWNER_AGENT_SERVER_ENABLED"), default=False)
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
-    DEFAULT_MODEL: str = os.getenv("OWNER_AGENT_MODEL", "claude-sonnet-4-6")
+    DEFAULT_MODEL: str = os.getenv("OWNER_AGENT_MODEL", DEFAULT_AI_MODEL)
     RECURSION_LIMIT: int = int(os.getenv("OWNER_AGENT_RECURSION_LIMIT", "12"))
 
     @classmethod

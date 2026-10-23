@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import ChatbotConfig
+from app.core.ai_models import DEFAULT_AI_MODEL, normalize_model_id
 
 
 @dataclass
@@ -31,6 +32,8 @@ class ChatbotConfigData:
     extra_info: Optional[str]
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
+    template_ai_model: str = DEFAULT_AI_MODEL
+    prompt_optimizer_model: str = DEFAULT_AI_MODEL
 
     @classmethod
     def from_model(cls, m: ChatbotConfig) -> "ChatbotConfigData":
@@ -40,6 +43,8 @@ class ChatbotConfigData:
             require_confirmation=bool(m.require_confirmation),
             require_mp_payment=bool(m.require_mp_payment),
             model=m.model,
+            template_ai_model=m.template_ai_model or DEFAULT_AI_MODEL,
+            prompt_optimizer_model=m.prompt_optimizer_model or DEFAULT_AI_MODEL,
             system_prompt=m.system_prompt,
             business_name=m.business_name,
             address=m.address,
@@ -70,6 +75,8 @@ _EDITABLE_FIELDS = (
     "require_confirmation",
     "require_mp_payment",
     "model",
+    "template_ai_model",
+    "prompt_optimizer_model",
     "system_prompt",
     "business_name",
     "address",
@@ -90,6 +97,9 @@ async def upsert_config(db: AsyncSession, *, commit: bool = True, **fields) -> C
     config = await get_config_model(db)
     now = datetime.now(timezone.utc)
     applied = {k: v for k, v in fields.items() if k in _EDITABLE_FIELDS and v is not None}
+    for field in ("model", "template_ai_model", "prompt_optimizer_model"):
+        if field in applied:
+            applied[field] = normalize_model_id(applied[field])
 
     if config is None:
         config = ChatbotConfig(created_at=now, updated_at=now, **applied)

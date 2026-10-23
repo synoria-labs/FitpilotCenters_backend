@@ -18,6 +18,8 @@ class ChatbotConfigType:
     require_confirmation: bool
     require_mp_payment: bool
     model: str
+    template_ai_model: str
+    prompt_optimizer_model: str
     system_prompt: Optional[str]
     business_name: Optional[str]
     address: Optional[str]
@@ -35,6 +37,8 @@ class ChatbotConfigType:
             require_confirmation=bool(data.require_confirmation),
             require_mp_payment=bool(data.require_mp_payment),
             model=data.model,
+            template_ai_model=data.template_ai_model,
+            prompt_optimizer_model=data.prompt_optimizer_model,
             system_prompt=data.system_prompt,
             business_name=data.business_name,
             address=data.address,
@@ -52,6 +56,8 @@ class SaveChatbotConfigInput:
     require_confirmation: Optional[bool] = None
     require_mp_payment: Optional[bool] = None
     model: Optional[str] = None
+    template_ai_model: Optional[str] = None
+    prompt_optimizer_model: Optional[str] = None
     system_prompt: Optional[str] = None
     business_name: Optional[str] = None
     address: Optional[str] = None
@@ -74,6 +80,7 @@ class OptimizeSystemPromptInput:
     system_prompt: str
     tone: Optional[str] = None
     instruction: Optional[str] = None
+    model: Optional[str] = None
 
 
 @strawberry.type

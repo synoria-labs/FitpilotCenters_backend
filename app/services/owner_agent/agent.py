@@ -7,6 +7,7 @@ from typing import Any, Optional
 from app.crud.ownerAgentCrud import OwnerAgentConfigData
 from app.services.chatbot.timefmt import fmt_now_es
 from app.services.owner_agent.env import owner_agent_env
+from app.core.ai_models import model_request_options
 
 logger = logging.getLogger(__name__)
 
@@ -81,11 +82,13 @@ async def run_agent(
     if not owner_agent_env.ANTHROPIC_API_KEY:
         return "Falta ANTHROPIC_API_KEY en el backend para usar el agente admin."
 
+    model = config.model or owner_agent_env.DEFAULT_MODEL
     llm = ChatAnthropic(
-        model=config.model or owner_agent_env.DEFAULT_MODEL,
+        model=model,
         max_tokens=int(config.max_tokens or 1024),
         api_key=owner_agent_env.ANTHROPIC_API_KEY,
         timeout=60,
+        **model_request_options(model),
     )
     system_prompt = build_system_prompt(config, pending_note=pending_note)
     agent = create_react_agent(llm, tools, prompt=system_prompt)

@@ -41,6 +41,8 @@ class ChatbotConfigMutation:
                 require_confirmation=input.require_confirmation,
                 require_mp_payment=input.require_mp_payment,
                 model=model,
+                template_ai_model=input.template_ai_model,
+                prompt_optimizer_model=input.prompt_optimizer_model,
                 system_prompt=input.system_prompt,
                 business_name=input.business_name,
                 address=input.address,
@@ -78,6 +80,7 @@ class ChatbotConfigMutation:
                     system_prompt=input.system_prompt or "",
                     tone=input.tone or "",
                     instruction=input.instruction or "",
+                    model=input.model,
                 ),
             )
         except ValueError as exc:

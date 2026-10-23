@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -251,6 +251,7 @@ async def assist_whatsapp_template(
     config = await chatbotConfigCrud.get_config(db) or _fallback_config()
     business_context = await build_template_writer_context(db, config)
     current_placeholders = _placeholder_sequence(request.body_text)
+    config = replace(config, model=config.template_ai_model)
     llm = build_llm(config)
     response = await llm.ainvoke(
         _chat_messages(

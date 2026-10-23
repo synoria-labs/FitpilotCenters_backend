@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
-from typing import Any, List
+from dataclasses import dataclass, replace
+from typing import Any, List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -54,6 +54,7 @@ class PromptOptimizeRequestData:
     system_prompt: str
     tone: str = ""
     instruction: str = ""
+    model: Optional[str] = None
 
 
 @dataclass
@@ -205,6 +206,8 @@ async def optimize_system_prompt(
     config.tone = request.tone or config.tone
 
     business_info = await build_business_info(db, config)
+    from app.core.ai_models import normalize_model_id
+    config = replace(config, model=normalize_model_id(request.model or config.prompt_optimizer_model))
     llm = build_llm(config)
     response = await llm.ainvoke(
         _chat_messages(

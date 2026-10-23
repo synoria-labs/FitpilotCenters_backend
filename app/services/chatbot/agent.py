@@ -14,6 +14,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langgraph.prebuilt import create_react_agent
 
 from app.core.chatbot_env import chatbot_env
+from app.core.ai_models import model_request_options
 from app.crud.chatbotConfigCrud import ChatbotConfigData
 from app.services.chatbot.timefmt import fmt_now_es
 
@@ -85,6 +86,7 @@ def build_llm(config: ChatbotConfigData) -> ChatAnthropic:
         max_tokens=chatbot_env.MAX_TOKENS,
         api_key=chatbot_env.ANTHROPIC_API_KEY,
         timeout=60,
+        **model_request_options(model),
     )
 
 
