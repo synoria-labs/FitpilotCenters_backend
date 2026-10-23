@@ -195,7 +195,7 @@ async def test_ana_luisa_stale_pending_summary_cannot_narrow_coverage(db):
     assert "al acreditarse el pago" in ctx.validated_reply
     assert "4–5" not in ctx.validated_reply
     await finalize_reply(ctx, kind="purchase", text="Solo miércoles")
-    assert "Lunes a Viernes" in ctx.validated_reply and "verified" in ctx.validated_reply
+    assert "Lunes a Viernes" in ctx.validated_reply and ctx.payment_link.url.endswith("/verified")
 
 
 async def test_weekly_catalog_returns_group_ids_and_all_days(db):

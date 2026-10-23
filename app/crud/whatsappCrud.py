@@ -99,7 +99,8 @@ class ChatMediaData:
 
 @dataclass
 class ChatTemplateButtonData:
-    """A button of the template a message was sent from, as WhatsApp draws it under the bubble."""
+    """A button drawn under a chat bubble, as WhatsApp shows it: one of the template the message
+    was sent from, or the message's own (an interactive «Pagar ahora»)."""
 
     type: str
     text: str
@@ -107,14 +108,16 @@ class ChatTemplateButtonData:
     phone_number: Optional[str] = None
 
 
-def template_buttons_data(components: Optional[list]) -> List[ChatTemplateButtonData]:
-    """Top-level BUTTONS of a template, in order (carousel-card buttons belong to the cards)."""
-    buttons: List[ChatTemplateButtonData] = []
-    for button in buttons_from_components(components):
+def _buttons_data(buttons: Optional[list]) -> List[ChatTemplateButtonData]:
+    """Button dicts in Meta's shape ({type, text, url?, phone_number?}), skipping malformed ones."""
+    result: List[ChatTemplateButtonData] = []
+    for button in buttons or []:
+        if not isinstance(button, dict):
+            continue
         button_type = str(button.get("type") or "").upper()
         if not button_type:
             continue
-        buttons.append(
+        result.append(
             ChatTemplateButtonData(
                 type=button_type,
                 text=str(button.get("text") or ""),
@@ -122,7 +125,12 @@ def template_buttons_data(components: Optional[list]) -> List[ChatTemplateButton
                 phone_number=str(button["phone_number"]) if button.get("phone_number") else None,
             )
         )
-    return buttons
+    return result
+
+
+def template_buttons_data(components: Optional[list]) -> List[ChatTemplateButtonData]:
+    """Top-level BUTTONS of a template, in order (carousel-card buttons belong to the cards)."""
+    return _buttons_data(buttons_from_components(components))
 
 
 @dataclass
@@ -139,7 +147,8 @@ class ChatMessageData:
     media_url: Optional[str] = None
     media: Optional[ChatMediaData] = None
     template_id: Optional[int] = None
-    # Filled by ``_attach_template_buttons``: the buttons live on the template, not the message.
+    # An interactive message carries its own buttons; a template message gets its template's
+    # from ``_attach_template_buttons`` (they live on the template, not the message).
     template_buttons: List[ChatTemplateButtonData] = field(default_factory=list)
 
     @classmethod
@@ -167,6 +176,7 @@ class ChatMessageData:
             media_url=media.media_url if media else None,
             media=media,
             template_id=m.template_id,
+            template_buttons=_buttons_data(m.buttons),
         )
 
 
@@ -673,9 +683,10 @@ async def _attach_template_buttons(db: AsyncSession, messages: List[ChatMessageD
     A send persists the rendered text and the header media, not the buttons: those stay in
     ``whatsapp_templates.components``. Reading them back lets the chat draw them under the
     bubble like WhatsApp does. They reflect the template as it is now; a template deleted
-    since the send simply yields no buttons.
+    since the send simply yields no buttons. A message that stored its own keeps them.
     """
-    template_ids = {m.template_id for m in messages if m.template_id is not None}
+    targets = [m for m in messages if m.template_id is not None and not m.template_buttons]
+    template_ids = {m.template_id for m in targets}
     if not template_ids:
         return
     rows = await db.execute(
@@ -686,9 +697,8 @@ async def _attach_template_buttons(db: AsyncSession, messages: List[ChatMessageD
     buttons_by_template = {
         template_id: template_buttons_data(components) for template_id, components in rows.all()
     }
-    for message in messages:
-        if message.template_id is not None:
-            message.template_buttons = buttons_by_template.get(message.template_id, [])
+    for message in targets:
+        message.template_buttons = buttons_by_template.get(message.template_id, [])
 
 
 async def _unread_counts(db: AsyncSession, conv_ids: List[int]) -> Dict[int, int]:
@@ -1010,11 +1020,13 @@ async def insert_outbound_message(
     template_id: Optional[int] = None,
     context_message_id: Optional[str] = None,
     message_class: Optional[str] = None,
+    buttons: Optional[list] = None,
 ) -> Message:
     """Insert an outbound message after a successful Cloud API send. Caller commits.
 
     ``message_class`` ('transactional'|'marketing') is set by the outbound gateway; direct callers
-    leave it None (counted as non-marketing → uncapped).
+    leave it None (counted as non-marketing → uncapped). ``buttons`` keeps an interactive
+    message's own buttons for the chat.
     """
     now = datetime.utcnow()
     msg = Message(
@@ -1027,6 +1039,7 @@ async def insert_outbound_message(
         template_id=template_id,
         context_message_id=context_message_id,
         message_class=message_class,
+        buttons=buttons,
         timestamp=now,
         created_at=now,
         is_processed=1,

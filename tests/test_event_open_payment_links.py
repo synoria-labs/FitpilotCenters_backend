@@ -204,7 +204,7 @@ async def test_chatbot_and_server_response_explain_no_seat_hold(db, mp):
     order = await db.scalar(select(SpecialEventOrder).where(SpecialEventOrder.event_id == event.id))
     await finalize_reply(ctx, kind="purchase", order_id=order.id)
     assert "No aparta lugar" in ctx.validated_reply and "sin caducidad" in ctx.validated_reply
-    assert "https://mp.test/checkout/1" in ctx.validated_reply
+    assert ctx.payment_link.url == "https://mp.test/checkout/1"  # sent as the «Pagar ahora» button
 
 
 async def test_published_event_and_graphql_keep_explicit_false_and_partial_updates(db, mp):

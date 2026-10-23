@@ -1,8 +1,9 @@
 """GraphQL types for the WhatsApp chat feature.
 
 Strawberry converts snake_case field names to camelCase in the schema
-(e.g. ``text_content`` -> ``textContent``). A message sent from a template carries that
-template's buttons (``templateButtons``) so the chat can draw them under the bubble.
+(e.g. ``text_content`` -> ``textContent``). ``templateButtons`` are the buttons the chat draws
+under a bubble: the template's for a template message, or an interactive message's own (the
+chatbot's «Pagar ahora»). The name predates the latter and is kept for deployed clients.
 """
 from datetime import datetime
 from typing import List, Optional
@@ -92,7 +93,7 @@ class ChatMessageMedia:
 
 @strawberry.type
 class ChatTemplateButton:
-    """A button of the template a message was sent from (QUICK_REPLY, URL, PHONE_NUMBER…)."""
+    """A button under a message: its template's (QUICK_REPLY, URL, PHONE_NUMBER…) or its own."""
 
     type: str
     text: str
@@ -117,7 +118,7 @@ class ChatMessage:
     context_message_id: Optional[str]  # reacted-to / referenced message wa id
     media_url: Optional[str]  # deprecated: kept for older clients, use ``media``
     media: Optional[ChatMessageMedia]
-    template_buttons: List[ChatTemplateButton]  # empty unless sent from a template with buttons
+    template_buttons: List[ChatTemplateButton]  # empty unless the message has buttons (see module doc)
 
     @classmethod
     def from_data(cls, d: ChatMessageData) -> "ChatMessage":
