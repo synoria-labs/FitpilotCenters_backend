@@ -204,7 +204,7 @@ async def test_chatbot_and_server_response_explain_no_seat_hold(db, mp):
     order = await db.scalar(select(SpecialEventOrder).where(SpecialEventOrder.event_id == event.id))
     await finalize_reply(ctx, kind="purchase", order_id=order.id)
     assert "No aparta lugar" in ctx.validated_reply and "sin caducidad" in ctx.validated_reply
-    assert "https://mp.test/checkout/1" in ctx.validated_reply
+    assert ctx.payment_link.url == "https://mp.test/checkout/1"  # sent as the «Pagar ahora» button
 
 
 async def test_published_event_and_graphql_keep_explicit_false_and_partial_updates(db, mp):
@@ -329,8 +329,10 @@ async def test_concurrent_open_checkouts_and_payments_do_not_duplicate_links_or_
 async def test_downgrade_is_blocked_while_an_open_link_is_unresolved():
     from alembic import command
     from alembic.config import Config
+    from alembic.script import ScriptDirectory
     from app.db.postgresql import async_session_factory
 
+    head = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
     async with committed_open_event() as event_id:
         async with async_session_factory() as db:
             await orders_crud.create_hold(db, event_id, participant_name="Pending buyer", participant_phone="8710000009")
@@ -338,4 +340,5 @@ async def test_downgrade_is_blocked_while_an_open_link_is_unresolved():
         with pytest.raises(RuntimeError, match="Resolve open payment links"):
             await asyncio.to_thread(command.downgrade, Config("alembic.ini"), "a7d0e3f6b9c2")
         async with async_session_factory() as db:
-            assert await db.scalar(text("SELECT version_num FROM app.alembic_version")) == "b8e1f4a7c0d3"
+            # Nothing was undone: the guard aborts the whole downgrade, later migrations included.
+            assert await db.scalar(text("SELECT version_num FROM app.alembic_version")) == head

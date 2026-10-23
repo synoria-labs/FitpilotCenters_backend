@@ -88,6 +88,9 @@ class Message(Base):
     # Outbound coordination: 'transactional' | 'marketing' (NULL on legacy/inbound rows).
     # The marketing frequency cap counts outbound rows with message_class='marketing'.
     message_class: Mapped[Optional[str]] = mapped_column(String(30))
+    # Buttons sent with an interactive message ([{type, text, url}], e.g. «Pagar ahora»), so the
+    # chat can draw them. Template messages leave it NULL: their buttons live on the template.
+    buttons: Mapped[Optional[list]] = mapped_column(JSON)
 
     # Relationships
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")

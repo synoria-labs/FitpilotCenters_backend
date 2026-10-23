@@ -33,7 +33,7 @@ from app.services import whatsapp_cloud_service as cloud
 from app.services import whatsapp_outbound as outbound
 from app.services.chatbot.agent import run_agent
 from app.services.chatbot.business_context import build_business_info
-from app.services.chatbot.tools import ChatbotContext, build_tools
+from app.services.chatbot.tools import ChatbotContext, PaymentLink, build_tools
 from app.services.chatbot.timefmt import fmt_dt
 from app.services.chatbot.verification import reservation_context, finalize_reply
 from app.services.chatbot import image_context, turn_queue
@@ -42,6 +42,47 @@ logger = logging.getLogger(__name__)
 
 # Keep strong references so background tasks are not garbage-collected.
 _background_tasks: Set["asyncio.Task"] = set()
+
+_PAY_BUTTON_TEXT = "Pagar ahora"
+
+
+async def _send_with_payment_button(
+    db: AsyncSession,
+    *,
+    kind: str,
+    conversation_id: int,
+    contact_id: int,
+    to_wa_id: str,
+    text: str,
+    payment_link: PaymentLink,
+) -> "outbound.OutboundResult":
+    """Send the reply with its checkout link as a «Pagar ahora» button.
+
+    A reply too long for a button message goes out as text first, followed by the button on its
+    own. If the button can't be sent, the link is written into the text as before: the customer
+    is never left without a way to pay.
+    """
+    common = dict(
+        kind=kind,
+        conversation_id=conversation_id,
+        contact_id=contact_id,
+        wa_id=to_wa_id,
+        message_class=outbound.CLASS_TRANSACTIONAL,
+    )
+    text = text.strip()
+    body = f"{text}\n{payment_link.prompt}" if text else payment_link.prompt
+    if len(body) > cloud.CTA_BODY_MAX:
+        first = await outbound.send_text(db, text=text, **common)
+        if not first.ok:
+            return first
+        body = payment_link.prompt
+    result = await outbound.send_cta_url(
+        db, body=body, button_text=_PAY_BUTTON_TEXT, url=payment_link.url, **common
+    )
+    if result.status is not outbound.SendStatus.FAILED:
+        return result
+    logger.warning("Payment button not sent (%s); sending the link as text", result.reason)
+    return await outbound.send_text(db, text=f"{body} {payment_link.url}", **common)
 
 
 async def send_and_persist_reply(
@@ -52,23 +93,36 @@ async def send_and_persist_reply(
     to_wa_id: str,
     text: str,
     kind: str = outbound.KIND_CHATBOT_REPLY,
+    payment_link: Optional[PaymentLink] = None,
 ) -> "outbound.OutboundResult":
     """Send a text reply through the unified outbound gateway and persist it.
 
     ``kind`` distinguishes a normal chatbot reply from a payment confirmation: the gateway never
     silently drops a payment confirm outside the 24h window (it records it for reconciliation).
+    With ``payment_link`` the checkout link goes out as a «Pagar ahora» button.
     Returns the gateway result; existing callers may ignore it.
     """
-    result = await outbound.send_text(
-        db,
-        kind=kind,
-        conversation_id=conversation_id,
-        contact_id=contact_id,
-        wa_id=to_wa_id,
-        text=text,
-        persist=True,
-        message_class=outbound.CLASS_TRANSACTIONAL,
-    )
+    if payment_link is not None:
+        result = await _send_with_payment_button(
+            db,
+            kind=kind,
+            conversation_id=conversation_id,
+            contact_id=contact_id,
+            to_wa_id=to_wa_id,
+            text=text,
+            payment_link=payment_link,
+        )
+    else:
+        result = await outbound.send_text(
+            db,
+            kind=kind,
+            conversation_id=conversation_id,
+            contact_id=contact_id,
+            wa_id=to_wa_id,
+            text=text,
+            persist=True,
+            message_class=outbound.CLASS_TRANSACTIONAL,
+        )
     await db.commit()
 
     # The bot just answered this conversation, so the customer's inbound messages are
@@ -467,6 +521,7 @@ async def _run_agent_reply(
                 logger.info("chatbot_image_model message=%s result=failed reason=%s", message_id, type(exc).__name__)
                 await db.rollback()
                 ctx.reply_request = None
+                ctx.payment_link = None
                 ctx.validated_reply = image_context.IMAGE_FAILURE_REPLY
             # Never send unverified model output, even when it omitted the final tool.
             fallback = (
@@ -504,6 +559,7 @@ async def _run_agent_reply(
                 contact_id=contact_id,
                 to_wa_id=contact_wa_id,
                 text=reply,
+                payment_link=ctx.payment_link,
             )
     except cloud.WhatsAppError as e:
         # e.g. 131047 outside the 24h window — log, don't crash the loop.

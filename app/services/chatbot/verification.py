@@ -99,8 +99,14 @@ async def reservation_context(db, member_id):
 
 async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=None, requested_date=None, order_id=None,
                          plan_id=None, template_id=None):
-    """Mandatory final tool; only DB-verified facts can produce a class confirmation."""
+    """Mandatory final tool; only DB-verified facts can produce a class confirmation.
+
+    A checkout link is never written into the reply: it goes in ``ctx.payment_link`` and the
+    reply service sends it as a «Pagar ahora» button."""
+    from app.services.chatbot.tools import PaymentLink
+
     ctx.validated_reply = None
+    ctx.payment_link = None
     ctx.verification_result = "rejected"
     ctx.reply_request = dict(kind=kind, text=text, session_id=session_id, reservation_id=reservation_id,
                              requested_date=requested_date, order_id=order_id, plan_id=plan_id, template_id=template_id)
@@ -194,10 +200,9 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
                 mismatch = await requested_session_error(ctx.db, session, ctx.user_text)
                 if mismatch:
                     return mismatch
-                link = pending.mp_init_point
                 ctx.validated_reply = f"Pase diario para {fmt_dt(session.start_at)}. Vence al terminar la clase: {fmt_dt(session.end_at)}.\n{pending.summary or ''}"
-                if link:
-                    ctx.validated_reply += f"\nPara confirmar tu lugar, realiza el pago aquí: {link}"
+                if pending.mp_init_point:
+                    ctx.payment_link = PaymentLink(pending.mp_init_point, "Para confirmar tu lugar, realiza el pago aquí:")
             elif package_pending:
                 try:
                     ctx.validated_reply = await package_facts(
@@ -207,11 +212,11 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
                 except ValueError as exc:
                     return str(exc)
                 if pending.mp_init_point:
-                    ctx.validated_reply += f"\nPara completar tu compra: {pending.mp_init_point}"
+                    ctx.payment_link = PaymentLink(pending.mp_init_point, "Para completar tu compra:")
             elif pending is not None:
                 ctx.validated_reply = pending.summary or "Hay una compra pendiente."
                 if pending.mp_init_point:
-                    ctx.validated_reply += f"\nPara completar tu compra: {pending.mp_init_point}"
+                    ctx.payment_link = PaymentLink(pending.mp_init_point, "Para completar tu compra:")
             elif order_id is not None:
                 from app.models.specialEventModel import SpecialEventOrder, SpecialEvent
                 from app.crud.special_events.events import get_event, availability
@@ -234,8 +239,8 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
                     if order.hold_expires_at and order.hold_expires_at <= datetime.now(timezone.utc):
                         return "El apartado y el enlace ya vencieron. Consulta disponibilidad antes de iniciar otra compra."
                     policy = f"El apartado y el enlace vencen el {fmt_dt(order.hold_expires_at)}." if order.hold_expires_at else ""
-                ctx.validated_reply = (f"Compra pendiente de pago: {event.name}, {fmt_dt(event.start_at)}.\n"
-                                       f"{policy}\n{order.mp_init_point}")
+                ctx.validated_reply = f"Compra pendiente de pago: {event.name}, {fmt_dt(event.start_at)}.\n{policy}".strip()
+                ctx.payment_link = PaymentLink(order.mp_init_point, "Para completar tu compra:")
             elif re.search(r"mercadopago\.|mpago\.", text, re.I):
                 return "No hay una compra pendiente verificable para enviar ese enlace. Propón primero la compra o indica order_id para el evento."
         if ctx.validated_reply is None:

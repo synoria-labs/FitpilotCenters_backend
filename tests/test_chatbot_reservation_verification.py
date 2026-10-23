@@ -113,7 +113,9 @@ async def test_purchase_link_is_rendered_from_pending_facts_not_model_text(db):
     day = to_local(sc.session.start_at).date()
     ctx = ChatbotContext(db, 474, sc.person.id, "test", user_text=f"Quiero pagar el {day} a las 8 pm")
     await finalize_reply(ctx, kind="purchase", text="Tu lugar está confirmado para ayer; invented checkout")
-    assert "verified-checkout" in ctx.validated_reply and "20:00" in ctx.validated_reply and "21:00" in ctx.validated_reply
+    assert ctx.payment_link.url.endswith("verified-checkout")  # sent as the «Pagar ahora» button
+    assert "mercadopago" not in ctx.validated_reply  # never also pasted into the text
+    assert "20:00" in ctx.validated_reply and "21:00" in ctx.validated_reply
     assert "invented" not in ctx.validated_reply and "ayer" not in ctx.validated_reply
 
 

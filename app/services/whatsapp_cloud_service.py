@@ -289,22 +289,12 @@ def _template_send_components(
     return components
 
 
-async def send_text(to: str, text: str) -> Dict[str, Any]:
-    """Send a free-form text message. Returns {"wa_message_id": ...}.
-
-    Raises WhatsAppError on failure (e.g. code 131047 outside the 24h window).
-    """
+async def _post_message(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """POST one message to the Cloud API. Returns {"wa_message_id": ...}; raises WhatsAppError."""
     if not whatsapp_config.is_send_configured():
         raise WhatsAppError("WhatsApp Cloud API is not configured (missing phone id/token).")
 
     url = whatsapp_config.graph_url(f"{whatsapp_config.PHONE_NUMBER_ID}/messages")
-    payload = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": to,
-        "type": "text",
-        "text": {"preview_url": False, "body": text},
-    }
     headers = {**_auth_headers(), "Content-Type": "application/json"}
 
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -321,6 +311,51 @@ async def send_text(to: str, text: str) -> Dict[str, Any]:
     except (KeyError, IndexError):
         raise WhatsAppError(f"Unexpected send response: {data}")
     return {"wa_message_id": wa_message_id}
+
+
+async def send_text(to: str, text: str) -> Dict[str, Any]:
+    """Send a free-form text message. Returns {"wa_message_id": ...}.
+
+    Raises WhatsAppError on failure (e.g. code 131047 outside the 24h window).
+    """
+    return await _post_message({
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "text",
+        "text": {"preview_url": False, "body": text},
+    })
+
+
+# Meta's limits for an interactive «cta_url» message.
+CTA_BODY_MAX = 1024
+CTA_BUTTON_TEXT_MAX = 20
+
+
+async def send_cta_url(to: str, body: str, button_text: str, url: str) -> Dict[str, Any]:
+    """Send a text with one button that opens ``url`` (interactive «cta_url» message).
+
+    Free-form like ``send_text``: only inside the 24h customer-service window. Out-of-limit
+    content is rejected here, before calling Meta, so callers can fall back to plain text.
+    Returns {"wa_message_id": ...}; raises WhatsAppError.
+    """
+    if not body or len(body) > CTA_BODY_MAX:
+        raise WhatsAppError(f"El texto de un mensaje con botón debe tener 1 a {CTA_BODY_MAX} caracteres.")
+    if not button_text or len(button_text) > CTA_BUTTON_TEXT_MAX:
+        raise WhatsAppError(f"La etiqueta del botón debe tener 1 a {CTA_BUTTON_TEXT_MAX} caracteres.")
+    if not url.startswith(("https://", "http://")):
+        raise WhatsAppError("El botón necesita una URL http(s).")
+    return await _post_message({
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "interactive",
+        "interactive": {
+            "type": "cta_url",
+            "body": {"text": body},
+            "action": {"name": "cta_url", "parameters": {"display_text": button_text, "url": url}},
+        },
+    })
 
 
 async def send_read_receipt(wa_message_id: Optional[str]) -> bool:

@@ -208,6 +208,7 @@ async def _deliver(
     persist_message_type: str = "text",
     persist_template_id: Optional[int] = None,
     persist_context_message_id: Optional[str] = None,
+    persist_buttons: Optional[list] = None,
     person_id: Optional[int] = None,
     ref: Optional[str] = None,
 ) -> OutboundResult:
@@ -246,6 +247,7 @@ async def _deliver(
             template_id=persist_template_id,
             context_message_id=persist_context_message_id,
             message_class=message_class,
+            buttons=persist_buttons,
         )
     if kind == KIND_MANUAL_HUMAN and persist_message_type != "reaction":
         # Human takeover (a real reply, not a reaction): pause the bot so it doesn't talk over staff.
@@ -275,6 +277,33 @@ async def send_text(
         conversation_id=conversation_id, contact_id=contact_id, wa_id=wa_id,
         cloud_send=lambda: cloud.send_text(to=wa_id, text=text),
         persist=persist, persist_text=text, persist_message_type="text",
+        person_id=person_id, ref=ref,
+    )
+
+
+async def send_cta_url(
+    db: AsyncSession,
+    *,
+    kind: str,
+    conversation_id: int,
+    contact_id: int,
+    wa_id: str,
+    body: str,
+    button_text: str,
+    url: str,
+    persist: bool = True,
+    message_class: str = CLASS_TRANSACTIONAL,
+    person_id: Optional[int] = None,
+    ref: Optional[str] = None,
+) -> OutboundResult:
+    """A text with one URL button (e.g. «Pagar ahora»). The button is persisted with the message
+    so the desktop chat draws it under the bubble."""
+    return await _deliver(
+        db, kind=kind, message_class=message_class,
+        conversation_id=conversation_id, contact_id=contact_id, wa_id=wa_id,
+        cloud_send=lambda: cloud.send_cta_url(to=wa_id, body=body, button_text=button_text, url=url),
+        persist=persist, persist_text=body, persist_message_type="interactive",
+        persist_buttons=[{"type": "URL", "text": button_text, "url": url}],
         person_id=person_id, ref=ref,
     )
 

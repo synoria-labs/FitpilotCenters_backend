@@ -72,6 +72,15 @@ _NEEDS_MEMBER = "Para esta acción necesito identificarte como socio. Aún no en
 _WEEKDAYS_ES = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"]
 
 
+@dataclass(frozen=True)
+class PaymentLink:
+    """A verified checkout link for this turn's reply. It goes out as a «Pagar ahora» button; if
+    the button can't be sent, ``prompt`` and ``url`` are written into the text instead."""
+
+    url: str
+    prompt: str  # the line that introduces it, e.g. "Para completar tu compra:"
+
+
 @dataclass
 class ChatbotContext:
     """Per-turn binding for the tools (one fresh DB session per conversation turn)."""
@@ -87,6 +96,8 @@ class ChatbotContext:
     mp_required: bool = False
     user_text: str = ""
     validated_reply: Optional[str] = None
+    # Set with ``validated_reply`` when it hands over a checkout link (sent as a button).
+    payment_link: Optional[PaymentLink] = None
     verification_result: str = "not_called"
     tools_used: list = field(default_factory=list)
     reply_request: Optional[dict] = None
