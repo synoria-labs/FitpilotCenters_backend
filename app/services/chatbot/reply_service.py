@@ -36,7 +36,7 @@ from app.services.chatbot.business_context import build_business_info
 from app.services.chatbot.tools import ChatbotContext, PaymentLink, build_tools
 from app.services.chatbot.timefmt import fmt_dt
 from app.services.chatbot.verification import reservation_context, finalize_reply
-from app.services.chatbot import image_context, turn_queue
+from app.services.chatbot import event_discovery, image_context, turn_queue
 
 logger = logging.getLogger(__name__)
 
@@ -368,6 +368,7 @@ async def _build_special_event_note(
     context_message_id: Optional[str],
     message_type: str,
     user_text: str,
+    *, discovery=None,
 ) -> Optional[str]:
     """Structured special-event context for this turn: the event behind a campaign button, what
     the button means, and the customer's verified orders. All facts come from the database."""
@@ -379,8 +380,15 @@ async def _build_special_event_note(
     from app.services.chatbot.tools import _order_status_es
 
     parts: List[str] = []
+    discovery = discovery or await event_discovery.resolve(db, conversation_id, user_text)
     tapped_event = await _event_from_campaign_message(db, context_message_id)
-    event = tapped_event or await _event_from_recent_campaign(db, wa_id)
+    if discovery.interested:
+        event = await special_events_crud.get_event(db, discovery.event_id) if discovery.event_id else None
+        if event is None:
+            parts.append(await event_discovery.selection_reply(db, discovery))
+            parts.append("El cliente consulta un evento sin identificarlo de forma única. Pide elegir entre estas opciones; no lo conviertas en una clase regular ni elijas por tu cuenta.")
+    else:
+        event = tapped_event or await _event_from_recent_campaign(db, wa_id)
     if event is not None and event.status != "draft":
         now = datetime.now(timezone.utc)
         if event.status == "published" and event.start_at > now:
@@ -390,13 +398,15 @@ async def _build_special_event_note(
                 if avail.sales_open
                 else avail.sales_closed_reason or "sin lugares"
             )
-            origin = "la campaña a la que respondió" if tapped_event else "una campaña reciente"
+            origin = discovery.source if discovery.interested else ("la campaña a la que respondió" if tapped_event else "una campaña reciente")
             parts.append(
                 f"🎟️ Evento especial en contexto (de {origin}): #{event.id} «{event.name}» — "
                 f"{local_schedule_label(event.start_at, event.end_at, event.timezone)} — "
                 f"{money_label(event.price, event.currency)} por participante — {spots}. "
                 f"Datos verificados del sistema; detalle con get_special_event({event.id})."
             )
+            if discovery.interested:
+                parts.append(f"No necesita haber recibido una plantilla. Para explicar este evento usa respond_to_customer(kind=event_information, event_id={event.id}). Si quiere comprar, solicita solo los datos faltantes e inicia start_event_purchase. No pidas fecha/horario de una clase regular.")
             if not event.payment_link_expires:
                 parts.append("Este evento usa enlaces sin caducidad y SIN apartado de cupo; no prometas un lugar antes del pago verificado.")
             intent = (
@@ -488,9 +498,14 @@ async def _run_agent_reply(
             campaign_note = await _build_campaign_context_note(
                 db, context_message_id, message_type, text
             )
+            discovery = event_discovery.EventDiscovery()
             try:
+                discovery = await event_discovery.resolve(db, conversation_id, text, message_id=message_id)
+                if discovery.interested:
+                    logger.info("chatbot_event_discovery message=%s conversation=%s source=%s event=%s candidates=%s",
+                                message_id, conversation_id, discovery.source, discovery.event_id, discovery.candidates)
                 event_note = await _build_special_event_note(
-                    db, conversation_id, contact_wa_id, context_message_id, message_type, text
+                    db, conversation_id, contact_wa_id, context_message_id, message_type, text, discovery=discovery,
                 )
             except Exception:  # noqa: BLE001 - extra context must never block the reply
                 await db.rollback()
@@ -505,6 +520,7 @@ async def _run_agent_reply(
                 require_mp_payment=require_mp,
                 mp_required=mp_required,
                 user_text=text,
+                event_discovery=discovery,
             )
             tools = build_tools(ctx)
             if message_type == "image" and text == image_context.IMAGE_PLACEHOLDER:
@@ -519,13 +535,13 @@ async def _run_agent_reply(
                     image_content=current_image,
                 )
             except Exception as exc:  # noqa: BLE001 - provide a truthful response for unreadable images
-                if not visual_turn:
+                if not visual_turn and not discovery.interested:
                     raise
-                logger.info("chatbot_image_model message=%s result=failed reason=%s", message_id, type(exc).__name__)
+                logger.info("chatbot_model message=%s result=failed reason=%s event_context=%s", message_id, type(exc).__name__, discovery.interested)
                 await db.rollback()
                 ctx.reply_request = None
                 ctx.payment_link = None
-                ctx.validated_reply = image_context.IMAGE_FAILURE_REPLY
+                ctx.validated_reply = image_context.IMAGE_FAILURE_REPLY if visual_turn else None
             # Never send unverified model output, even when it omitted the final tool.
             fallback = (
                 "Necesito verificar la fecha y el horario antes de confirmar una reserva. "
@@ -554,7 +570,11 @@ async def _run_agent_reply(
 
             if ctx.reply_request:
                 await finalize_reply(ctx, **ctx.reply_request)
-                reply = ctx.validated_reply or "No pude verificar esa reserva. Revisemos la fecha y el horario antes de confirmarla."
+                fallback = "No pude verificar esa reserva. Revisemos la fecha y el horario antes de confirmarla."
+            if discovery.interested and not visual_turn and not ctx.validated_reply:
+                fallback = await event_discovery.fallback_reply(db, discovery)
+                ctx.verification_result = "event_fallback"
+            reply = ctx.validated_reply or fallback
 
             await send_and_persist_reply(
                 db,
