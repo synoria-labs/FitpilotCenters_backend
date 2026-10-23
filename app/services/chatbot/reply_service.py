@@ -340,6 +340,8 @@ async def _build_special_event_note(
                 f"{money_label(event.price, event.currency)} por participante — {spots}. "
                 f"Datos verificados del sistema; detalle con get_special_event({event.id})."
             )
+            if not event.payment_link_expires:
+                parts.append("Este evento usa enlaces sin caducidad y SIN apartado de cupo; no prometas un lugar antes del pago verificado.")
             intent = (
                 _button_intent(user_text)
                 if tapped_event is not None and message_type in ("button", "interactive")
@@ -378,7 +380,8 @@ async def _build_special_event_note(
         )
     if any(o.status == "awaiting_payment" for o in orders):
         parts.append(
-            "Si pregunta por su pago pendiente, reenvía ese mismo link; no generes otro."
+            "Si pregunta por su pago pendiente, consulta el estado y usa respond_to_customer(kind=purchase, order_id=...) "
+            "para reenviar el mismo enlace. En enlaces sin caducidad verifica cupo antes de reenviarlo; no generes otro."
         )
     return "\n".join(parts) if parts else None
 

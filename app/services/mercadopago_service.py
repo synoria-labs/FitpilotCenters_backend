@@ -72,6 +72,7 @@ async def create_preference(
         "items": [item],
         "external_reference": external_reference,
         "metadata": {"external_reference": external_reference},
+        "expires": expires_at is not None,
     }
     if cfg.NOTIFICATION_URL:
         body["notification_url"] = cfg.NOTIFICATION_URL

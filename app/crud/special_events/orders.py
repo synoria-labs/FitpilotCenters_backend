@@ -100,11 +100,12 @@ async def create_hold(
     conversation_id: Optional[int] = None,
     buyer_wa_id: Optional[str] = None,
 ) -> HoldResult:
-    """Hold one bike for one participant while they pay.
+    """Create a timed hold or an open payment order after checking availability.
 
     Under the event lock: expire stale holds, reuse the participant's live order if any (a retry
     must not create a second hold or a second payment link), otherwise check availability and
-    insert. The caller commits (that releases the lock) and then attaches the payment link.
+    insert. Open links deduplicate the participant without reserving a bike or capacity.
+    The caller commits (releasing the lock) and then attaches the payment link.
     """
     name = " ".join((participant_name or "").split())
     if not name:
@@ -130,6 +131,10 @@ async def create_hold(
         )
     ).scalars().first()
     if existing is not None:
+        if existing.status == ORDER_AWAITING_PAYMENT and not existing.payment_link_expires:
+            avail = await availability(db, event, now=now)
+            if not avail.sales_open:
+                raise SpecialEventError(avail.sales_closed_reason or "No hay lugares disponibles; no se reenviará el enlace.")
         return HoldResult(order=existing, reused=True)
 
     avail = await availability(db, event, now=now)
@@ -139,7 +144,8 @@ async def create_hold(
     if avail.offered_seats:
         if not avail.free_seat_ids:
             raise SpecialEventError("Ya no hay lugares disponibles.")
-        seat_id = avail.free_seat_ids[0]
+        if event.payment_link_expires:
+            seat_id = avail.free_seat_ids[0]
 
     order = SpecialEventOrder(
         event_id=event.id,
@@ -155,7 +161,8 @@ async def create_hold(
         amount=Decimal(event.price),
         currency=event.currency,
         external_reference=new_external_reference(),
-        hold_expires_at=now + timedelta(minutes=int(event.hold_minutes)),
+        payment_link_expires=event.payment_link_expires,
+        hold_expires_at=now + timedelta(minutes=int(event.hold_minutes)) if event.payment_link_expires else None,
         created_at=now,
         updated_at=now,
     )
@@ -338,6 +345,10 @@ class OrderRow:
     payment_method: Optional[str]
     paid_at: Optional[datetime]
     hold_expires_at: Optional[datetime]
+    payment_link_expires: bool
+    manual_refund_required: bool
+    refund_reviewed_by: Optional[int]
+    refund_reviewed_at: Optional[datetime]
     mp_status: Optional[str]
     mp_payment_id: Optional[str]
     external_reference: Optional[str]
@@ -373,6 +384,10 @@ async def list_orders(db: AsyncSession, event_id: int) -> List[OrderRow]:
             payment_method=o.payment_method,
             paid_at=o.paid_at,
             hold_expires_at=o.hold_expires_at,
+            payment_link_expires=o.payment_link_expires,
+            manual_refund_required=o.manual_refund_required,
+            refund_reviewed_by=o.refund_reviewed_by,
+            refund_reviewed_at=o.refund_reviewed_at,
             mp_status=o.mp_status,
             mp_payment_id=o.mp_payment_id,
             external_reference=o.external_reference,
