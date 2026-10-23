@@ -83,7 +83,7 @@ async def event_buyers(db, campaign):
     orders = (await db.scalars(select(SpecialEventOrder).where(
         SpecialEventOrder.event_id == campaign.special_event_id,
         SpecialEventOrder.status.in_(("awaiting_payment", "paid")),
-    ))).all()
+    ).execution_options(populate_existing=True))).all()
     active = [o for o in orders if o.status == "paid" or not o.payment_link_expires
               or o.hold_expires_at is None or _utc(o.hold_expires_at) > now()]
     return {o.person_id for o in active if o.person_id}, {o.participant_key for o in active if o.participant_key}
@@ -117,7 +117,7 @@ async def closed_event(db, campaign):
     if not campaign.special_event_id:
         return False
     from app.models import SpecialEvent
-    event = await db.get(SpecialEvent, campaign.special_event_id)
+    event = await db.get(SpecialEvent, campaign.special_event_id, populate_existing=True)
     return event is None or event.status != "published" or event.start_at <= now()
 
 
@@ -152,10 +152,12 @@ async def check_recipient(db, campaign, recipient, *, ignore_attempt_id=None):
     if campaign.status == "canceled":
         return "campaign_canceled"
     peers = list((await db.scalars(select(CampaignRecipient).where(
-        CampaignRecipient.campaign_id == campaign.id).order_by(CampaignRecipient.id))).all())
+        CampaignRecipient.campaign_id == campaign.id).order_by(CampaignRecipient.id)
+        .execution_options(populate_existing=True))).all())
     peers = [r for r in peers if phone_key(r.wa_id or r.phone_e164) == key]
     history = list((await db.scalars(select(Attempt).where(
-        Attempt.campaign_id == campaign.id, Attempt.phone_key == key))).all())
+        Attempt.campaign_id == campaign.id, Attempt.phone_key == key)
+        .execution_options(populate_existing=True))).all())
     history = [a for a in history if a.id != ignore_attempt_id]
     if any(a.delivered_at or a.read_at for a in history) or any(r.delivered_at or r.read_at or r.replied_at for r in peers):
         return "already_delivered"

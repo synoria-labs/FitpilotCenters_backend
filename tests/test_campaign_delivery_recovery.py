@@ -654,3 +654,16 @@ async def test_new_live_attempt_is_not_overridden_by_old_manual_authorization(db
     live.started_at, live.state = d.now(), 'started'
     await db.flush()
     assert await d.check_recipient(db, c, r) == 'uncertain_previous_send'
+
+
+async def test_send_guard_refreshes_a_delivery_written_while_models_were_cached(db, monkeypatch):
+    from sqlalchemy import update
+    c, r = await seed(db, policy='allow_additional', status='sent')
+    a = await attempt(db, c, r)
+    monkeypatch.setattr(d, 'now', lambda: AT + timedelta(hours=25))
+    await d.recovery(db, c.id, execute=True, causes=['unconfirmed'])
+    await db.execute(update(Attempt).where(Attempt.id == a.id).values(delivered_at=d.now(), state='delivered')
+                     .execution_options(synchronize_session=False))
+    assert a.delivered_at is None  # Simulate a webhook processed by a different session.
+    assert await d.check_recipient(db, c, r) == 'already_delivered'
+    assert a.delivered_at is not None
