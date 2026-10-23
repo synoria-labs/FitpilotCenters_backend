@@ -19,7 +19,7 @@ precio, horario, dirección, cupo, vigencia del enlace o estado del pago del sis
 anuncio queda como atribución; no implica por sí mismo una asociación con un evento.
 
 Para enlaces o publicaciones sin referencia de anuncio, se puede precargar un mensaje que
-incluya el nombre del evento. Si el mensaje es genérico, el bot pide identificar el evento
+incluya el nombre del evento. Si consulta un evento/anuncio pero el mensaje es genérico, el bot pide identificar el evento
 entre las opciones publicadas. No requiere recibir primero una campaña de WhatsApp.
 
 Referencia de integración: [Meta, WhatsApp Business Platform — Webhook Payload Reference](https://www.postman.com/meta/whatsapp-business-platform/request/cy6hnq7/received-text-message).

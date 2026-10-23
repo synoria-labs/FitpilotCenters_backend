@@ -57,6 +57,8 @@ class EventDiscovery:
 def _interpret(events, text, referral=None):
     matches = matching_events(events, text)
     if matches:
+        if _REGULAR.search(plain(text)):
+            return EventDiscovery(True, candidates=tuple(matches), source="evento o membresía sin aclarar")
         return EventDiscovery(True, matches[0] if len(matches) == 1 else None, tuple(matches), "mensaje del cliente")
     if _REGULAR.search(plain(text)):
         return EventDiscovery(source="regular")
@@ -109,7 +111,10 @@ async def selection_reply(db, discovery):
               if e.start_at > datetime.now(timezone.utc) and e.id in discovery.candidates]
     if not events:
         return "Por ahora no encuentro un evento publicado que coincida con tu consulta. ¿Puedes decirme el nombre del evento o qué viste en la publicación?"
-    lines = ["Para darte la información del evento correcto, ¿cuál de estas opciones te interesa?"]
+    question = ("¿Te interesa la entrada al evento o una membresía para las clases regulares? Son compras diferentes."
+                if discovery.source == "evento o membresía sin aclarar" else
+                "Para darte la información del evento correcto, ¿cuál de estas opciones te interesa?")
+    lines = [question]
     lines += [f"• {e.name}: {local_schedule_label(e.start_at, e.end_at, e.timezone)}, {money_label(e.price, e.currency)}."
               for e in events]
     return "\n".join(lines)

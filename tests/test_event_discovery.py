@@ -195,7 +195,7 @@ async def test_reply_pipeline_uses_event_facts_instead_of_the_generic_class_fall
     conversation, message = await inbound(db)
     await db.commit()
     monkeypatch.setattr(customer, "async_session_factory", same_session_factory(db))
-    monkeypatch.setattr(customer.chatbot_env, "ANTHROPIC_API_KEY", "test-only")
+    monkeypatch.setattr(customer.chatbot_env, "is_configured", lambda: True)
     monkeypatch.setattr(customer.chatbot_env, "ENABLED", True)
     config = _fallback_config()
     config.enabled = True
@@ -222,3 +222,10 @@ async def test_reply_pipeline_uses_event_facts_instead_of_the_generic_class_fall
     assert event.name in text and "$500.00 MXN" in text and "Incluye:" in text
     assert "qué fecha y hora" not in text and "inventado" not in text
     assert sent.await_args.kwargs['payment_link'] is None
+
+async def test_request_mixing_event_and_membership_requires_clarification(db):
+    _, event = await _published(db)
+    result = await discovery.resolve(db, 999999, '¿La membresía mensual incluye Halloween?')
+    assert result.interested and result.event_id is None and event.id in result.candidates
+    assert 'compras diferentes' in await discovery.fallback_reply(db, result)
+    assert not (await discovery.resolve(db, 999999, 'Quiero la membresía mensual')).interested
