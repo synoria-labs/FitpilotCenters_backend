@@ -28,8 +28,8 @@ Fitness»). Se venden por WhatsApp con Mercado Pago y se administran desde la pa
    - Sus reservas también quedan **desplazadas**: no cuentan como asistencia ni como falta y
      no consumen clase.
    - Esos clientes pasan a **Clientes desplazados**.
-   - No se envía ningún mensaje y no se toca ninguna membresía. El horario de otras fechas no
-     cambia.
+   - No se envía ningún mensaje y no se toca ninguna membresía (hasta que se les dé la clase
+     extra, ver abajo). El horario de otras fechas no cambia.
 4. **Publicar.** El botón se activa cuando no queda nada pendiente: duración, cupo, precio
    mayor a 0 y clases sin sustituir.
 5. **Vincular la campaña de WhatsApp** al evento, en la sección de campañas de la pestaña
@@ -71,14 +71,29 @@ Mercado Pago si ese pago sí se aprobó (por si se perdió el aviso).
 
 ## Atender a los clientes desplazados
 
-En **Clientes desplazados** aparece cada cliente con su clase original, su bici y su membresía.
+En **Clientes desplazados** aparece cada cliente con su clase original, su bici, su membresía
+y la clase extra que le tocaría.
 
 - **Registrar aviso**: guarda la fecha, el canal y quién avisó.
-- **Registrar compensación**: reposición, extensión de membresía, acceso al evento, saldo a
-  favor, devolución, «no requirió» u otra, con notas. Se puede marcar como resuelto.
-
-El sistema solo registra la decisión. La extensión o la reposición se aplican como siempre, en
-Membresías o en Clases.
+- **Registrar compensación**. La opción por defecto es la **clase extra al terminar su
+  membresía**, y es la única que el sistema aplica:
+  - Se busca el siguiente día con clase a su hora de siempre después de su última clase. Si su
+    última clase es un martes, el miércoles siguiente sigue activo y tiene su reserva; si es un
+    viernes, el lunes.
+  - Su última clase es la última que cubre su membresía o su horario fijo, la que sea más tarde.
+  - Se reserva en su bici si está libre; si no, en otra. Si esa clase está llena, se pasa al
+    siguiente día.
+  - Su membresía queda activa hasta ese día (y si ya renovó, se extiende la renovación).
+  - Si su membresía ya terminó, la clase extra es la siguiente a partir de hoy.
+  - Si esa clase aún no está generada (las clases se generan hasta donde llega la membresía
+    más larga de cada horario), se genera igual que al inscribir a alguien y se reserva.
+  - Se registra qué se hizo (día, hora, bici, vigencia anterior y nueva) y ya no se cambia.
+  - Sin membresía no hay clase extra: se registra otra compensación.
+- Las demás compensaciones (reposición, acceso al evento, saldo a favor, devolución, «no
+  requirió» u otra) solo se registran, con notas; se aplican como siempre en Membresías o en
+  Clases.
+- **«Dar clase extra a los pendientes»** se la da a cada cliente sin compensación, después de
+  mostrar la lista de lo que se hará.
 
 Si alguien se inscribe a ese horario **después** de la sustitución, aparece solo en esta lista
 y no se le reserva una clase que no se va a dar.
@@ -101,7 +116,8 @@ y no se le reserva una clase que no se va a dar.
 - **Tablas:**
   - `special_events`, `special_event_seats` y `special_event_orders` (apartado, pago y entrada).
   - `special_event_takeovers` (quién sustituyó qué clase y cuándo).
-  - `special_event_displacements` (seguimiento manual).
+  - `special_event_displacements` (seguimiento manual). La clase extra se registra con
+    `compensation_type = 'membership_extension'` y la aplica `app/crud/special_events/bonus.py`.
 - **Migraciones:**
   - `b2e5f8a1c4d7`: corrige la hora de las clases generadas desde junio de 2026, explicado
     abajo.

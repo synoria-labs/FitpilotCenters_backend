@@ -431,8 +431,8 @@ async def test_follow_up_records_notice_and_compensation(db):
         await takeover_crud.update_follow_up(db, row.id, actor_account_id=actor.id, resolved=True)
 
     d = await takeover_crud.update_follow_up(
-        db, row.id, actor_account_id=actor.id, compensation_type="membership_extension",
-        compensation_notes="+1 día", resolved=True,
+        db, row.id, actor_account_id=actor.id, compensation_type="make_up_class",
+        compensation_notes="Reposición el lunes a las 19:00", resolved=True,
     )
     assert d.follow_up_status == "resolved" and d.resolved_by == actor.id
 

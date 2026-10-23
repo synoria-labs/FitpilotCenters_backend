@@ -33,6 +33,7 @@ from app.models import (
     StandingBookingException,
 )
 from app.models.specialEventModel import (
+    COMPENSATION_BONUS_CLASS,
     COMPENSATION_TYPES,
     EVENT_CANCELED,
     EVENT_COMPLETED,
@@ -51,6 +52,7 @@ from app.models.specialEventModel import (
     SpecialEventTakeover,
 )
 
+from .bonus import bonus_previews
 from .common import SpecialEventError, local_schedule_label, utcnow
 from .events import overlapping_regular_sessions
 
@@ -711,7 +713,8 @@ async def update_follow_up(
     compensation_notes: Optional[str] = None,
     resolved: Optional[bool] = None,
 ) -> SpecialEventDisplacement:
-    """Record the manual follow-up. Nothing here messages the client or touches a membership."""
+    """Record the manual follow-up. Nothing here messages the client or touches a membership:
+    the extra class (the default compensation) is applied by ``bonus.apply_bonus_class``."""
     d = (
         await db.execute(
             select(SpecialEventDisplacement)
@@ -735,15 +738,26 @@ async def update_follow_up(
     if notification_notes is not None:
         d.notification_notes = notification_notes.strip() or None
 
+    if d.compensation_type == COMPENSATION_BONUS_CLASS and (
+        (compensation_type is not None and compensation_type.strip() != COMPENSATION_BONUS_CLASS)
+        or (compensation_notes is not None and compensation_notes.strip() != (d.compensation_notes or ""))
+    ):
+        raise SpecialEventError(
+            "Ya se le dio la clase extra (su membresía ya se extendió): esa compensación no se cambia."
+        )
     if compensation_type is not None:
         value = compensation_type.strip()
         if value == "":
             d.compensation_type = None
         elif value not in COMPENSATION_TYPES:
             raise SpecialEventError("Tipo de compensación desconocido.")
+        elif value == COMPENSATION_BONUS_CLASS and d.compensation_type != COMPENSATION_BONUS_CLASS:
+            raise SpecialEventError(
+                "La clase extra se da con «Dar clase extra», que agrega la reserva y extiende la membresía."
+            )
         else:
             d.compensation_type = value
-    if compensation_notes is not None:
+    if compensation_notes is not None and d.compensation_type != COMPENSATION_BONUS_CLASS:
         d.compensation_notes = compensation_notes.strip() or None
 
     if resolved is True:
@@ -795,6 +809,9 @@ class DisplacementRow:
     restoration_note: Optional[str]
     restored_at: Optional[datetime]
     created_at: datetime
+    # While there is no compensation: the proposed extra class, or why there can be none.
+    bonus_preview: Optional[str] = None
+    bonus_blocker: Optional[str] = None
 
 
 async def list_displacements(
@@ -860,10 +877,12 @@ async def list_displacements(
             )
         ).all()
     } if sub_ids else {}
+    bonuses = await bonus_previews(db, [d for d, *_ in rows])
 
     out: List[DisplacementRow] = []
     for d, person, session, event in rows:
         plan = plans.get(d.subscription_id)
+        bonus_preview, bonus_blocker = bonuses.get(d.id, (None, None))
         out.append(
             DisplacementRow(
                 id=d.id,
@@ -897,6 +916,8 @@ async def list_displacements(
                 restoration_note=d.restoration_note,
                 restored_at=d.restored_at,
                 created_at=d.created_at,
+                bonus_preview=bonus_preview,
+                bonus_blocker=bonus_blocker,
             )
         )
     return out

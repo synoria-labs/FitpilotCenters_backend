@@ -16,6 +16,7 @@ from strawberry.types import Info
 
 from app.core.timezones import STUDIO_TIMEZONE
 from app.crud.permissions import MANAGE_SPECIAL_EVENTS
+from app.crud.special_events import bonus as bonus_crud
 from app.crud.special_events import events as events_crud
 from app.crud.special_events import orders as orders_crud
 from app.crud.special_events import takeover as takeover_crud
@@ -328,6 +329,61 @@ class SpecialEventsMutation:
         return DisplacementResult(
             success=True, displacement=build_displacement(row) if row else None
         )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated])
+    async def apply_displacement_bonus_class(
+        self, info: Info, displacement_id: int, resolved: bool = True
+    ) -> DisplacementResult:
+        """The default compensation: extend the client's membership to one more class after it
+        ends and book that class (see crud.special_events.bonus)."""
+        error = await require_capability(info, MANAGE_SPECIAL_EVENTS)
+        if error:
+            return DisplacementResult(success=False, error=error)
+        db: AsyncSession = info.context.db
+        try:
+            displacement = await bonus_crud.apply_bonus_class(
+                db, displacement_id, actor_account_id=_actor(info), resolve=resolved
+            )
+            event_id = displacement.event_id
+            await db.commit()
+        except SpecialEventError as exc:
+            await db.rollback()
+            return DisplacementResult(success=False, error=str(exc))
+        except Exception:  # noqa: BLE001
+            await db.rollback()
+            logger.exception("apply_displacement_bonus_class failed")
+            return DisplacementResult(success=False, error="No se pudo dar la clase extra.")
+        rows = await takeover_crud.list_displacements(db, event_id=event_id)
+        row = next((r for r in rows if r.id == displacement_id), None)
+        return DisplacementResult(
+            success=True, displacement=build_displacement(row) if row else None
+        )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated])
+    async def apply_special_event_bonus_classes(self, info: Info, event_id: int) -> SpecialEventResult:
+        """The extra class for every displaced client of the event still without compensation."""
+        error = await require_capability(info, MANAGE_SPECIAL_EVENTS)
+        if error:
+            return SpecialEventResult(success=False, error=error)
+        db: AsyncSession = info.context.db
+        holder: dict = {}
+
+        async def action() -> int:
+            event = await _require_event(db, event_id)
+            holder["result"] = await bonus_crud.apply_bonus_classes(
+                db, event, actor_account_id=_actor(info)
+            )
+            return event.id
+
+        result = await _attempt(db, action, "Clases extra aplicadas.")
+        if result.success and holder.get("result"):
+            r = holder["result"]
+            lines = [f"Clase extra para {len(r.applied)} cliente(s)."]
+            if r.skipped:
+                lines.append("Sin clase extra:")
+                lines.extend(f"• {name}: {reason}" for name, reason in r.skipped)
+            result.message = "\n".join(lines)
+        return result
 
     @strawberry.mutation(permission_classes=[IsAuthenticated])
     async def add_special_event_participant(

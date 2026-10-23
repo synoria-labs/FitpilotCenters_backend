@@ -44,6 +44,7 @@ SENSITIVE = {
         "create_special_event", "update_special_event", "publish_special_event",
         "unpublish_special_event", "cancel_special_event", "apply_special_event_takeover",
         "restore_regular_schedule", "update_displacement_follow_up",
+        "apply_displacement_bonus_class", "apply_special_event_bonus_classes",
         "add_special_event_participant", "cancel_special_event_order",
         "refund_special_event_order", "link_campaign_to_special_event",
     ],

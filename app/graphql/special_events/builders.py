@@ -203,6 +203,8 @@ def build_displacement(row: takeover_crud.DisplacementRow, tz_name: Optional[str
         restoration_status=row.restoration_status,
         restoration_note=row.restoration_note,
         restored_at=row.restored_at,
+        bonus_preview=row.bonus_preview,
+        bonus_blocker=row.bonus_blocker,
     )
 
 
