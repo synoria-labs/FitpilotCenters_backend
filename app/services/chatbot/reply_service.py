@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 _background_tasks: Set["asyncio.Task"] = set()
 
 _PAY_BUTTON_TEXT = "Pagar ahora"
+_PAY_BUTTON_PROMPT = f"Para completar tu compra, toca el botón «{_PAY_BUTTON_TEXT}» 👇"
 
 
 async def _send_with_payment_button(
@@ -70,19 +71,21 @@ async def _send_with_payment_button(
         message_class=outbound.CLASS_TRANSACTIONAL,
     )
     text = text.strip()
-    body = f"{text}\n{payment_link.prompt}" if text else payment_link.prompt
+    body = f"{text}\n{_PAY_BUTTON_PROMPT}" if text else _PAY_BUTTON_PROMPT
+    fallback_body = f"{text}\n{payment_link.prompt}" if text else payment_link.prompt
     if len(body) > cloud.CTA_BODY_MAX:
         first = await outbound.send_text(db, text=text, **common)
         if not first.ok:
             return first
-        body = payment_link.prompt
+        body = _PAY_BUTTON_PROMPT
+        fallback_body = payment_link.prompt
     result = await outbound.send_cta_url(
         db, body=body, button_text=_PAY_BUTTON_TEXT, url=payment_link.url, **common
     )
     if result.status is not outbound.SendStatus.FAILED:
         return result
     logger.warning("Payment button not sent (%s); sending the link as text", result.reason)
-    return await outbound.send_text(db, text=f"{body} {payment_link.url}", **common)
+    return await outbound.send_text(db, text=f"{fallback_body} {payment_link.url}", **common)
 
 
 async def send_and_persist_reply(

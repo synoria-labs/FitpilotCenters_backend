@@ -101,7 +101,10 @@ async def test_reply_goes_out_with_the_pagar_ahora_button(db, monkeypatch):
 
     cta.assert_awaited_once()
     kwargs = cta.await_args.kwargs
-    assert kwargs["body"] == "Pase diario para lunes 26/10/2026 20:00.\nPase diario $50\nPara completar tu compra:"
+    assert kwargs["body"] == (
+        "Pase diario para lunes 26/10/2026 20:00.\nPase diario $50\n"
+        "Para completar tu compra, toca el botón «Pagar ahora» 👇"
+    )
     assert kwargs["button_text"] == "Pagar ahora" and kwargs["url"] == LINK.url
     text.assert_not_awaited()
 
@@ -116,7 +119,7 @@ async def test_a_reply_too_long_for_a_button_goes_first_and_the_button_after(db,
     await _reply(db, long_reply)
 
     assert text.await_args.kwargs["text"] == long_reply.strip()
-    assert cta.await_args.kwargs["body"] == LINK.prompt
+    assert cta.await_args.kwargs["body"] == "Para completar tu compra, toca el botón «Pagar ahora» 👇"
 
 
 async def test_if_the_button_fails_the_link_is_written_into_the_text(db, monkeypatch):
