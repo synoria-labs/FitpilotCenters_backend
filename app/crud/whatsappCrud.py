@@ -982,6 +982,7 @@ async def insert_inbound_message(
     wa_message_id: Optional[str] = None,
     text_content: Optional[str] = None,
     context_message_id: Optional[str] = None,
+    referral: Optional[dict] = None,
 ) -> Optional[Message]:
     """Insert an inbound message, idempotent by wa_message_id. Caller commits.
 
@@ -1000,6 +1001,7 @@ async def insert_inbound_message(
         message_type=message_type,
         text_content=text_content,
         context_message_id=context_message_id,
+        referral=referral,
         timestamp=timestamp,
         created_at=datetime.utcnow(),
         is_processed=0,

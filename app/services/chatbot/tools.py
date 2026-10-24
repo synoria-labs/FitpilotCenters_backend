@@ -103,6 +103,7 @@ class ChatbotContext:
     reply_request: Optional[dict] = None
     checked_payment_reference: Optional[str] = None
     provider_payment_status: Optional[str] = None
+    event_discovery: Optional[object] = None
 
 
 def _to_decimal(value) -> Optional[Decimal]:
@@ -443,6 +444,8 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         horario elegido para todo el periodo. Para socio existente es renovación; para cliente nuevo
         es inscripción (requiere full_name). Requiere plan_id (plan de horario fijo) y template_id
         (un horario de get_weekly_schedule)."""
+        if ctx.event_discovery and ctx.event_discovery.interested:
+            return "El cliente consulta un evento especial. No vendas una membresía para ese evento; identifica el evento y usa start_event_purchase."
         plan = await plans_crud.get_membership_plan_by_id(db, int(plan_id))
         if plan is None:
             return f"No encontré el plan #{plan_id}."
@@ -499,6 +502,8 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         """Propone un PASE DIARIO (1 día): el cliente paga un plan diario y reserva UNA clase
         específica. Requiere plan_id (plan con duración en días) y session_id (de list_available_classes).
         Para cliente nuevo requiere full_name."""
+        if ctx.event_discovery and ctx.event_discovery.interested:
+            return "El cliente consulta un evento especial. No vendas un pase diario para ese evento; identifica el evento y usa start_event_purchase."
         plan = await plans_crud.get_membership_plan_by_id(db, int(plan_id))
         if plan is None:
             return f"No encontré el plan #{plan_id}."
@@ -612,6 +617,9 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         Mercado Pago. Solo aparta lugar si el evento usa enlaces con caducidad.
         Requiere el nombre completo del participante (si es el socio
         identificado comprando para sí, puede omitirse). El teléfono por defecto es el del cliente."""
+        if (ctx.event_discovery and ctx.event_discovery.interested
+                and ctx.event_discovery.event_id != int(event_id)):
+            return "El evento no coincide con lo identificado o hay varias opciones. Pide al cliente que elija el evento antes de generar un pago."
         name = (participant_name or "").strip()
         if not name and ctx.member_id is not None:
             member = await membersCrud.get_member_by_id(db, ctx.member_id)
@@ -704,14 +712,16 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         reservation_id: Optional[int] = None, requested_date: Optional[str] = None,
         order_id: Optional[int] = None,
         plan_id: Optional[int] = None, template_id: Optional[int] = None,
+        event_id: Optional[int] = None,
     ) -> str:
-        """Finaliza TODA respuesta. kind=information|membership_information|purchase|clarification|reservation_confirmation|event_confirmation.
+        """Finaliza TODA respuesta. kind=information|membership_information|event_information|purchase|clarification|reservation_confirmation|event_confirmation.
 
         Para confirmar una reserva: session_id, reservation_id y requested_date YYYY-MM-DD son
         obligatorios. El servidor verifica y redacta la confirmación; text solo se usa para otros tipos.
         Si rechaza, corrige la compra o pide aclaración y vuelve a llamar esta herramienta.
         Para confirmar entradas pagadas de eventos usa event_confirmation con order_id.
         Para enviar el link de un evento usa purchase con order_id.
+        Para informar de un evento usa event_information con event_id: el servidor redacta los datos actuales.
         Para explicar cobertura, cantidad de clases o inicio de membresía usa membership_information
         con plan_id y template_id (solo horario fijo). El servidor redacta con el grupo completo.
         """
@@ -724,6 +734,7 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
                 reservation_id=reservation_id, requested_date=requested_date,
                 order_id=order_id,
                 plan_id=plan_id, template_id=template_id,
+                event_id=event_id,
             )
         except (ValueError, TypeError):
             ctx.validated_reply = None

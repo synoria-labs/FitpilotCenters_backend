@@ -74,6 +74,8 @@ class Message(Base):
     text_content: Mapped[Optional[str]] = mapped_column(Text)
     template_id: Mapped[Optional[int]] = mapped_column(BigInteger)
     context_message_id: Mapped[Optional[str]] = mapped_column(String(100))  # reply context
+    # Attribution from a Click-to-WhatsApp ad/post. Never a source of prices or availability.
+    referral: Mapped[Optional[dict]] = mapped_column(JSON)
     timestamp: Mapped[datetime] = mapped_column(TIMESTAMP, nullable=False)
     created_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, default=datetime.utcnow)
     is_processed: Mapped[Optional[int]] = mapped_column(SmallInteger, default=0)
