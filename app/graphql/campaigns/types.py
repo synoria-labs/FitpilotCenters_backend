@@ -143,6 +143,11 @@ class CampaignRecipientType:
 
 @strawberry.type
 class CampaignMetrics:
+    button_clicks: int = 0
+    button_clickers: int = 0
+    text_replies: int = 0
+    text_reply_people: int = 0
+    converted_clickers: int = 0
     accepted: int = 0
     unique_phones: int = 0
     duplicates: int = 0
@@ -181,6 +186,54 @@ class CampaignMetricsEntry:
 
     campaign_id: int
     metrics: CampaignMetrics
+
+
+@strawberry.type
+class CampaignButtonMetric:
+    key: str
+    label: str
+    kind: str
+    measurable: bool
+    clicks: Optional[int]
+    unique_people: Optional[int]
+    converted_people: Optional[int]
+    historical: bool
+
+
+@strawberry.type
+class CampaignButtonInteraction:
+    message_id: int
+    wa_message_id: str
+    recipient_id: int
+    person_name: str
+    phone: str
+    button_key: str
+    button_label: str
+    clicked_at: datetime
+    converted: bool
+    converted_at: Optional[datetime]
+
+
+@strawberry.type
+class CampaignButtonAnalytics:
+    button_clicks: int = 0
+    button_clickers: int = 0
+    text_replies: int = 0
+    text_reply_people: int = 0
+    converted_clickers: int = 0
+    buttons: List[CampaignButtonMetric] = strawberry.field(default_factory=list)
+    items: List[CampaignButtonInteraction] = strawberry.field(default_factory=list)
+    total: int = 0
+    limit: int = 50
+    offset: int = 0
+    updated_at: Optional[datetime] = None
+    error: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(**{k: v for k, v in data.items() if k not in ("buttons", "items")},
+                   buttons=[CampaignButtonMetric(**b) for b in data["buttons"]],
+                   items=[CampaignButtonInteraction(**e) for e in data["items"]])
 
 
 @strawberry.type

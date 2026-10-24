@@ -42,7 +42,7 @@ async def _weekday_scenario(db):
     templates = {weekday: await make_template(db, venue, ctype, weekday=weekday) for weekday in range(1, 6)}
     day = next_friday()
     sessions = {}
-    current = date.today()
+    current = to_local(utcnow()).date()
     while current <= day + timedelta(days=28):
         template = templates.get((current.weekday() + 1) % 7)
         if template is not None:
@@ -67,7 +67,7 @@ async def _member(
         db.add(
             StandingBooking(
                 person_id=person.id, subscription_id=sub.id, template_id=template.id, seat_id=seat.id,
-                start_date=date.today() - timedelta(days=3), end_date=standing_until or ends, status="active",
+                start_date=to_local(utcnow()).date() - timedelta(days=3), end_date=standing_until or ends, status="active",
             )
         )
     db.add(Reservation(
@@ -238,7 +238,7 @@ async def test_a_membership_that_already_ended_gets_the_next_class_from_today(db
     sc = await _weekday_scenario(db)
     person, sub = await _member(db, sc, "Socia Vencida", sc["seats"][3], ends=sc["day"] + timedelta(days=4))
     _event, rows = await _displaced(db, sc)
-    yesterday = date.today() - timedelta(days=1)
+    yesterday = to_local(utcnow()).date() - timedelta(days=1)
     sub.end_at, sub.status = local_datetime(yesterday, _END_OF_DAY), "expired"
     for slot in (await db.execute(select(StandingBooking).where(StandingBooking.subscription_id == sub.id))).scalars():
         slot.end_date = yesterday
