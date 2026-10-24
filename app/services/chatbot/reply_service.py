@@ -550,7 +550,6 @@ async def _run_agent_reply(
             if visual_turn:
                 fallback = "No pude interpretar la imagen con seguridad. ¿Puedes reenviarla o escribir el mensaje de error que aparece?"
             reply = ctx.validated_reply or fallback
-            logger.info("chatbot_turn conversation=%s tools=%s verification=%s", conversation_id, ctx.tools_used, ctx.verification_result)
 
             # The agent took time to run; re-check the bot wasn't disabled/paused meanwhile (STOP,
             # human takeover, or robot button off) so it doesn't talk over a human or reply right
@@ -575,6 +574,8 @@ async def _run_agent_reply(
                 fallback = await event_discovery.fallback_reply(db, discovery)
                 ctx.verification_result = "event_fallback"
             reply = ctx.validated_reply or fallback
+
+            logger.info("chatbot_turn conversation=%s tools=%s verification=%s", conversation_id, ctx.tools_used, ctx.verification_result)
 
             await send_and_persist_reply(
                 db,
