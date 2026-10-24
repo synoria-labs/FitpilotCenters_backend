@@ -670,8 +670,11 @@ async def _send_to_recipient(
     async def before_send():
         nonlocal attempt
         await db.refresh(campaign)
-        if campaign.status in ("paused", "canceled") or await delivery.closed_event(db, campaign):
-            raise ValueError("La campaña se pausó o el evento ya no está a la venta.")
+        # Before the intent exists: a pause in the middle of a batch is not this recipient's failure.
+        if campaign.status in ("paused", "canceled"):
+            raise delivery.DeliveryBlocked(f"campaign_{campaign.status}")
+        if await delivery.closed_event(db, campaign):
+            raise delivery.DeliveryBlocked("event_closed")
         attempt = CampaignSendAttempt(campaign_id=campaign.id, recipient_id=recipient.id,
                                       phone_key=recipient.phone_key, state="started")
         db.add(attempt)
@@ -706,7 +709,12 @@ async def _send_to_recipient(
             before_send=before_send,
         )
     except delivery.DeliveryBlocked as exc:
-        attempt.state = "not_sent"
+        if attempt is not None:
+            attempt.state = "not_sent"
+        if str(exc) == "campaign_paused":
+            # Back in the queue untouched, so resuming the campaign sends it.
+            await crud.defer_recipient(db, recipient, send_after=recipient.send_after, reason=recipient.skip_reason)
+            return "deferred"
         if not recipient.delivered_at and not recipient.read_at and not recipient.replied_at:
             recipient.status, recipient.skip_reason = "skipped", str(exc)
         await db.commit()

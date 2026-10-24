@@ -80,16 +80,23 @@ encola las causas elegidas. Una lista vacía no encola nada; una causa desconoci
 Las operaciones conservan el permiso SEND_CAMPAIGNS. Guardar la política no recupera ni envía.
 
 Por defecto se seleccionan daily_cap, meta_limit, meta_temporary y bad_number. Recency_block,
-unconfirmed y other_error requieren selección explícita. Un código de rechazo conservado en
-el último intento tiene prioridad sobre una clasificación local sobrescrita; las filas antiguas
-pueden clasificarse por `recipient.error` sin alterar el historial. Los números inválidos y los
+unconfirmed, other_error, meta_limit_exhausted y other requieren selección explícita.
+
+El veredicto de Meta manda sobre cualquier clasificación local posterior. Se toma del último
+intento del historial; en envíos anteriores al historial, del recibo `failed` de
+`message_statuses` y del código guardado en `webhook_logs` (solo lectura, a diferencia de la
+reparación); y al final de `recipient.error`. Una solicitud aceptada (con wamid) y sin veredicto
+es unconfirmed aunque después se haya omitido por límite diario. Los números inválidos y los
 que carecen de teléfono se muestran en bad_number, incluso si quedaron omitidos por otra causa.
+Lo que no encaja en ninguna causa (en cola sin intento, aplazado por horario o conversación,
+omitido por otra regla) va a other, nunca a daily_cap.
 
 - daily_cap aplica la política guardada (respetar, aplazar o exceptuar); el resto de controles
   siguen vigentes. Recency_block solo se exceptúa al seleccionar esa causa.
-- meta_limit permite una recuperación manual aunque se hayan agotado los dos reintentos
-  automáticos o estén desactivados. Nunca programa antes de 24 h desde el último rechazo.
-  La política automática de reintentos a las 24 y 72 horas no cambia.
+- meta_limit respeta el presupuesto automático del teléfono: con un rechazo 131049 espera
+  24 h y con dos, 48 h desde el último, igual que los reintentos automáticos. Con tres o más
+  pasa a meta_limit_exhausted, que no se preselecciona y, al elegirse, autoriza otro intento
+  manual no antes de 24 h desde el último rechazo. La política automática no cambia.
 - bad_number exige un teléfono actual de Socios distinto al anterior y de 10 a 15 dígitos.
   Reformatear 52/521 no cuenta como corrección. Solo al ejecutar se refrescan phone_e164,
   wa_id y phone_key con la misma función que construye la audiencia. La ficha no se modifica.
@@ -97,14 +104,25 @@ que carecen de teléfono se muestran en bad_number, incluso si quedaron omitidos
   La autorización queda en skip_reason=recovery_unconfirmed y sobrevive los aplazamientos.
   No cambia ni borra intentos previos y nunca autoriza saltarse un intento nuevo en curso.
 - other_error expone el código para que el administrador revise y corrija la causa antes
-  de autorizar. Los errores temporales se separan en meta_temporary.
+  de autorizar. Los errores temporales se separan en meta_temporary. Un rechazo sin código
+  (solo el recibo `failed`) también va aquí.
+- other no tiene rechazo de Meta. Las filas que siguen en cola salen al reanudar la campaña;
+  seleccionarlas solo las reprograma.
 
 Siempre se excluyen entregas/lecturas/respuestas demostradas, duplicados, bajas, conversiones,
-compradores con pedido pagado o apartado vigente del evento, envíos en curso y eventos cerrados
-(o fechas de envío posteriores a su inicio). El bloqueo de compradores se verifica por persona
-o participant_key y se repite en el remitente. Los duplicados mantienen un dueño determinista
-con el menor ID elegible a través de todas las causas, para que filtrar casillas no cambie la
-identidad elegida. El candado de teléfono y la comprobación anterior al envío siguen activos.
+compradores del evento (pedido pagado, en revisión con pago o apartado vigente), envíos en curso
+y eventos cerrados (o fechas de envío posteriores a su inicio). El bloqueo de compradores se
+verifica por persona o participant_key y se repite en el remitente. Cada teléfono tiene un
+dueño determinista que no depende de las casillas: la fila que ya está en cola; si no hay, la que
+conservó la audiencia (no duplicate_phone); luego la de una causa preseleccionada; por último el
+menor ID. Así filtrar casillas no cambia la identidad elegida y nunca se encola una segunda fila
+para un número que ya está en cola. El candado de teléfono y la comprobación anterior al envío
+siguen activos. La vista previa cuenta aparte (not_selected) a los elegibles de causas no
+seleccionadas.
+
+Si la campaña se pausa a mitad de un lote (por ejemplo, por 131048), los destinatarios ya
+reclamados vuelven a la cola sin cambios y salen al reanudar. Un evento cerrado o una campaña
+cancelada los marca como omitidos. Ninguno de los dos casos se registra como «Error interno.».
 
 Publicar primero backend y luego escritorio. No hay migraciones ni reparación histórica
 implícita. La consulta de diagnóstico y las pruebas no encolan recuperaciones en producción.
