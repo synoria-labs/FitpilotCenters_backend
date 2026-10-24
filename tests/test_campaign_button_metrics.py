@@ -19,6 +19,7 @@ def no_sends(monkeypatch):
 async def setup(db):
     campaign, recipient = await seed(db)
     template = await db.get(WhatsAppTemplate, campaign.template_id)
+    template.template_name = f"button_analytics_{campaign.id}"
     template.components = [{"type": "BUTTONS", "buttons": [
         {"type": "QUICK_REPLY", "text": "Quiero reservar"},
         {"type": "QUICK_REPLY", "text": "Más información"},
