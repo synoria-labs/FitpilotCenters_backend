@@ -19,6 +19,7 @@ from app.crud import whatsappCrud as crud
 from app.crud import campaignsCrud as campaigns_crud
 from app.services import whatsapp_media_service as media_service
 from app.services.whatsapp_hooks import on_inbound_message
+from app.services.whatsapp_referrals import normalize_referral
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +140,7 @@ async def _process_message(
         wa_message_id=wa_message_id,
         text_content=text_content,
         context_message_id=context_message_id,
+        referral=normalize_referral(msg.get("referral")),
     )
     if message is None:
         return None  # duplicate delivery, already stored

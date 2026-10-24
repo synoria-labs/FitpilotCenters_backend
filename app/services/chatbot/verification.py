@@ -98,7 +98,7 @@ async def reservation_context(db, member_id):
 
 
 async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=None, requested_date=None, order_id=None,
-                         plan_id=None, template_id=None):
+                         plan_id=None, template_id=None, event_id=None):
     """Mandatory final tool; only DB-verified facts can produce a class confirmation.
 
     A checkout link is never written into the reply: it goes in ``ctx.payment_link`` and the
@@ -109,7 +109,8 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
     ctx.payment_link = None
     ctx.verification_result = "rejected"
     ctx.reply_request = dict(kind=kind, text=text, session_id=session_id, reservation_id=reservation_id,
-                             requested_date=requested_date, order_id=order_id, plan_id=plan_id, template_id=template_id)
+                             requested_date=requested_date, order_id=order_id, plan_id=plan_id, template_id=template_id,
+                             event_id=event_id)
     explicit_day = requested_day(ctx.user_text)
     target_day = explicit_day or (date.fromisoformat(requested_date) if requested_date else None)
     from app.crud.chatbotPendingCrud import get_active_pending
@@ -150,7 +151,21 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
         return "Cobertura verificada. Finaliza el turno sin modificarla."
     if kind == "information" and re.search(r"\b(?:pagar|comprar|reservar|apartar|mi reserva)\b", ctx.user_text, re.I):
         return "La solicitud es de compra/reserva. Usa purchase, clarification o reservation_confirmation, con datos verificados."
-    if kind == "reservation_confirmation":
+    discovery = ctx.event_discovery
+    if (kind in ("information", "clarification") and discovery and discovery.interested
+            and discovery.source != "consulta reciente del cliente"
+            and not re.search(r"\b(?:cancel\w*|pag\w*|comprobante|reembolso|devoluci[oó]n|error)\b", ctx.user_text, re.I)):
+        from app.services.chatbot.event_discovery import fallback_reply
+        ctx.validated_reply = await fallback_reply(ctx.db, discovery)
+        ctx.verification_result = "accepted"
+        return "Información del evento verificada por el servidor."
+    if kind == "event_information":
+        from app.services.chatbot.event_discovery import offer_reply
+        discovery = ctx.event_discovery
+        if event_id is None or (discovery and discovery.interested and discovery.event_id != event_id):
+            return "Identifica el evento con el cliente antes de ofrecer una opción concreta. No elijas entre eventos ambiguos."
+        ctx.validated_reply = await offer_reply(ctx.db, event_id)
+    elif kind == "reservation_confirmation":
         if ctx.member_id is None or session_id is None or reservation_id is None or target_day is None:
             return "Falta identificar cliente, fecha, sesión y reserva. Consulta las herramientas; no confirmes aún."
         row = (await ctx.db.execute(
@@ -181,6 +196,8 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
         order = await ctx.db.get(SpecialEventOrder, order_id, populate_existing=True) if order_id else None
         if order is None or order.conversation_id != ctx.conversation_id or order.status != "paid":
             return "La entrada del cliente no está pagada. Consulta check_event_order_status."
+        if discovery and discovery.interested and discovery.event_id != order.event_id:
+            return "La entrada pagada corresponde a otro evento; aclara cuál quiere consultar antes de confirmarla."
         event = await ctx.db.get(SpecialEvent, order.event_id, populate_existing=True)
         if event is None or event.status != "published" or event.end_at <= datetime.now(timezone.utc):
             return "El evento ya no está vigente; no confirmes asistencia."
@@ -188,6 +205,8 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
     elif kind in ("information", "purchase", "clarification"):
         # A proposed checkout must also refer to the requested day, never yesterday's purchase.
         if kind == "purchase":
+            if discovery and discovery.interested and order_id is None:
+                return "El cliente consulta un evento especial. Usa purchase con el order_id de ese evento; no reutilices una compra de clase o membresía."
             from app.services.chatbot.purchase_status import PROCESSING_STATUSES
             if (pending is not None and ctx.checked_payment_reference
                     and pending.external_reference == ctx.checked_payment_reference
@@ -223,6 +242,8 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
                 order = await ctx.db.get(SpecialEventOrder, order_id, populate_existing=True)
                 if order is None or order.conversation_id != ctx.conversation_id or order.status != "awaiting_payment":
                     return "No hay una compra de evento pendiente para este cliente. Consulta su estado."
+                if discovery and discovery.interested and discovery.event_id != order.event_id:
+                    return "Esa compra no corresponde al evento identificado; aclara el evento antes de enviar el enlace."
                 event = await get_event(ctx.db, order.event_id)
                 if event is None or event.status != "published" or event.start_at <= datetime.now(timezone.utc):
                     return "El evento ya no está disponible para comprar."
