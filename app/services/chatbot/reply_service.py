@@ -387,6 +387,8 @@ async def _build_special_event_note(
         if event is None:
             parts.append(await event_discovery.selection_reply(db, discovery))
             parts.append("El cliente consulta un evento sin identificarlo de forma única. Pide elegir entre estas opciones; no lo conviertas en una clase regular ni elijas por tu cuenta.")
+    elif discovery.source == "regular":
+        event = None
     else:
         event = tapped_event or await _event_from_recent_campaign(db, wa_id)
     if event is not None and event.status != "draft":

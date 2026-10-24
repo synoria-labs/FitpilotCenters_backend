@@ -196,6 +196,8 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
         order = await ctx.db.get(SpecialEventOrder, order_id, populate_existing=True) if order_id else None
         if order is None or order.conversation_id != ctx.conversation_id or order.status != "paid":
             return "La entrada del cliente no está pagada. Consulta check_event_order_status."
+        if discovery and discovery.interested and discovery.event_id != order.event_id:
+            return "La entrada pagada corresponde a otro evento; aclara cuál quiere consultar antes de confirmarla."
         event = await ctx.db.get(SpecialEvent, order.event_id, populate_existing=True)
         if event is None or event.status != "published" or event.end_at <= datetime.now(timezone.utc):
             return "El evento ya no está vigente; no confirmes asistencia."
@@ -203,6 +205,8 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
     elif kind in ("information", "purchase", "clarification"):
         # A proposed checkout must also refer to the requested day, never yesterday's purchase.
         if kind == "purchase":
+            if discovery and discovery.interested and order_id is None:
+                return "El cliente consulta un evento especial. Usa purchase con el order_id de ese evento; no reutilices una compra de clase o membresía."
             from app.services.chatbot.purchase_status import PROCESSING_STATUSES
             if (pending is not None and ctx.checked_payment_reference
                     and pending.external_reference == ctx.checked_payment_reference
@@ -238,6 +242,8 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
                 order = await ctx.db.get(SpecialEventOrder, order_id, populate_existing=True)
                 if order is None or order.conversation_id != ctx.conversation_id or order.status != "awaiting_payment":
                     return "No hay una compra de evento pendiente para este cliente. Consulta su estado."
+                if discovery and discovery.interested and discovery.event_id != order.event_id:
+                    return "Esa compra no corresponde al evento identificado; aclara el evento antes de enviar el enlace."
                 event = await get_event(ctx.db, order.event_id)
                 if event is None or event.status != "published" or event.start_at <= datetime.now(timezone.utc):
                     return "El evento ya no está disponible para comprar."

@@ -97,7 +97,7 @@ async def resolve(db, conversation_id, user_text, *, message_id=None):
     for row in rows:
         prior = _interpret(events, row.text_content or "", getattr(row, "referral", None))
         if prior.source == "regular":
-            break
+            return prior
         if prior.interested:
             candidates = narrow_by_date(events, list(prior.candidates), recent_text)
             selected = candidates[0] if len(candidates) == 1 and (prior.event_id or len(prior.candidates) > 1) else prior.event_id

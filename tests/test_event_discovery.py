@@ -229,3 +229,44 @@ async def test_request_mixing_event_and_membership_requires_clarification(db):
     assert result.interested and result.event_id is None and event.id in result.candidates
     assert 'compras diferentes' in await discovery.fallback_reply(db, result)
     assert not (await discovery.resolve(db, 999999, 'Quiero la membresía mensual')).interested
+
+
+async def test_explicit_regular_topic_does_not_keep_the_old_event_campaign(db):
+    from tests.test_special_event_chatbot import _campaign_sent, WA_ID
+    _, event = await _published(db)
+    await _campaign_sent(db, event)
+    conversation, regular = await inbound(db, "Quiero una membresía mensual")
+    note = await customer._build_special_event_note(db, conversation.id, WA_ID, None, "text", regular.text_content)
+    assert note is None
+    _, name = await inbound(db, "Ana López", conversation=conversation)
+    result = await discovery.resolve(db, conversation.id, name.text_content, message_id=name.id)
+    assert result.source == "regular" and not result.interested
+    assert await customer._build_special_event_note(db, conversation.id, WA_ID, None, "text", name.text_content, discovery=result) is None
+
+
+async def test_event_context_cannot_reuse_a_regular_payment_or_another_event_order(db):
+    from app.models import ChatbotPendingAction
+    _, event = await _published(db)
+    _, other = await _published(db)
+    event.name, other.name = "Halloween Bugambilias", "Navidad"
+    await db.flush()
+    result = await discovery.resolve(db, 999999, TEXT)
+    ctx = ChatbotContext(db, 999999, None, "5218715550099", user_text=TEXT, event_discovery=result)
+    db.add(ChatbotPendingAction(conversation_id=ctx.conversation_id, action_type="create_payment",
+                                payload={}, status="awaiting_payment", summary="Compra anterior",
+                                mp_init_point="https://mp.test/old", expires_at=datetime.now(timezone.utc) + timedelta(hours=1)))
+    await db.flush()
+    respond = _tool(build_tools(ctx), "respond_to_customer")
+    await respond(kind="purchase")
+    assert ctx.validated_reply is None and ctx.payment_link is None
+    order = SpecialEventOrder(event_id=other.id, conversation_id=ctx.conversation_id, participant_name="Ana López",
+                              status="awaiting_payment", amount=500, mp_init_point="https://mp.test/wrong-event",
+                              hold_expires_at=datetime.now(timezone.utc) + timedelta(hours=1))
+    db.add(order)
+    await db.flush()
+    await respond(kind="purchase", order_id=order.id)
+    assert ctx.validated_reply is None and ctx.payment_link is None
+    order.status = "paid"
+    await db.flush()
+    await respond(kind="event_confirmation", order_id=order.id)
+    assert ctx.validated_reply is None
