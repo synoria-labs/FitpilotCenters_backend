@@ -1238,7 +1238,10 @@ async def get_metrics(db: AsyncSession, campaign_id: int) -> Dict[str, Any]:
     converted = await _count_converted(db, campaign_id)
     revenue = await crud.conversion_revenue(db, campaign_id)
     from app.services.campaign_delivery import metrics
-    return _with_evidence(_metrics_from(counts, converted, revenue), await metrics(db, campaign_id))
+    from app.services.campaign_interactions import COUNT_FIELDS, reports
+    interactions = (await reports(db, [campaign_id]))[campaign_id]
+    result = _with_evidence(_metrics_from(counts, converted, revenue), await metrics(db, campaign_id))
+    return result | {key: interactions[key] for key in COUNT_FIELDS}
 
 
 def _with_evidence(result, evidence):
@@ -1261,8 +1264,11 @@ async def get_metrics_batch(
     converted = await crud.converted_counts_for(db, ids)
     revenue = await crud.conversion_revenue_for(db, ids)
     contexts = await metric_contexts(db, ids)
+    from app.services.campaign_interactions import COUNT_FIELDS, reports
+    interactions = await reports(db, ids, contexts=contexts)
     return {cid: _with_evidence(_metrics_from(counts.get(cid, {}), converted.get(cid, 0), revenue.get(cid)),
-                                await metrics(db, cid, context=contexts[cid])) for cid in ids}
+                                await metrics(db, cid, context=contexts[cid])) |
+                 {key: interactions[cid][key] for key in COUNT_FIELDS} for cid in ids}
 
 
 async def _count_converted(db: AsyncSession, campaign_id: int) -> int:

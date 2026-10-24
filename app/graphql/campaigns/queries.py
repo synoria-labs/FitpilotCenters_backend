@@ -18,6 +18,7 @@ from app.graphql.campaigns.types import (
     CampaignCatalog,
     CampaignMetrics,
     CampaignMetricsEntry,
+    CampaignButtonAnalytics,
     CampaignObjectiveInfo,
     CampaignRecipientType,
     CampaignType,
@@ -155,6 +156,20 @@ class CampaignsQuery:
             CampaignMetricsEntry(campaign_id=cid, metrics=CampaignMetrics.from_dict(data))
             for cid, data in batch.items()
         ]
+
+    @strawberry.field(permission_classes=[IsAuthenticated])
+    async def campaign_button_analytics(
+        self, info: Info, campaign_id: int, button_key: Optional[str] = None,
+        limit: int = 50, offset: int = 0,
+    ) -> CampaignButtonAnalytics:
+        if error := await require_capability(info, SEND_CAMPAIGNS):
+            return CampaignButtonAnalytics(error=error)
+        from app.services.campaign_interactions import analytics
+        try:
+            return CampaignButtonAnalytics.from_dict(await analytics(
+                info.context.db, campaign_id, button_key=button_key, limit=limit, offset=offset))
+        except ValueError as exc:
+            return CampaignButtonAnalytics(error=str(exc))
 
     @strawberry.field(permission_classes=[IsAuthenticated])
     async def campaign_catalog(self, info: Info) -> CampaignCatalog:
