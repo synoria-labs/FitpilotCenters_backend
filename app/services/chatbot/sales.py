@@ -259,16 +259,26 @@ async def apply_order(db, order, *, allow_reconfirmed=False):
 
 async def approved_payment(db, payment_id, payment):
     """Returns None only for references owned by the legacy/event handlers."""
+    await db.execute(sql_text("SELECT pg_advisory_xact_lock(:key)"), {"key": _lock_key("sales_payment", str(payment_id))})
     order = await db.scalar(select(Order).where(Order.external_reference == payment.get("external_reference")).with_for_update())
     if not order:
         return None
-    if order.status == "confirmed" or order.payment_id:
-        return {"conversation_id": order.conversation_id, "text": None}
+    if order.payment_id:
+        proof = await db.get(Payment, order.payment_id)
+        if proof.provider_payment_id != str(payment_id):
+            extra = dict(order.facts)
+            extra["additional_payment"] = {"id": str(payment_id), "amount": payment.get("transaction_amount"), "currency": payment.get("currency_id")}
+            order.facts, order.review_reason = extra, "Se recibió un segundo pago para la misma orden; revisar devolución."
+            order.status = "needs_review"
+            await db.commit()
+            return {"conversation_id": order.conversation_id, "text": "Hay un pago adicional que nuestro equipo debe revisar. No realices más pagos."}
+        return await finish_paid_order(db, order.id)
     raw = payment.get("date_approved")
     approved_at = datetime.fromisoformat(raw.replace("Z", "+00:00")) if raw else None
     if (payment.get("status") != "approved" or Decimal(str(payment.get("transaction_amount", "-1"))) != order.amount
             or payment.get("currency_id") != "MXN"):
         order.status, order.review_reason = "needs_review", "El importe, moneda o estado no coincide con la orden."
+        order.facts = dict(order.facts, payment_review={"id": str(payment_id), "amount": payment.get("transaction_amount"), "currency": payment.get("currency_id")})
         await db.commit()
         return {"conversation_id": order.conversation_id, "text": "El pago requiere revisión del equipo. No realices otro pago."}
     existing = await db.scalar(select(Payment).where(Payment.provider_payment_id == str(payment_id)))
@@ -282,18 +292,34 @@ async def approved_payment(db, payment_id, payment):
     db.add(proof)
     await db.flush()
     order.payment_id, order.approved_at = proof.id, approved_at
-    old_status = order.status
-    order.status = "paid_awaiting_start"
+    if order.status == "canceled":
+        order.review_reason = "Pago recibido para una orden cancelada; requiere revisión."
+    order.status = "paid"
     await db.commit()  # Financial proof survives an allocation failure or a process restart.
-    order = await db.scalar(select(Order).where(Order.id == order.id).with_for_update())
+    return await finish_paid_order(db, order.id)
+
+
+async def finish_paid_order(db, order_id):
+    order = await db.scalar(select(Order).where(Order.id == order_id).with_for_update().execution_options(populate_existing=True))
+    if order.status != "paid":
+        return {"conversation_id": order.conversation_id, "text": None}
     try:
         async with db.begin_nested():
-            if approved_at is None or old_status == "canceled":
+            if order.approved_at is None or order.review_reason:
                 raise ValueError("El pago no tiene fecha de aprobación verificable o pertenece a una orden cancelada.")
             reply = await apply_order(db, order)
     except ValueError as exc:
         order.status, order.review_reason = "needs_review", str(exc)
         reply = "Recibimos tu pago, pero no pudimos aplicar la reserva. Nuestro equipo debe revisar el caso. No necesitas pagar nuevamente."
+        if any(word in str(exc).lower() for word in ("cupo", "bicicleta", "lugares")):
+            proof = await db.get(Payment, order.payment_id)
+            if proof.subscription_id is None:
+                try:
+                    await mp.refund_payment(proof.provider_payment_id, idempotency_key=f"membership-refund-{order.id}")
+                    proof.status, order.status = "REFUNDED", "refunded"
+                    reply = "No pudimos asignar cupo para ese horario y se solicitó el reembolso de tu pago. Nuestro equipo puede ayudarte con otra opción."
+                except mp.MercadoPagoError:
+                    order.review_reason += " No se pudo solicitar el reembolso; requiere revisión."
     order.updated_at = now()
     await db.commit()
     return {"conversation_id": order.conversation_id, "text": reply}

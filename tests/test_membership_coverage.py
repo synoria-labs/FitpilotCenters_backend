@@ -51,7 +51,8 @@ async def test_weekly_counts_every_day_in_group_and_not_an_eighth_day(db, days, 
     assert len(rows) == days
     assert all(r.subscription_id == sub.id for r, _ in rows)
     assert {local_date(s.start_at).weekday() for _, s in rows} == set(range(days))
-    assert sub.end_at == sc.start + timedelta(days=7)
+    assert sub.start_at == local_datetime(sc.day, time.min).astimezone(timezone.utc)
+    assert sub.end_at == sub.start_at + timedelta(days=7)
     eighth = await make_session(db, sc.templates[0], sc.day + timedelta(days=14))
     with pytest.raises(ValueError, match="no cubre"):
         await create_reservation(db, session_id=eighth.id, person_id=person.id, commit=False)
@@ -64,7 +65,7 @@ async def test_monthly_covers_full_calendar_even_when_wednesday_selected(db):
     )
     dates = []
     day = sc.day
-    while day <= local_date(sub.end_at):
+    while day < local_date(sub.end_at):
         if day.weekday() < 5:
             dates.append(day)
         day += timedelta(days=1)
@@ -309,7 +310,7 @@ async def test_current_membership_explanation_uses_its_actual_dates(db):
     assert "previstas si se acredita" not in ctx.validated_reply
 
 
-async def test_timing_excludes_classes_before_payment_in_local_evening(db):
+async def test_new_calendar_period_uses_selected_day_not_payment_hour(db):
     sc = await group(db)
     sc.start = local_datetime(sc.day, time(22)).astimezone(timezone.utc)
     person, sub, *_ = await create_member_enrollment_with_standing_booking(
@@ -320,4 +321,4 @@ async def test_timing_excludes_classes_before_payment_in_local_evening(db):
     ))).scalars().all()
     assert len(starts) == 5
     assert all(sub.start_at <= start < sub.end_at for start in starts)
-    assert local_date(max(starts)) == sc.day + timedelta(days=7)
+    assert local_date(max(starts)) == sc.day + timedelta(days=4)

@@ -30,7 +30,7 @@ def in_person_choice(text):
 def reservation_question(text):
     value = plain(text)
     return not acknowledgment(text) and bool(re.search(
-        r"\b(?:reserva[s]?|reservar|apartar|apartado|mi lugar|mi bici|mis clases|mi clase|tengo clase|tengo lugar|que dia|que hora|cuando (?:voy|tengo|es mi)|horario|asistir)\b", value))
+        r"\b(?:reserva[s]?|reservar|apartar|apartado|mi lugar|mi bici|mis clases|mi clase|tengo clase|tengo lugar|que dia|que hora|cuando (?:voy|tengo|es mi)|horario|asistir|quiero pagar)\b", value))
 
 
 def fallback(text):

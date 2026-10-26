@@ -130,6 +130,7 @@ async def _process_approved_payment(payment_id: str, payment: Optional[dict] = N
             if applied["text"]:
                 await _notify(db, applied["conversation_id"], applied["text"])
             return
+        await db.rollback()  # Release the read transaction before the legacy handler claims its row.
 
     # Lazy import keeps app startup free of the chatbot/langchain deps.
     from app.services.chatbot.tools import _execute_pending

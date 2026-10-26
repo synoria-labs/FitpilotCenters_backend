@@ -140,7 +140,7 @@ def build_system_prompt(
         "'hoy' en un mensaje anterior se refiere a ESA fecha, no a la fecha actual."
     )
     parts.append(_PURCHASE_RULES)
-    if config.sales_v2_enabled:
+    if getattr(config, "sales_v2_enabled", False):
         parts.append(
             "VENTAS V2: respeta primero la pregunta actual. Una duda sobre métodos de pago no inicia una compra. "
             "Usa kind=payment_options: tarjeta y transferencia comparten el MISMO enlace de Mercado Pago. "
