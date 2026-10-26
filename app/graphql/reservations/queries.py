@@ -115,6 +115,12 @@ class ReservationQuery:
             if not input:
                 input = GetSessionsInput()
 
+            if input.include_completed or input.person_id is not None:
+                from app.crud.permissions import OPERATE_POS, MANAGE_SUBSCRIPTIONS
+                from app.graphql.auth.permissions import require_any_capability
+                if await require_any_capability(info, (OPERATE_POS, MANAGE_SUBSCRIPTIONS)):
+                    return SessionsResponse(sessions=[], total_count=0)
+
             # Default to next 7 days if no dates provided
             if not input.start_date:
                 input.start_date = datetime.now(timezone.utc)
@@ -126,7 +132,9 @@ class ReservationQuery:
                 start_date=input.start_date,
                 end_date=input.end_date,
                 class_type_id=input.class_type_id,
-                venue_id=input.venue_id
+                venue_id=input.venue_id,
+                include_completed=input.include_completed,
+                person_id=input.person_id,
             )
 
             sessions = [Session.from_data(data) for data in sessions_data]

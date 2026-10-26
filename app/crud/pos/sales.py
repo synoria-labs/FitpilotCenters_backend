@@ -120,6 +120,7 @@ async def create_sale(
     note: Optional[str] = None,
     require_open_cash_for_cash: bool = True,
     commit: bool = True,
+    admin_password: Optional[str] = None,
 ) -> Sale:
     """Create a POS sale atomically, reusing enrollment/renewal for membership lines."""
     if not line_items:
@@ -157,7 +158,7 @@ async def create_sale(
     for li in line_items:
         if li.line_type in ("membership_new", "membership_renewal"):
             item, line_total, payment_id = await _process_membership_line(
-                db, sale, li, primary_method, sold_by
+                db, sale, li, primary_method, sold_by, admin_password=admin_password,
             )
         elif li.line_type == "manual":
             item, line_total, payment_id = await _process_manual_line(
@@ -216,7 +217,7 @@ async def create_sale(
     return refreshed if refreshed is not None else sale
 
 
-async def _process_membership_line(db, sale, li: SaleLineInput, primary_method, sold_by):
+async def _process_membership_line(db, sale, li: SaleLineInput, primary_method, sold_by, *, admin_password=None):
     if not li.plan_id:
         raise ValueError("La línea de membresía requiere un plan.")
 
@@ -240,6 +241,7 @@ async def _process_membership_line(db, sale, li: SaleLineInput, primary_method, 
                 seat_id=li.seat_id,
                 auto_materialize=True,
                 commit=False,
+                allow_past_session=True,
             )
         )
         if sale.person_id is None:
@@ -262,6 +264,8 @@ async def _process_membership_line(db, sale, li: SaleLineInput, primary_method, 
                 payment_status="COMPLETED",
                 recorded_by=sold_by,
                 commit=False,
+                allow_past_session=True,
+                admin_password=admin_password,
             )
         )
         if sale.person_id is None:
@@ -276,6 +280,7 @@ async def _process_membership_line(db, sale, li: SaleLineInput, primary_method, 
         "seat_id": li.seat_id,
         "standing_booking_id": sb_id,
         "plan_name": plan.name,
+        "overlap_authorized_by": stats.get("overlap_authorized_by"),
     }
     item = SaleLineItem(
         sale_id=sale.id,

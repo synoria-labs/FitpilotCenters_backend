@@ -53,6 +53,7 @@ class SessionData:
     class_type_name: Optional[str]
     venue_name: Optional[str]
     instructor_name: Optional[str]
+    has_reservation: bool = False
 
 
 @dataclass
@@ -73,7 +74,10 @@ async def create_reservation(
     person_id: int,
     seat_id: Optional[int] = None,
     source: str = "manual",
-    commit: bool = True
+    commit: bool = True,
+    allow_past: bool = False,
+    allow_existing: bool = False,
+    paid_subscription_id: Optional[int] = None,
 ) -> Reservation:
     """Create a new reservation"""
 
@@ -89,11 +93,12 @@ async def create_reservation(
     if not session:
         raise ValueError(f"Session {session_id} not found")
 
-    if session.status != 'scheduled':
+    allowed_statuses = ('scheduled', 'completed') if allow_past else ('scheduled',)
+    if session.status not in allowed_statuses:
         raise ValueError(f"Cannot reserve session with status {session.status}")
 
     # Check if session is in the future
-    if session.start_at <= datetime.now(timezone.utc):
+    if not allow_past and session.start_at <= datetime.now(timezone.utc):
         raise ValueError("Cannot reserve past sessions")
 
     # Validate person exists
@@ -103,6 +108,26 @@ async def create_reservation(
     person = person_result.scalar_one_or_none()
     if not person:
         raise ValueError(f"Person {person_id} not found")
+
+    if paid_subscription_id is not None:
+        paid_subscription = await db.get(MembershipSubscription, paid_subscription_id)
+        if (paid_subscription is None or paid_subscription.person_id != person_id
+                or paid_subscription.session_id != session_id):
+            raise ValueError("El pase pagado no corresponde al socio y clase seleccionados.")
+
+    if allow_existing:
+        existing = await db.scalar(select(Reservation).where(
+            Reservation.session_id == session_id, Reservation.person_id == person_id,
+            Reservation.status.in_(("reserved", "checked_in", "no_show")),
+        ))
+        if existing is not None:
+            if paid_subscription_id is not None:
+                existing.subscription_id = paid_subscription_id
+            if commit:
+                await db.commit()
+            else:
+                await db.flush()
+            return existing
 
     if seat_id is None:
         seats = await get_available_seats(db, session_id)
@@ -153,7 +178,9 @@ async def create_reservation(
         raise ValueError("Person already has an active reservation for this session")
 
     from app.crud.memberships.coverage import reservation_subscription
-    subscription_id = await reservation_subscription(db, person_id=person_id, session=session)
+    subscription_id = paid_subscription_id
+    if subscription_id is None:
+        subscription_id = await reservation_subscription(db, person_id=person_id, session=session)
 
     # Check capacity
     reserved_count_result = await db.execute(
@@ -410,7 +437,9 @@ async def get_available_sessions(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     class_type_id: Optional[int] = None,
-    venue_id: Optional[int] = None
+    venue_id: Optional[int] = None,
+    include_completed: bool = False,
+    person_id: Optional[int] = None,
 ) -> List[SessionData]:
     """Get available sessions with capacity information"""
     if not start_date:
@@ -444,7 +473,7 @@ async def get_available_sessions(
         and_(
             ClassSession.start_at >= start_date,
             ClassSession.start_at <= end_date,
-            ClassSession.status == 'scheduled'
+            ClassSession.status.in_(("scheduled", "completed") if include_completed else ("scheduled",))
         )
     )
 
@@ -459,6 +488,14 @@ async def get_available_sessions(
     result = await db.execute(query)
     sessions_data = result.all()
 
+    member_sessions = set()
+    if person_id is not None:
+        member_sessions = set((await db.execute(select(Reservation.session_id).where(
+            Reservation.person_id == person_id,
+            Reservation.status.in_(("reserved", "checked_in", "no_show")),
+            Reservation.session_id.in_([session.id for session, _ in sessions_data]),
+        ))).scalars().all())
+
     return [
         SessionData(
             id=session.id,
@@ -467,6 +504,7 @@ async def get_available_sessions(
             end_at=session.end_at,
             capacity=session.capacity,
             reserved_count=reserved_count,
+            has_reservation=session.id in member_sessions,
             available_spots=session.capacity - reserved_count,
             class_type_name=session.class_type.name if session.class_type else None,
             venue_name=session.venue.name if session.venue else None,

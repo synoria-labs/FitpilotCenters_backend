@@ -300,6 +300,7 @@ class CreateSaleInput:
     payments: List[SalePaymentInputType]
     person_id: Optional[int] = None
     note: Optional[str] = None
+    admin_password: Optional[str] = None
 
 
 @strawberry.input
@@ -329,6 +330,7 @@ class SaleResponse:
     success: bool
     sale: Optional[SaleType]
     message: str
+    error_code: Optional[str] = None
 
 
 @strawberry.type
