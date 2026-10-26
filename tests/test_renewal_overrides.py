@@ -153,6 +153,23 @@ async def test_existing_place_can_be_paid_even_when_class_is_full(db):
     assert await db.scalar(select(func.count()).select_from(Reservation)) == 1
 
 
+async def test_fixed_renewal_seat_snapshot_excludes_only_the_same_member(db):
+    from app.crud.standing_bookings.catalog import get_available_seats_for_template
+    from app.core.timezones import local_date
+    from tests.special_event_factories import make_person
+    sc = await scenario(db, bikes=2)
+    purchase = await purchase_day_pass(db, plan_id=sc.plan.id, person_id=sc.person.id, session_id=sc.session.id)
+    other = await make_person(db, "Other rider")
+    other_seat = next(seat for seat in sc.seats if seat.id != purchase.reservation.seat_id)
+    db.add(Reservation(session_id=sc.session.id, person_id=other.id, seat_id=other_seat.id, status="reserved"))
+    await db.flush()
+    args = dict(template_id=sc.template.id, date_to_check=local_date(sc.session.start_at))
+    normal = await get_available_seats_for_template(db, **args)
+    assert not any(seat.is_available for seat in normal)
+    renewal = await get_available_seats_for_template(db, **args, person_id=sc.person.id)
+    assert {seat.id for seat in renewal if seat.is_available} == {purchase.reservation.seat_id}
+
+
 async def test_pos_rolls_back_before_admin_prompt_and_records_approval_on_retry(db, monkeypatch):
     sc = await group(db)
     person, old, *_ = await create_member_enrollment_with_standing_booking(

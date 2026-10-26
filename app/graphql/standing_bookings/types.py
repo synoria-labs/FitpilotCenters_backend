@@ -201,6 +201,7 @@ class GetClassTemplatesInput:
 class GetAvailableSeatsInput:
     """Input for getting available seats"""
     template_id: int
+    person_id: Optional[int] = None
     date_to_check: Optional[date] = None
 
 
