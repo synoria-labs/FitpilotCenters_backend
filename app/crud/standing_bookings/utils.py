@@ -236,7 +236,7 @@ async def _resolve_group_seat(
         .where(
             and_(
                 ClassSession.template_id.in_(template_ids),
-                ClassSession.status == "scheduled",
+                ClassSession.status.in_(("scheduled", "completed")),
                 between_dates(ClassSession.start_at, window_start, window_end),
                 Reservation.seat_id.isnot(None),
                 Reservation.status.in_(["reserved", "checked_in"]),

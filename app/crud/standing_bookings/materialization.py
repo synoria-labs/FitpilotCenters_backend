@@ -71,6 +71,7 @@ async def materialize_standing_bookings(
     start_date: Optional[date] = None,
     subscription_id: Optional[int] = None,
     template_id: Optional[int] = None,
+    include_completed: bool = False,
 ) -> Dict[str, Any]:
     """
     Materialize standing bookings into actual reservations.
@@ -116,7 +117,7 @@ async def materialize_standing_bookings(
         stats["processed_bookings"] += 1
 
         try:
-            await _materialize_single_standing_booking(db, sb, start_date, end_date, stats)
+            await _materialize_single_standing_booking(db, sb, start_date, end_date, stats, include_completed=include_completed)
         except Exception as exc:
             stats["errors"].append(f"Error processing standing booking {sb.id}: {exc}")
             continue
@@ -187,6 +188,7 @@ async def _materialize_single_standing_booking(
     start_date: date,
     end_date: date,
     stats: Dict[str, Any],
+    *, include_completed: bool = False,
 ) -> None:
     """Materialize a single standing booking into reservations."""
     template = standing_booking.template
@@ -209,7 +211,7 @@ async def _materialize_single_standing_booking(
                     max(start_date, standing_booking.start_date),
                     min(end_date, standing_booking.end_date),
                 ),
-                ClassSession.status.in_(("scheduled", SESSION_DISPLACED)),
+                ClassSession.status.in_(("scheduled", SESSION_DISPLACED, "completed") if include_completed else ("scheduled", SESSION_DISPLACED)),
             )
         )
         .order_by(ClassSession.start_at)
@@ -247,7 +249,7 @@ async def _materialize_single_standing_booking(
                 )
             continue
 
-        await _create_reservation_if_possible(db, standing_booking, session.id, stats, source="standing")
+        await _create_reservation_if_possible(db, standing_booking, session.id, stats, source="standing", include_completed=include_completed)
 
 
 async def _create_reservation_if_possible(
@@ -257,6 +259,7 @@ async def _create_reservation_if_possible(
     stats: Dict[str, Any],
     source: str = "standing",
     seat_id_override: Optional[int] = None,
+    include_completed: bool = False,
 ) -> None:
     """Create a reservation if possible, respecting capacity and seat constraints."""
     # Serialize check+insert per session: the capacity count has no backing DB
@@ -280,7 +283,7 @@ async def _create_reservation_if_possible(
     if (subscription is None or subscription.status != "active"
             or not subscription.start_at <= session.start_at < subscription.end_at):
         return
-    if session.status != "scheduled":
+    if session.status not in (("scheduled", "completed") if include_completed else ("scheduled",)):
         return
 
     seat_id = seat_id_override if seat_id_override is not None else standing_booking.seat_id

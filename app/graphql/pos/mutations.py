@@ -37,6 +37,7 @@ from app.graphql.pos.types import (
 )
 from app.models.notificationModel import EVENT_RENEWAL_CONFIRMATION
 from app.services.notification_service import dispatch_event_in_background
+from app.crud.memberships.overlaps import OverlapAuthorizationError
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +199,7 @@ class PosMutation:
                 person_id=input.person_id,
                 sold_by=account_id,
                 note=input.note,
+                admin_password=getattr(input, "admin_password", None),
             )
             _schedule_sale_renewal_confirmations(sale)
             return SaleResponse(
@@ -205,6 +207,9 @@ class PosMutation:
                 sale=SaleType.from_model(sale),
                 message="Venta registrada exitosamente.",
             )
+        except OverlapAuthorizationError as e:
+            await db.rollback()
+            return SaleResponse(success=False, sale=None, message=str(e), error_code=e.code)
         except Exception as e:  # noqa: BLE001
             logger.error("Error creating sale: %s", e, exc_info=True)
             await db.rollback()

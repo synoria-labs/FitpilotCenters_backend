@@ -120,10 +120,16 @@ class StandingBookingQuery:
         db: AsyncSession = info.context.db
 
         try:
+            if input.person_id is not None:
+                from app.crud.permissions import OPERATE_POS, MANAGE_SUBSCRIPTIONS
+                from app.graphql.auth.permissions import require_any_capability
+                if await require_any_capability(info, (OPERATE_POS, MANAGE_SUBSCRIPTIONS)):
+                    return AvailableSeatsResponse(seats=[], available_count=0, total_count=0)
             seats_data = await get_available_seats_for_template(
                 db=db,
                 template_id=input.template_id,
-                date_to_check=input.date_to_check
+                date_to_check=input.date_to_check,
+                person_id=input.person_id,
             )
 
             available_seats = [seat for seat in seats_data if seat.is_available]

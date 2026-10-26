@@ -522,6 +522,16 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         sinfo = next((s for s in sessions if s.id == int(session_id)), None)
         if sinfo is None:
             return "Esa clase no está disponible para reservar. Ofrécele otra."
+        if ctx.member_id is not None:
+            from app.crud.memberships.overlaps import authorize_overlap, OverlapAuthorizationError
+            try:
+                await authorize_overlap(db, ctx.member_id, sinfo.start_at, sinfo.end_at)
+            except OverlapAuthorizationError:
+                return (
+                    "La clase coincide con una membresía o reserva del socio. "
+                    "La compra solapada debe autorizarla un administrador en recepción; "
+                    "no generes otro enlace de pago ni solicites contraseñas por WhatsApp."
+                )
         from app.services.chatbot.verification import requested_session_error
         mismatch = await requested_session_error(db, sinfo, ctx.user_text)
         if mismatch:

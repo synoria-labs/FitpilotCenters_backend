@@ -16,6 +16,41 @@ diario cuando `DAY_PASS_SESSION_REQUIRED=true` (valor predeterminado). Sin él s
 rechaza la operación antes de cobrar. Los otros planes pueden omitirlo.
 `Subscription.sessionId` es nullable para compatibilidad con el historial.
 
+### Registro en recepción y renovaciones solapadas
+
+Los formularios de recepción pueden seleccionar clases que ya empezaron o
+terminaron, tanto programadas como completadas, para registrar pagos posteriores
+a la clase. Una clase cancelada o desplazada sigue sin poder venderse. Esta
+excepción se habilita únicamente desde las mutaciones autenticadas con permisos
+de caja o gestión de suscripciones; el chatbot y la compra pública siguen
+exigiendo una clase futura. Un pase histórico se registra desde el inicio de su
+clase y conserva el vencimiento real, con estado `expired` si ya terminó.
+
+El selector de sesión aparece solo en planes de un día. Semanales y mensuales
+conservan el selector del grupo de horario, incluida la precarga asíncrona del
+último plan. Una membresía vencida sugiere hoy como inicio, y recepción puede
+cambiarlo para registrar una clase anterior dentro del rango del calendario.
+
+Si las fechas coinciden con una membresía pagada o reserva del mismo socio, el
+servidor devuelve `MEMBERSHIP_OVERLAP` antes de confirmar el cobro. Caja y
+renovación solicitan contraseña de administrador y reintentan la operación con
+`adminPassword`. Se comprueba contra cuentas activas con rol administrador; una
+clave errónea devuelve `ADMIN_PASSWORD_INVALID`. Cancelar el diálogo no cobra ni
+altera el carrito. Las contraseñas no se guardan en el ticket ni en sus metadatos.
+
+La autorización conserva las demás membresías pagadas. Para una misma clase y
+socio se reutiliza la reserva física existente, conservando bicicleta y registro
+de asistencia, sin consumir otro lugar. El ticket guarda el identificador de la
+cuenta que autorizó el solapamiento en `overlap_authorized_by`. El servidor
+serializa estas comprobaciones con la creación de reservas y confirma pago,
+suscripción y ticket en una sola transacción.
+El chatbot deriva estas compras a recepción antes de generar un enlace de pago;
+no solicita contraseñas por WhatsApp. La compra vuelve a comprobar el conflicto
+al acreditarse el pago por si apareció otra membresía desde la propuesta.
+
+No requiere migración. Desplegar primero el backend (campos GraphQL aditivos) y
+después actualizar y reiniciar el escritorio.
+
 Los formularios de alta/renovación y caja consultan sesiones reales para la fecha
 seleccionada. El pase diario no crea un horario recurrente; la bicicleta disponible
 se asigna dentro de la transacción. Mercado Pago conserva su verificación y su

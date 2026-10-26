@@ -61,6 +61,7 @@ class Session:
     class_type_name: Optional[str]
     venue_name: Optional[str]
     instructor_name: Optional[str]
+    has_reservation: bool = False
 
     @classmethod
     def from_data(cls, data: SessionData) -> "Session":
@@ -74,7 +75,8 @@ class Session:
             reserved_count=data.reserved_count,
             class_type_name=data.class_type_name,
             venue_name=data.venue_name,
-            instructor_name=data.instructor_name
+            instructor_name=data.instructor_name,
+            has_reservation=data.has_reservation,
         )
 
 
@@ -117,6 +119,8 @@ class GetSessionsInput:
     end_date: Optional[datetime] = None
     class_type_id: Optional[int] = None
     venue_id: Optional[int] = None
+    include_completed: bool = False
+    person_id: Optional[int] = None
 
 
 @strawberry.input

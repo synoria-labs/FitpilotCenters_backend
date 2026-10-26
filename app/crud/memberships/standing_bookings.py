@@ -51,6 +51,8 @@ async def _create_standing_bookings_for_group(
     subscription: MembershipSubscription,
     template_id: int,
     seat_id: Optional[int] = None,
+    *,
+    allow_overlap: bool = False,
 ) -> Tuple[List[int], List[int], Dict[int, date], Optional[str]]:
     """Create standing bookings for ALL templates in the same TimeslotGroup.
 
@@ -137,6 +139,7 @@ async def _create_standing_bookings_for_group(
                 seat_id=seat_id,
                 start_date=aligned_start,
                 end_date=membership_end,
+                allow_overlap=allow_overlap,
             )
 
             if standing_booking:
@@ -260,6 +263,7 @@ async def _create_reservations_for_subscription(
     subscription_id: int,
     start_date: Optional[date] = None,
     weeks_ahead: Optional[int] = None,
+    include_completed: bool = False,
 ) -> dict:
     """
     Helper function to create reservations immediately for a specific subscription.
@@ -304,6 +308,7 @@ async def _create_reservations_for_subscription(
             window_weeks=weeks_ahead,
             start_date=start_date if start_date else local_date(subscription.start_at),
             subscription_id=subscription_id,
+            include_completed=include_completed,
         )
         return stats
     except Exception as exc:
@@ -353,6 +358,8 @@ async def _handle_fixed_timeslot_effects(
     *,
     auto_materialize: bool = True,
     commit_sessions: bool = True,
+    allow_overlap: bool = False,
+    include_completed: bool = False,
 ) -> tuple[Optional[int], dict]:
     """Common helper for fixed time-slot effects (group bookings + sessions + materialization).
 
@@ -370,6 +377,7 @@ async def _handle_fixed_timeslot_effects(
             subscription=subscription,
             template_id=template_id,
             seat_id=seat_id,
+            allow_overlap=allow_overlap,
         )
     )
     primary_id = standing_booking_ids[0] if standing_booking_ids else None
@@ -408,6 +416,7 @@ async def _handle_fixed_timeslot_effects(
             subscription_id=subscription.id,
             start_date=window_start,
             weeks_ahead=weeks_ahead,
+            include_completed=include_completed,
         )
 
     template_start_dates_iso = {tid: dt.isoformat() for tid, dt in template_start_dates.items()}

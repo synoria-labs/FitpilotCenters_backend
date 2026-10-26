@@ -6,7 +6,8 @@ import os
 from sqlalchemy import select, update, text as sa_text
 
 from app.models import ClassSession, MembershipPlan, MembershipSubscription, Payment, People, Reservation
-from app.crud.locks import lock_class_session, _lock_key
+from app.crud.locks import lock_class_session, lock_materialization_batch, _lock_key
+from .overlaps import authorize_overlap
 from .payments import create_payment
 from .utils import _resolve_payment_amount
 
@@ -36,6 +37,7 @@ class DayPassPurchase:
     payment: Payment
     plan: MembershipPlan
     reservation: Reservation
+    approved_by: int | None = None
 
 
 async def purchase_day_pass(
@@ -43,6 +45,7 @@ async def purchase_day_pass(
     phone_number=None, seat_id=None, payment_method="cash", payment_amount=None,
     payment_status="COMPLETED", payment_comment=None, payment_provider=None,
     provider_payment_id=None, external_reference=None, recorded_by=None,
+    allow_past_session=False, admin_password=None,
 ) -> DayPassPurchase:
     from app.crud.membersCrud import create_member
     from app.crud.reservationsCrud import create_reservation, get_available_seats
@@ -54,6 +57,7 @@ async def purchase_day_pass(
         raise ValueError("El plan no es un pase diario disponible.")
     if payment_status != "COMPLETED":
         raise ValueError("El pase diario se activa únicamente al acreditar el pago.")
+    await lock_materialization_batch(db)
     payment_key = provider_payment_id or external_reference
     if payment_key:
         await db.execute(sa_text("SELECT pg_advisory_xact_lock(:key)"), {"key": _lock_key("day_pass_payment", payment_key)})
@@ -77,7 +81,10 @@ async def purchase_day_pass(
     await lock_class_session(db, int(session_id))
     session = await db.get(ClassSession, int(session_id), populate_existing=True, with_for_update=True)
     now = datetime.now(timezone.utc)
-    if session is None or session.status != "scheduled" or session.start_at <= now or session.end_at <= session.start_at:
+    statuses = ("scheduled", "completed") if allow_past_session else ("scheduled",)
+    if (session is None or session.status not in statuses or session.end_at <= session.start_at
+            or (not allow_past_session and session.start_at <= now)
+            or (session.status == "completed" and session.start_at > now)):
         raise ValueError("La clase seleccionada ya no está disponible para comprar un pase diario.")
     if person_id is None:
         if not (full_name or "").strip():
@@ -87,8 +94,17 @@ async def purchase_day_pass(
         person = await db.get(People, int(person_id))
         if person is None:
             raise ValueError("Socio no encontrado.")
+    start_at = min(now, session.start_at)
+    approved_by = await authorize_overlap(db, person.id, session.start_at, session.end_at, admin_password)
+    existing = await db.scalar(select(Reservation).where(
+        Reservation.person_id == person.id, Reservation.session_id == session.id,
+        Reservation.status.in_(("reserved", "checked_in", "no_show")),
+    ))
     seats = await get_available_seats(db, session.id)
-    if seat_id is not None and not any(seat.id == seat_id and seat.is_available for seat in seats):
+    if existing is not None and approved_by is not None:
+        seat_id = existing.seat_id
+        seats = []
+    if existing is None and seat_id is not None and not any(seat.id == seat_id and seat.is_available for seat in seats):
         raise ValueError("El lugar seleccionado no está disponible en esta clase.")
     if seat_id is None:
         if seats:
@@ -97,7 +113,8 @@ async def purchase_day_pass(
                 raise ValueError("La clase ya no tiene lugares disponibles.")
     subscription = MembershipSubscription(
         person_id=person.id, plan_id=plan.id, session_id=session.id,
-        start_at=now, end_at=session.end_at, status="active", created_by=recorded_by,
+        start_at=start_at, end_at=session.end_at,
+        status="expired" if session.end_at <= now else "active", created_by=recorded_by,
     )
     db.add(subscription)
     await db.flush()
@@ -110,9 +127,11 @@ async def purchase_day_pass(
     )
     reservation = await create_reservation(
         db, session_id=session.id, person_id=person.id, seat_id=seat_id, commit=False,
+        allow_past=allow_past_session, allow_existing=approved_by is not None,
+        paid_subscription_id=subscription.id,
     )
     subscription.plan = plan
-    return DayPassPurchase(person, subscription, payment, plan, reservation)
+    return DayPassPurchase(person, subscription, payment, plan, reservation, approved_by)
 
 
 async def expire_day_passes(db, now=None) -> int:

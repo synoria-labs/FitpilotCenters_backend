@@ -292,6 +292,7 @@ class MembershipMutation:
                         template_id=input.template_id,
                         seat_id=getattr(input, 'seat_id', None),
                         auto_materialize=True,
+                        allow_past_session=True,
                     )
                 )
             else:
@@ -310,7 +311,8 @@ class MembershipMutation:
                     payment_provider=input.payment_provider,
                     provider_payment_id=input.provider_payment_id,
                     external_reference=input.external_reference,
-                    recorded_by=created_by
+                    recorded_by=created_by,
+                    allow_past_session=True,
                 )
 
             member_data = await get_member_by_id(db=db, member_id=person.id)
@@ -420,7 +422,9 @@ class MembershipMutation:
                 payment_provider=input.payment_provider,
                 provider_payment_id=input.provider_payment_id,
                 external_reference=input.external_reference,
-                recorded_by=created_by
+                recorded_by=created_by,
+                admin_password=getattr(input, "admin_password", None),
+                allow_past_session=True,
             )
 
             # Log results based on what was created
@@ -494,6 +498,9 @@ class MembershipMutation:
 
             error_text = str(e)
             error_code, cause = _classify_renewal_error(error_text)
+            from app.crud.memberships.overlaps import OverlapAuthorizationError
+            if isinstance(e, OverlapAuthorizationError):
+                error_code, cause = e.code, error_text
             error_payload = {
                 "success": False,
                 "text": f"{cause}.",

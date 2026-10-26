@@ -27,6 +27,7 @@ async def create_standing_booking(
     start_date: date,
     end_date: date,
     seat_id: Optional[int] = None,
+    allow_overlap: bool = False,
 ) -> StandingBooking:
     """Create a new standing booking."""
     subscription_stmt = select(MembershipSubscription).where(
@@ -80,9 +81,9 @@ async def create_standing_booking(
         )
     )
     existing_result = await db.execute(existing_stmt)
-    existing = existing_result.scalar_one_or_none()
+    existing = existing_result.scalars().first()
 
-    if existing:
+    if existing and not allow_overlap:
         raise ValueError("Active standing booking already exists for this person and template")
 
     if seat_id:
@@ -95,7 +96,7 @@ async def create_standing_booking(
                     between_dates(ClassSession.start_at, start_date, end_date),
                     ClassSession.start_at >= subscription.start_at,
                     ClassSession.start_at < subscription.end_at,
-                    ClassSession.status == "scheduled",
+                    ClassSession.status.in_(("scheduled", "completed")),
                     Reservation.seat_id == seat_id,
                     Reservation.status.in_(["reserved", "checked_in"]),
                     Reservation.person_id != person_id,
