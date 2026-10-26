@@ -26,6 +26,8 @@ def effective_status(subscription, now=None) -> str:
     now = now or datetime.now(timezone.utc)
     if subscription.status == "active" and subscription.end_at <= now:
         return "expired"
+    if subscription.status == "active" and getattr(subscription, "period_rule_version", 1) >= 2 and subscription.start_at > now:
+        return "scheduled"
     return subscription.status
 
 
@@ -43,6 +45,7 @@ async def purchase_day_pass(
     phone_number=None, seat_id=None, payment_method="cash", payment_amount=None,
     payment_status="COMPLETED", payment_comment=None, payment_provider=None,
     provider_payment_id=None, external_reference=None, recorded_by=None,
+    existing_payment=None,
 ) -> DayPassPurchase:
     from app.crud.membersCrud import create_member
     from app.crud.reservationsCrud import create_reservation, get_available_seats
@@ -61,7 +64,7 @@ async def purchase_day_pass(
             Payment.provider_payment_id == str(provider_payment_id) if provider_payment_id
             else Payment.external_reference == external_reference
         ))).scalars().first()
-        if previous is not None:
+        if previous is not None and (existing_payment is None or previous.id != existing_payment.id or previous.subscription_id is not None):
             if previous.status != "COMPLETED":
                 raise ValueError("El pago original no está completado; requiere conciliación.")
             subscription = await db.get(MembershipSubscription, previous.subscription_id)
@@ -101,13 +104,14 @@ async def purchase_day_pass(
     )
     db.add(subscription)
     await db.flush()
-    payment = await create_payment(
+    payment = existing_payment or await create_payment(
         db=db, person_id=person.id, subscription_id=subscription.id,
         amount=_resolve_payment_amount(plan, payment_amount), method=payment_method,
         status=payment_status, comment=payment_comment, provider=payment_provider,
         provider_payment_id=provider_payment_id, external_reference=external_reference,
         recorded_by=recorded_by, commit=False,
     )
+    payment.person_id, payment.subscription_id = person.id, subscription.id
     reservation = await create_reservation(
         db, session_id=session.id, person_id=person.id, seat_id=seat_id, commit=False,
     )

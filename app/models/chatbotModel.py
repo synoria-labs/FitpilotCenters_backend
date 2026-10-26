@@ -64,6 +64,8 @@ class ChatbotConfig(Base):
     # When true, purchases (inscripción/renovación/day pass) require a MercadoPago payment link
     # before executing; off => confirmed by "Sí" (manual flow). Editable from the frontend.
     require_mp_payment: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    offer_in_person_registration: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    sales_v2_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Anthropic model id (defaults to the latest Sonnet).
     model: Mapped[str] = mapped_column(String(80), nullable=False, default=DEFAULT_AI_MODEL)
     template_ai_model: Mapped[str] = mapped_column(String(80), nullable=False, default=DEFAULT_AI_MODEL)

@@ -122,6 +122,15 @@ async def _process_approved_payment(payment_id: str, payment: Optional[dict] = N
         )
         return
 
+    # Durable orders remain resolvable when new V2 proposals are disabled during rollback.
+    from app.services.chatbot.sales import approved_payment
+    async with async_session_factory() as db:
+        applied = await approved_payment(db, str(payment_id), payment)
+        if applied is not None:
+            if applied["text"]:
+                await _notify(db, applied["conversation_id"], applied["text"])
+            return
+
     # Lazy import keeps app startup free of the chatbot/langchain deps.
     from app.services.chatbot.tools import _execute_pending
 

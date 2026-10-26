@@ -19,7 +19,8 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from functools import wraps
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
+from app.models import ClassSession
 from decimal import Decimal, InvalidOperation
 from typing import List, Optional
 
@@ -104,6 +105,12 @@ class ChatbotContext:
     checked_payment_reference: Optional[str] = None
     provider_payment_status: Optional[str] = None
     event_discovery: Optional[object] = None
+    sales_v2_enabled: bool = False
+    offer_in_person_registration: bool = False
+    message_id: Optional[int] = None
+    start_date_evidence: Optional[date] = None
+    order_id: Optional[int] = None
+    telemetry: dict = field(default_factory=dict)
 
 
 def _to_decimal(value) -> Optional[Decimal]:
@@ -439,13 +446,20 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         )
         return f"Propuesta lista: {summary}. Pide al cliente que confirme respondiendo *Sí*."
 
-    async def propose_membership(plan_id: int, template_id: Optional[int] = None, full_name: Optional[str] = None) -> str:
+    async def propose_membership(plan_id: int, template_id: Optional[int] = None, full_name: Optional[str] = None,
+                                 start_date: Optional[str] = None) -> str:
         """Propone comprar un PAQUETE: un plan con horario fijo que reserva automáticamente el
         horario elegido para todo el periodo. Para socio existente es renovación; para cliente nuevo
         es inscripción (requiere full_name). Requiere plan_id (plan de horario fijo) y template_id
         (un horario de get_weekly_schedule)."""
         if ctx.event_discovery and ctx.event_discovery.interested:
             return "El cliente consulta un evento especial. No vendas una membresía para ese evento; identifica el evento y usa start_event_purchase."
+        if ctx.sales_v2_enabled:
+            from app.services.chatbot.sales import propose
+            try:
+                return await propose(ctx, plan_id=plan_id, template_id=template_id, full_name=full_name, start_date=start_date)
+            except ValueError as exc:
+                return str(exc)
         plan = await plans_crud.get_membership_plan_by_id(db, int(plan_id))
         if plan is None:
             return f"No encontré el plan #{plan_id}."
@@ -504,6 +518,17 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         Para cliente nuevo requiere full_name."""
         if ctx.event_discovery and ctx.event_discovery.interested:
             return "El cliente consulta un evento especial. No vendas un pase diario para ese evento; identifica el evento y usa start_event_purchase."
+        if ctx.sales_v2_enabled:
+            from app.services.chatbot.sales import propose
+            from app.core.timezones import local_date
+            session = await db.get(ClassSession, session_id)
+            if not session:
+                return "Esa clase no está disponible."
+            try:
+                return await propose(ctx, plan_id=plan_id, session_id=session_id, full_name=full_name,
+                                     start_date=local_date(session.start_at).isoformat())
+            except ValueError as exc:
+                return str(exc)
         plan = await plans_crud.get_membership_plan_by_id(db, int(plan_id))
         if plan is None:
             return f"No encontré el plan #{plan_id}."
@@ -553,12 +578,20 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
     # --------------------------- confirm / cancel --------------------------
     async def confirm_action() -> str:
         """Ejecuta la acción pendiente (reserva/pago/renovación/inscripción) tras la confirmación del cliente."""
+        if ctx.sales_v2_enabled:
+            from app.services.chatbot.sales import checkout
+            try:
+                return await checkout(ctx)
+            except ValueError as exc:
+                return str(exc)
         pending = await pending_crud.get_pending(db, ctx.conversation_id)
         if pending is None:
             return "No hay ninguna acción pendiente por confirmar."
         # Capture before any rollback: rolled-back ORM attributes lazy-load (sync IO -> MissingGreenlet).
         pending_id = pending.id
         action_type = pending.action_type
+        if action_type in (ACTION_BUY_PACKAGE, ACTION_BUY_DAY_PASS, "create_payment", "renew_subscription", "create_enrollment"):
+            return "El registro y pago presencial los realiza nuestro equipo en recepción. Tu respuesta no acredita un pago ni reserva lugares."
         try:
             result = await _execute_pending(db, pending)
         except ValueError as e:
@@ -573,6 +606,11 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
 
     async def cancel_action() -> str:
         """Cancela la acción pendiente si el cliente no confirma."""
+        if ctx.sales_v2_enabled:
+            from app.services.chatbot.sales import active_order, cancel_unpaid
+            order = await active_order(db, ctx.conversation_id)
+            if order:
+                return await cancel_unpaid(db, order)
         canceled = await pending_crud.cancel_pending(db, ctx.conversation_id, commit=True)
         return "Acción cancelada." if canceled else "No había ninguna acción pendiente."
 
@@ -707,12 +745,30 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         await special_event_payments.expire_payment_links(preferences)
         return f"Listo, cancelé {len(targets)} compra(s) pendiente(s) de pago; el lugar quedó libre."
 
+    async def confirm_membership_start(start_date: str, session_id: Optional[int] = None) -> str:
+        """Aplica un pago YA recibido a una nueva fecha confirmada por el cliente. Nunca crea otro cobro."""
+        from app.services.chatbot.sales import active_order, confirm_start
+        from app.services.chatbot.verification import requested_day
+        selected = date.fromisoformat(start_date)
+        if requested_day(ctx.user_text) != selected:
+            return "Confirma la nueva fecha con el cliente antes de aplicar el pago."
+        order = await active_order(db, ctx.conversation_id)
+        if order is None:
+            return "No hay un pago pendiente de fecha en esta conversación."
+        try:
+            result = await confirm_start(db, order.id, selected, conversation_id=ctx.conversation_id, session_id=session_id)
+        except ValueError as exc:
+            return str(exc)
+        ctx.order_id = order.id
+        return result
+
     async def respond_to_customer(
         kind: str, text: str = "", session_id: Optional[int] = None,
         reservation_id: Optional[int] = None, requested_date: Optional[str] = None,
         order_id: Optional[int] = None,
         plan_id: Optional[int] = None, template_id: Optional[int] = None,
         event_id: Optional[int] = None,
+        membership_order_id: Optional[int] = None,
     ) -> str:
         """Finaliza TODA respuesta. kind=information|membership_information|event_information|purchase|clarification|reservation_confirmation|event_confirmation.
 
@@ -735,6 +791,7 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
                 order_id=order_id,
                 plan_id=plan_id, template_id=template_id,
                 event_id=event_id,
+                membership_order_id=membership_order_id,
             )
         except (ValueError, TypeError):
             ctx.validated_reply = None
@@ -742,6 +799,7 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
             return "Fecha o identificadores inválidos. Aclara los datos antes de responder."
 
     factories = [
+        (confirm_membership_start, "confirm_membership_start", confirm_membership_start.__doc__),
         (respond_to_customer, "respond_to_customer", respond_to_customer.__doc__),
         (get_business_info, "get_business_info", "Información del negocio (nombre, dirección, horarios, teléfono, políticas)."),
         (get_membership_plans, "get_membership_plans", "Planes de membresía disponibles con precio y duración."),

@@ -140,6 +140,19 @@ def build_system_prompt(
         "'hoy' en un mensaje anterior se refiere a ESA fecha, no a la fecha actual."
     )
     parts.append(_PURCHASE_RULES)
+    if config.sales_v2_enabled:
+        parts.append(
+            "VENTAS V2: respeta primero la pregunta actual. Una duda sobre métodos de pago no inicia una compra. "
+            "Usa kind=payment_options: tarjeta y transferencia comparten el MISMO enlace de Mercado Pago. "
+            "El registro y pago en recepción los realiza el personal; un sí NO acredita dinero ni aparta clases. "
+            "Antes de proponer membresía pregunta qué día quiere comenzar y usa propose_membership con start_date YYYY-MM-DD. "
+            "La vigencia comienza en esa fecha, aunque pague antes. La propuesta devuelve un resumen: pide confirmación una vez, "
+            "y luego confirm_action genera el checkout. Usa kind=purchase para enviarlo. Nunca registres efectivo desde el bot. "
+            "Un pago tardío pendiente de fecha se resuelve con confirm_membership_start; no crees otro enlace. "
+            "Respuestas normalmente de hasta 100 palabras, sin tablas largas salvo petición. No repitas el resumen "
+            "ni todos los planes al responder una duda. Solo menciona escasez con cupo verificado. "
+            "Para saludos o agradecimientos usa acknowledgment. Un saludo no consulta una reserva."
+        )
     parts.append(_EVENT_RULES)
     parts.append(_CONFIRM_RULES_STRICT if config.require_confirmation else _CONFIRM_RULES_RELAXED)
     if member_id is not None:
@@ -187,6 +200,7 @@ async def run_agent(
     campaign_note: Optional[str] = None,
     event_note: Optional[str] = None,
     image_content: Optional[list] = None,
+    telemetry: Optional[dict] = None,
 ) -> Optional[str]:
     """Run one agent turn and return the reply text (or None if nothing to say)."""
     llm = build_llm(config)
@@ -201,6 +215,16 @@ async def run_agent(
         config={"recursion_limit": _RECURSION_LIMIT},
     )
     out_messages = result.get("messages", []) if isinstance(result, dict) else []
+    if telemetry is not None:
+        usage = {}
+        for message in out_messages[len(messages):]:
+            if isinstance(message, AIMessage):
+                metadata = getattr(message, "response_metadata", {}) or {}
+                telemetry["effective_model"] = metadata.get("model") or metadata.get("model_name") or telemetry.get("effective_model")
+                for key, value in (getattr(message, "usage_metadata", None) or {}).items():
+                    if isinstance(value, int):
+                        usage[key] = usage.get(key, 0) + value
+        telemetry["usage"] = usage
     for message in reversed(out_messages):
         if isinstance(message, AIMessage):
             text = _extract_text(message)

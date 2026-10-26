@@ -68,6 +68,7 @@ class MembershipSubscription(Base):
         BigInteger, ForeignKey("class_sessions.id", ondelete="RESTRICT"), nullable=True, index=True
     )
     start_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    period_rule_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     end_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     created_by: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("accounts.id"))
