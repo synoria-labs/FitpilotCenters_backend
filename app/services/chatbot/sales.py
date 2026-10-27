@@ -248,9 +248,11 @@ async def apply_order(db, order, *, allow_reconfirmed=False):
         return "Tu pago y membresía ya están registrados."
     if not order.payment_id or not order.approved_at:
         raise ValueError("No hay un pago acreditado verificable para esta orden.")
-    if not allow_reconfirmed and (order.first_class_at and order.approved_at >= order.first_class_at):
+    deadline = order.first_class_at or local_datetime(order.start_date + timedelta(days=1), time.min).astimezone(timezone.utc)
+    if not allow_reconfirmed and order.approved_at >= deadline:
         order.status = "paid_awaiting_start"
-        return "Recibimos tu pago. La primera clase elegida ya comenzó. ¿Qué nueva fecha disponible prefieres para iniciar? No necesitas pagar de nuevo."
+        reason = "La primera clase elegida ya comenzó." if order.first_class_at else "La fecha de inicio elegida ya pasó."
+        return f"Recibimos tu pago. {reason} ¿Qué nueva fecha disponible prefieres para iniciar? No necesitas pagar de nuevo."
     payload = order.payload
     fresh = await facts_for(db, **{k: payload.get(k) for k in ("plan_id", "template_id", "session_id")},
                             start_date=order.start_date, member_id=order.member_id, allow_started=not allow_reconfirmed)

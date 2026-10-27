@@ -328,3 +328,20 @@ async def test_delayed_daily_webhook_uses_approval_time_and_preserves_the_chosen
     sub = await db.get(MembershipSubscription, order.subscription_id)
     assert sub.session_id == session.id and sub.end_at == session.end_at
     assert sub.status == "expired"
+
+
+@pytest.mark.parametrize("mode", ["flexible", "credit_pack"])
+async def test_late_open_access_or_credits_keeps_the_money_and_asks_for_a_new_start(db, mode):
+    sc = await group(db, mode=mode)
+    day = sc.day
+    ctx = ChatbotContext(db, 9, None, None, sales_v2_enabled=True, user_text=f"Quiero iniciar el {day.isoformat()}", message_id=1)
+    await sales.propose(ctx, plan_id=sc.plan.id, start_date=day.isoformat(), full_name="Anonymous flexible buyer")
+    order = await sales.active_order(db, 9)
+    payment = approval(order, day + timedelta(days=3)) | {"transaction_amount": float(order.amount)}
+    await sales.approved_payment(db, "late-flexible-credits", payment)
+    assert order.payment_id is not None and order.status == "paid_awaiting_start"
+    assert await db.scalar(select(func.count()).select_from(MembershipSubscription)) == 0
+    await sales.confirm_start(db, order.id, day + timedelta(days=7), conversation_id=9)
+    sub = await db.get(MembershipSubscription, order.subscription_id)
+    assert local_date(sub.start_at) == day + timedelta(days=7)
+    assert await db.scalar(select(func.count()).select_from(Payment)) == 1
