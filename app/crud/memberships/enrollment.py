@@ -19,7 +19,8 @@ from .utils import _normalize_to_utc, _resolve_payment_amount
 from .day_passes import uses_class_expiry, purchase_day_pass
 from .overlaps import authorize_overlap
 from app.crud.locks import lock_materialization_batch
-from .utils import _calculate_subscription_end
+from .calendar import period
+from app.core.timezones import local_date
 
 
 async def create_member_enrollment(
@@ -240,9 +241,8 @@ async def renew_subscription_with_standing_booking(
     else:
         normalized_start = _normalize_to_utc(start_at)
 
-    approved_by = await authorize_overlap(
-        db, member_id, normalized_start, _calculate_subscription_end(plan, normalized_start), admin_password,
-    )
+    calendar_start, calendar_end = period(plan, local_date(normalized_start))
+    approved_by = await authorize_overlap(db, member_id, calendar_start, calendar_end, admin_password)
 
     # A prepaid renewal must preserve access and bookings until the current term ends.
     logger.info("Expiring elapsed subscriptions for member %s", member_id)

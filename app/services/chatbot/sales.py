@@ -105,7 +105,8 @@ async def facts_for(db, *, plan_id, start_date, template_id=None, session_id=Non
                  included_classes=None, schedule=None, first_class_at=None, available_places=None)
     if is_day_pass(plan):
         session = await db.get(ClassSession, int(session_id)) if session_id else None
-        if not session or session.status != "scheduled" or local_date(session.start_at) != start_date:
+        allowed_statuses = ("scheduled", "completed") if allow_started else ("scheduled",)
+        if not session or session.status not in allowed_statuses or local_date(session.start_at) != start_date:
             raise ValueError("El pase diario requiere una clase disponible de la fecha elegida.")
         from app.crud.reservationsCrud import get_available_seats
         seats = await get_available_seats(db, session.id)
@@ -265,7 +266,8 @@ async def apply_order(db, order, *, allow_reconfirmed=False):
         from app.crud.memberships.day_passes import purchase_day_pass
         purchase = await purchase_day_pass(db, plan_id=payload["plan_id"], session_id=payload["session_id"],
             person_id=member_id, full_name=payload.get("full_name"), phone_number=payload.get("phone_number"),
-            existing_payment=payment, payment_amount=order.amount)
+            existing_payment=payment, payment_amount=order.amount,
+            allow_past_session=bool(order.first_class_at and order.approved_at < order.first_class_at <= now()))
         subscription, person_id, bike = purchase.subscription, purchase.person.id, None
         subscription.start_at, subscription.period_rule_version = stamp(order.facts["start_at"]), 2
     else:

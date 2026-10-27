@@ -305,3 +305,26 @@ async def test_future_membership_is_not_active_in_chat_or_campaign_filters(db):
     assert status == "scheduled"
     active = await db.scalar(select(func.count()).select_from(People).where(People.id == order.member_id, _membership_status_condition(["active"], now)))
     assert active == 0
+
+
+async def test_delayed_daily_webhook_uses_approval_time_and_preserves_the_chosen_class(db, monkeypatch):
+    from tests.special_event_factories import make_session
+    sc, _, ctx = await scenario(db)
+    sc.plan.duration_value = 1
+    day = local_date(datetime.now(timezone.utc)) - timedelta(days=1)
+    session = await make_session(db, sc.templates[0], day)
+    monkeypatch.setattr(sales, "now", lambda: session.start_at - timedelta(days=1))
+    ctx.user_text = f"Quiero empezar el {day.isoformat()}"
+    await sales.propose(ctx, plan_id=sc.plan.id, session_id=session.id, start_date=day.isoformat(), full_name="Delayed webhook buyer")
+    order = await sales.active_order(db, ctx.conversation_id)
+    order.status, session.status = "awaiting_payment", "completed"
+    await db.commit()
+    real_now = datetime.now(timezone.utc)
+    monkeypatch.setattr(sales, "now", lambda: real_now)
+    payment = dict(status="approved", external_reference=order.external_reference, transaction_amount=200,
+                   currency_id="MXN", date_approved=(session.start_at - timedelta(minutes=20)).isoformat())
+    result = await sales.approved_payment(db, "delayed-daily-webhook", payment)
+    assert order.status == "confirmed" and "Pago acreditado" in result["text"]
+    sub = await db.get(MembershipSubscription, order.subscription_id)
+    assert sub.session_id == session.id and sub.end_at == session.end_at
+    assert sub.status == "expired"
