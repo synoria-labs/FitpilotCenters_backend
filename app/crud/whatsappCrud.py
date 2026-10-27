@@ -310,6 +310,7 @@ def _active_membership_rank_sq():
                     (
                         and_(
                             MembershipSubscription.status == "active",
+                            MembershipSubscription.start_at <= now,
                             MembershipSubscription.end_at.isnot(None),
                             MembershipSubscription.end_at > now,
                         ),
@@ -337,6 +338,7 @@ def _reference_membership_ordering(now: datetime):
         (
             and_(
                 MembershipSubscription.status == "active",
+                MembershipSubscription.start_at <= now,
                 MembershipSubscription.end_at.isnot(None),
                 MembershipSubscription.end_at > now,
             ),
@@ -353,7 +355,8 @@ def _reference_membership_ordering(now: datetime):
 
 def _reference_membership_status_sq(now: datetime):
     return (
-        select(MembershipSubscription.status)
+        select(case((and_(MembershipSubscription.status == "active", MembershipSubscription.period_rule_version >= 2,
+                          MembershipSubscription.start_at > now), "scheduled"), else_=MembershipSubscription.status))
         .where(MembershipSubscription.person_id == People.id)
         .order_by(*_reference_membership_ordering(now))
         .limit(1)

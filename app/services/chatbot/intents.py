@@ -24,7 +24,11 @@ def payment_question(text):
 
 def in_person_choice(text):
     value = plain(text)
-    return bool(re.search(r"\b(?:prefiero|quiero|voy a|pagare|mejor|elijo)\b.{0,45}\b(?:recepcion|efectivo|presencial|pagar ahi|pagar alli|pagar al llegar)\b", value))
+    return bool(re.search(r"\b(?:prefiero|quiero|voy a|pagare|mejor|elijo)\b.{0,45}\b(?:recepcion|efectivo|presencial|pagar ahi|pagar alli|pagar al llegar|pagar cuando vaya)\b", value))
+
+
+def payment_status_question(text):
+    return bool(re.search(r"\b(?:comprobante|ya pague|ya quedo pagado|se acredito|esta pagado|estado (?:de mi|del) pago|recibieron (?:mi|el) pago)\b", plain(text)))
 
 
 def reservation_question(text):
@@ -34,7 +38,16 @@ def reservation_question(text):
 
 
 def fallback(text):
-    return acknowledgment(text) or "No pude completar tu consulta con seguridad. ¿Puedes indicarme qué necesitas revisar?"
+    if simple := acknowledgment(text):
+        return simple
+    value = plain(text)
+    if payment_question(text) or re.search(r"\b(?:pago|pagar|enlace|link|comprobante)\b", value):
+        return "No pude verificar el estado de tu compra en este momento. No realices otro pago; nuestro equipo puede ayudarte a revisarlo."
+    if re.search(r"\b(?:inicio|iniciar|empezar|fecha|vigencia)\b", value):
+        return "Necesito revisar la fecha de inicio con seguridad. ¿Qué día completo prefieres para comenzar?"
+    if reservation_question(text):
+        return "No pude verificar tu clase en este momento. Nuestro equipo puede revisar el horario y la disponibilidad contigo."
+    return "No pude completar tu consulta con seguridad. ¿Puedes indicarme qué necesitas revisar?"
 
 
 def payment_options(offer_in_person):

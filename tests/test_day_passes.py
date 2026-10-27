@@ -201,5 +201,6 @@ async def test_new_packages_use_calendar_dates_without_an_extra_day(db, unit, va
     sub = await create_membership_subscription(db, sc.person.id, sc.plan.id, start_at=start, commit=False)
     assert sub.session_id is None
     from app.crud.memberships.calendar import period
+    from app.core.timezones import to_local
     assert (sub.start_at, sub.end_at) == period(sc.plan, to_local(start).date())
     assert sub.period_rule_version == 2

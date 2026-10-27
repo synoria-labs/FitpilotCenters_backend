@@ -23,14 +23,17 @@ class MembershipPurchaseOrderType:
     approved_at: Optional[datetime]
     review_reason: Optional[str]
     action_type: str
+    external_reference: str
+    provider_payment_id: Optional[str]
 
     @classmethod
-    def from_model(cls, order):
+    def from_model(cls, order, names=None, payments=None):
         return cls(id=order.id, conversation_id=order.conversation_id, status=order.status,
-            participant_name=order.payload.get("full_name") or "Socio registrado", plan_name=order.facts["plan_name"],
+            participant_name=order.payload.get("full_name") or (names or {}).get(order.member_id, "Socio registrado"), plan_name=order.facts["plan_name"],
             amount=float(order.amount), start_date=order.start_date, payment_id=order.payment_id,
             subscription_id=order.subscription_id, approved_at=order.approved_at, review_reason=order.review_reason,
-            action_type=order.action_type)
+            action_type=order.action_type, external_reference=order.external_reference,
+            provider_payment_id=(payments or {}).get(order.payment_id) or order.facts.get("payment_review", {}).get("id"))
 
 
 @strawberry.type
@@ -76,7 +79,12 @@ class MembershipSalesQuery:
             return []
         orders = (await info.context.db.scalars(select(Order).where(
             Order.status.in_(("paid", "paid_awaiting_start", "needs_review"))).order_by(Order.id.desc()).limit(max(1, min(limit, 200))))).all()
-        return [MembershipPurchaseOrderType.from_model(order) for order in orders]
+        from app.models import People, Payment
+        ids = [o.member_id for o in orders if o.member_id]
+        names = dict((await info.context.db.execute(select(People.id, People.full_name).where(People.id.in_(ids)))).all()) if ids else {}
+        payment_ids = [o.payment_id for o in orders if o.payment_id]
+        payments = dict((await info.context.db.execute(select(Payment.id, Payment.provider_payment_id).where(Payment.id.in_(payment_ids)))).all()) if payment_ids else {}
+        return [MembershipPurchaseOrderType.from_model(order, names, payments) for order in orders]
 
 
 @strawberry.type
@@ -88,7 +96,8 @@ class MembershipSalesMutation:
             return ConfirmPurchaseStartResult(success=False, error=error)
         from app.services.chatbot.sales import confirm_start
         try:
-            message = await confirm_start(info.context.db, order_id, start_date, session_id=session_id)
+            message = await confirm_start(info.context.db, order_id, start_date, session_id=session_id,
+                                          actor_id=info.context.user.id)
             return ConfirmPurchaseStartResult(success=True, message=message)
         except ValueError as exc:
             await info.context.db.rollback()

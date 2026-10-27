@@ -85,6 +85,7 @@ def _membership_status_condition(values: List[str], now: datetime):
     clauses = []
     has_active = _sub_exists(
         MembershipSubscription.status == "active",
+        MembershipSubscription.start_at <= now,
         MembershipSubscription.end_at > now,
     )
     for raw in values:
@@ -102,6 +103,8 @@ def _membership_status_condition(values: List[str], now: datetime):
             clauses.append(and_(~has_active, had_membership))
         elif value == "pending":
             clauses.append(_sub_exists(MembershipSubscription.status == "pending"))
+        elif value == "scheduled":
+            clauses.append(_sub_exists(MembershipSubscription.status == "active", MembershipSubscription.start_at > now))
         elif value == "canceled":
             clauses.append(_sub_exists(MembershipSubscription.status == "canceled"))
         else:

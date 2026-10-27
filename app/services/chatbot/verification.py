@@ -27,6 +27,16 @@ _CONFIRMATION = re.compile(
 def requested_day(text, now=None):
     now = to_local(now or datetime.now(timezone.utc))
     plain = "".join(c for c in unicodedata.normalize("NFKD", text.lower()) if not unicodedata.combining(c))
+    # Prefer the customer's explicit start clause over a different day they cannot attend.
+    start_clause = re.search(r"\b(?:a partir\s+(?:de[l]?\s+)?|(?:iniciar|inicio|empezar|empiezo|comenzar)\s+(?:el\s+)?)([^\n.!?;]+)", plain)
+    if start_clause:
+        chosen = requested_day(start_clause[1], now)
+        if chosen is not None:
+            return chosen
+    plain = re.sub(r"\b(?:hoy|manana)\s+(?:no puedo|se me complica|no podre)[^\n.!?;]*", "", plain)
+    weekdays = list(re.finditer(r"\b(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b", plain))
+    if len({m[0] for m in weekdays}) > 1:
+        return None
     if "pasado manana" in plain:
         return now.date() + timedelta(days=2)
     if re.search(r"(?<!por la )(?<!en la )\bmanana\b", plain):
@@ -105,6 +115,9 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
     reply service sends it as a «Pagar ahora» button."""
     from app.services.chatbot.tools import PaymentLink
 
+    if ctx.sales_v2_enabled and ctx.order_id and order_id == ctx.order_id and event_id is None and not (ctx.event_discovery and ctx.event_discovery.interested):
+        membership_order_id, order_id = order_id, None
+
     ctx.validated_reply = None
     ctx.payment_link = None
     ctx.verification_result = "rejected"
@@ -113,19 +126,26 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
                              event_id=event_id)
     ctx.reply_request["membership_order_id"] = membership_order_id
     supplied_day = date.fromisoformat(requested_date) if requested_date else None
-    from .intents import acknowledgment, payment_question, reservation_question
+    from .intents import acknowledgment, payment_question, payment_status_question, reservation_question
     simple = acknowledgment(ctx.user_text)
     if simple or kind == "acknowledgment":
         if not simple:
             return "El cliente tiene una consulta concreta. Responde esa consulta antes de cerrar."
         ctx.validated_reply, ctx.verification_result = simple, "accepted"
         return "Respuesta breve validada."
-    if payment_question(ctx.user_text) or kind == "payment_options":
+    event_turn = bool(order_id is not None or (ctx.event_discovery and ctx.event_discovery.interested))
+    if ctx.sales_v2_enabled and payment_status_question(ctx.user_text) and not event_turn:
+        from .sales import payment_status_answer
+        ctx.validated_reply = await payment_status_answer(ctx)
+        ctx.verification_result = "accepted"
+        return "Estado de pago verificado; la imagen no acredita dinero."
+    if (payment_question(ctx.user_text) or kind == "payment_options") and not event_turn:
         from .sales import payment_answer
         ctx.validated_reply = await payment_answer(ctx)
         ctx.verification_result = "accepted"
         return "Métodos de pago verificados."
-    if kind == "reservation_confirmation" and not reservation_question(ctx.user_text):
+    slot_answer = bool(requested_day(ctx.user_text) and requested_hours(ctx.user_text) and len(ctx.user_text) <= 45)
+    if kind == "reservation_confirmation" and not reservation_question(ctx.user_text) and not slot_answer:
         return "El cliente no consultó una reserva. Responde su pregunta o pide aclaración sin confirmar asistencia."
     if kind == "information" and re.search(r"\b(?:quiero\s+(?:pagar|comprar|reservar|apartar)|mi reserva)\b", ctx.user_text, re.I):
         return "La solicitud es de compra/reserva. Verifica sus datos o pide aclaración."
@@ -142,7 +162,9 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
                 else:
                     ctx.validated_reply = "Tu pago y registro ya están confirmados.\n" + summary(order.facts)
             elif order.payment_id:
-                ctx.validated_reply = "Recibimos tu pago. ¿Qué nueva fecha disponible prefieres para comenzar? No necesitas pagar de nuevo."
+                ctx.validated_reply = ("Recibimos tu pago. ¿Qué nueva fecha disponible prefieres para comenzar? No necesitas pagar de nuevo."
+                                       if order.status == "paid_awaiting_start" else
+                                       "Recibimos tu pago y nuestro equipo debe revisar su aplicación. No necesitas pagar nuevamente.")
             elif order.status == "draft":
                 ctx.validated_reply = summary(order.facts) + "\n¿Confirmas estos datos para preparar tu enlace de pago?"
             elif order.status == "awaiting_payment" and order.mp_init_point:

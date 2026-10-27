@@ -489,6 +489,7 @@ async def _active_subscriptions_expiring_within(
         .where(
             and_(
                 MembershipSubscription.status == "active",
+                MembershipSubscription.start_at <= now,
                 MembershipSubscription.end_at.between(now, future),
             )
         )

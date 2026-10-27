@@ -36,6 +36,7 @@ class ChatbotTurnAudit(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     conversation_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    related_message_ids: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     requested_model: Mapped[str] = mapped_column(String(80), nullable=False)
     effective_model: Mapped[Optional[str]] = mapped_column(String(100))
     rules_version: Mapped[int] = mapped_column(Integer, default=2, nullable=False)

@@ -238,6 +238,8 @@ def _build_member_note(member) -> Optional[str]:
             "respuesta. Esto NO acredita una reserva para la fecha solicitada: verifica la sesión "
             "con las herramientas. Un pase diario anterior no cubre una nueva clase."
         )
+    if status == "scheduled":
+        return f"Socio identificado: {name}. Su membresía ya está pagada y está POR INICIAR. Consulta su fecha elegida; no propongas cobrar otra."
     if status == "expired":
         detail = f"VENCIDA hace {abs(days)} días" if days is not None else "VENCIDA"
         if end_at is not None:
@@ -554,7 +556,10 @@ async def _run_agent_reply(
                 from .sales import active_order, summary
                 order = await active_order(db, conversation_id)
                 if order:
+                    ctx.order_id = order.id
                     pending_note = (pending_note or "") + f"\nOrden comercial #{order.id}: {order.status}.\n" + summary(order.facts)
+                    if order.payload.get("full_name"):
+                        pending_note += "\nNombre ya confirmado para esta orden: " + order.payload["full_name"] + ". No lo pidas nuevamente."
             tools = build_tools(ctx)
             if message_type == "image" and text == image_context.IMAGE_PLACEHOLDER:
                 tools = image_context.read_only_tools(tools)
@@ -565,6 +570,7 @@ async def _run_agent_reply(
                 if shortcut:
                     ctx.validated_reply, ctx.verification_result = shortcut, "acknowledgment"
                 elif config.sales_v2_enabled and payment_question(text) and not visual_turn and not discovery.interested:
+                    shortcut = "payment_options"
                     await finalize_reply(ctx, kind="payment_options")
                 else:
                     reply = await run_agent(
@@ -575,13 +581,12 @@ async def _run_agent_reply(
                     telemetry=ctx.telemetry,
                     )
             except Exception as exc:  # noqa: BLE001 - provide a truthful response for unreadable images
-                if not visual_turn and not discovery.interested:
-                    raise
                 logger.info("chatbot_model message=%s result=failed reason=%s event_context=%s", message_id, type(exc).__name__, discovery.interested)
                 await db.rollback()
                 ctx.reply_request = None
                 ctx.payment_link = None
                 ctx.validated_reply = image_context.IMAGE_FAILURE_REPLY if visual_turn else None
+                ctx.verification_result = "model_error:" + type(exc).__name__
             # Never send unverified model output, even when it omitted the final tool.
             fallback = safe_fallback(text)
             if visual_turn:
@@ -618,7 +623,12 @@ async def _run_agent_reply(
             from app.models import Message
             latest = await db.scalar(select(func.max(Message.id)).where(Message.conversation_id == conversation_id, Message.direction == "inbound"))
             superseded = latest is not None and latest > message_id
+            related_ids = list((await db.scalars(select(Message.id).where(
+                Message.conversation_id == conversation_id, Message.id <= message_id,
+            ).order_by(Message.id.desc()).limit(30))).all())
             db.add(ChatbotTurnAudit(conversation_id=conversation_id, message_id=message_id,
+                related_message_ids=list(reversed(related_ids)),
+                rules_version=2 if config.sales_v2_enabled else 1,
                 requested_model=config.model, effective_model=ctx.telemetry.get("effective_model") or ("server" if shortcut else None),
                 tools=list(ctx.tools_used), validation="superseded" if superseded else ctx.verification_result,
                 reply_kind=(ctx.reply_request or {}).get("kind"), order_id=ctx.order_id,

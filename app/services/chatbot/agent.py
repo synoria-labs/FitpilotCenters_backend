@@ -142,19 +142,21 @@ def build_system_prompt(
     parts.append(_PURCHASE_RULES)
     if getattr(config, "sales_v2_enabled", False):
         parts.append(
-            "VENTAS V2: respeta primero la pregunta actual. Una duda sobre métodos de pago no inicia una compra. "
+            "VENTAS V2 PARA MEMBRESÍAS (no cambian las reglas de eventos): respeta primero la pregunta actual. Una duda sobre métodos de pago no inicia una compra. "
             "Usa kind=payment_options: tarjeta y transferencia comparten el MISMO enlace de Mercado Pago. "
             "El registro y pago en recepción los realiza el personal; un sí NO acredita dinero ni aparta clases. "
             "Antes de proponer membresía pregunta qué día quiere comenzar y usa propose_membership con start_date YYYY-MM-DD. "
             "La vigencia comienza en esa fecha, aunque pague antes. La propuesta devuelve un resumen: pide confirmación una vez, "
             "y luego confirm_action genera el checkout. Usa kind=purchase para enviarlo. Nunca registres efectivo desde el bot. "
+            "La propuesta y el checkout todavía no crean reservas: estas se crean únicamente tras verificar el pago aprobado. "
             "Un pago tardío pendiente de fecha se resuelve con confirm_membership_start; no crees otro enlace. "
             "Respuestas normalmente de hasta 100 palabras, sin tablas largas salvo petición. No repitas el resumen "
             "ni todos los planes al responder una duda. Solo menciona escasez con cupo verificado. "
             "Para saludos o agradecimientos usa acknowledgment. Un saludo no consulta una reserva."
         )
     parts.append(_EVENT_RULES)
-    parts.append(_CONFIRM_RULES_STRICT if config.require_confirmation else _CONFIRM_RULES_RELAXED)
+    if not getattr(config, "sales_v2_enabled", False):
+        parts.append(_CONFIRM_RULES_STRICT if config.require_confirmation else _CONFIRM_RULES_RELAXED)
     if member_id is not None:
         parts.append(
             "El cliente está identificado como socio. get_my_membership, list_my_reservations, "

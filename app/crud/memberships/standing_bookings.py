@@ -81,6 +81,9 @@ async def _create_standing_bookings_for_group(
 
     membership_start = local_date(subscription.start_at)
     membership_end = local_date(subscription.end_at)
+    if getattr(subscription, "period_rule_version", 1) >= 2:
+        from .calendar import last_day
+        membership_end = last_day(subscription.end_at)
 
     # Resolve the seat across the WHOLE group/window so an occupied bike is swapped for a free
     # one (instead of every per-template create raising "Seat already reserved" -> refund).
@@ -379,6 +382,9 @@ async def _handle_fixed_timeslot_effects(
     window_start = min(local_date(subscription.start_at), earliest_template_start)
 
     subscription_end = local_date(subscription.end_at)
+    if getattr(subscription, "period_rule_version", 1) >= 2:
+        from .calendar import last_day
+        subscription_end = last_day(subscription.end_at)
     window_end = _calculate_window_end_for_plan(
         plan=plan,
         window_start=window_start,

@@ -30,6 +30,7 @@ def upgrade():
     op.create_table("chatbot_turn_audit",
         sa.Column("id", sa.BigInteger(), primary_key=True), sa.Column("conversation_id", sa.BigInteger(), nullable=False),
         sa.Column("message_id", sa.BigInteger(), nullable=False), sa.Column("requested_model", sa.String(80), nullable=False),
+        sa.Column("related_message_ids", sa.JSON(), nullable=False),
         sa.Column("effective_model", sa.String(100)), sa.Column("rules_version", sa.Integer(), nullable=False),
         sa.Column("tools", sa.JSON(), nullable=False), sa.Column("validation", sa.String(80), nullable=False),
         sa.Column("reply_kind", sa.String(40)), sa.Column("order_id", sa.BigInteger()),

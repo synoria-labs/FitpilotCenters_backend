@@ -154,11 +154,24 @@ async def _process_approved_payment(payment_id: str, payment: Optional[dict] = N
             # Capture before any rollback (rolled-back ORM attributes lazy-load -> MissingGreenlet).
             pending_id = pending.id
             conversation_id = pending.conversation_id
+            from app.crud.chatbotConfigCrud import get_config
+            config = await get_config(db)
+            if config and config.sales_v2_enabled and pending.action_type == "buy_package":
+                from app.services.chatbot.sales import adopt_legacy_payment
+                # Exit the claim transaction before the durable order owns its commits.
+                adopt = True
+            else:
+                adopt = False
             pending.status = PENDING_STATUS_PROCESSING
             pending.updated_at = _utcnow()
         # Claim committed -> lock released. We now own this purchase exclusively.
 
         pending = await db.get(ChatbotPendingAction, pending_id)
+        if adopt:
+            applied = await adopt_legacy_payment(db, pending, str(payment_id), payment)
+            if applied and applied["text"]:
+                await _notify(db, conversation_id, applied["text"])
+            return
         try:
             result = await _execute_pending(
                 db,

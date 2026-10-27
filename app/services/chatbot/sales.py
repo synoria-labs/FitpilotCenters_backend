@@ -7,15 +7,15 @@ import uuid
 from sqlalchemy import func, select, text as sql_text
 
 from app.core.timezones import local_date, local_datetime, to_local
-from app.crud.locks import _lock_key, lock_class_session
+from app.crud.locks import _lock_key, lock_materialization_batch
 from app.crud.memberships.calendar import period, last_day
 from app.crud.memberships.coverage import occurrences, schedule_label
 from app.crud.memberships.day_passes import is_day_pass
-from app.models import ClassSession, MembershipPlan, MembershipSubscription, Payment, Reservation, Seat, StandingBooking
+from app.models import ClassSession, MembershipPlan, MembershipSubscription, Payment, Reservation, Seat, StandingBooking, Venue
 from app.models.chatbotSalesModel import MembershipPurchaseOrder as Order
 from app.services import mercadopago_service as mp
 
-OPEN_STATES = ("draft", "awaiting_payment", "paid_awaiting_start", "needs_review")
+OPEN_STATES = ("draft", "awaiting_payment", "paid", "paid_awaiting_start", "needs_review")
 
 
 def now():
@@ -68,6 +68,30 @@ async def payment_answer(ctx):
     return answer
 
 
+async def payment_status_answer(ctx):
+    order = await ctx.db.scalar(select(Order).where(Order.conversation_id == ctx.conversation_id).order_by(Order.id.desc()).limit(1))
+    if order is None:
+        return "No encuentro una compra preparada en este chat. Un comprobante por sí solo no acredita el pago. Si pagaste en recepción, nuestro equipo debe verificarlo."
+    ctx.order_id = order.id
+    if order.payment_id:
+        proof = await ctx.db.get(Payment, order.payment_id)
+        if proof.status == "COMPLETED":
+            if order.status == "confirmed":
+                return "Tu pago ya está acreditado y tu registro está listo."
+            return "Tu pago ya está recibido. Falta confirmar o revisar el inicio con nuestro equipo; no necesitas pagar nuevamente."
+        return "El pago registrado requiere revisión del equipo. No realices otro pago."
+    statuses = await mp.search_payments(order.external_reference) if order.mp_init_point else []
+    ctx.checked_payment_reference = order.external_reference
+    found = {p.get("status") for p in statuses}
+    if "approved" in found:
+        ctx.provider_payment_status = "approved"
+        return "Mercado Pago indica que el pago está aprobado. Estamos verificando su aplicación al registro; no necesitas pagar nuevamente."
+    if found & {"pending", "in_process", "authorized", "in_mediation"}:
+        ctx.provider_payment_status = "pending"
+        return "Tu pago sigue pendiente de acreditación en Mercado Pago. Te avisaremos por aquí cuando se acredite. El comprobante no confirma la reserva; no realices otro pago."
+    return "Todavía no aparece un pago aprobado para esta compra. Un comprobante no confirma la reserva. Podemos revisar el estado contigo antes de que intentes pagar otra vez."
+
+
 async def facts_for(db, *, plan_id, start_date, template_id=None, session_id=None, member_id=None,
                     at=None, allow_started=False):
     at = at or now()
@@ -110,18 +134,23 @@ async def facts_for(db, *, plan_id, start_date, template_id=None, session_id=Non
             ClassSession.template_id.in_([t.id for t in templates]), ClassSession.start_at >= start,
             ClassSession.start_at < end, Reservation.status.in_(("reserved", "checked_in")),
             Reservation.person_id != (member_id or -1)))).all())
-        recurring = (await db.scalars(select(StandingBooking).where(
+        recurring = (await db.scalars(select(StandingBooking).join(MembershipSubscription,
+            MembershipSubscription.id == StandingBooking.subscription_id).where(
             StandingBooking.template_id.in_([t.id for t in templates]), StandingBooking.status == "active",
             StandingBooking.start_date <= last_day(end), StandingBooking.end_date >= start_date,
+            MembershipSubscription.status == "active", MembershipSubscription.start_at < end, MembershipSubscription.end_at > start,
             StandingBooking.person_id != (member_id or -1)))).all()
         occupied.update(sb.seat_id for sb in recurring)
+        venue = await db.get(Venue, templates[0].venue_id)
+        capacities = [t.default_capacity if t.default_capacity is not None else venue.capacity for t in templates]
+        counts = [await db.scalar(select(func.count()).select_from(Reservation).where(
+            Reservation.session_id == s.id, Reservation.status.in_(("reserved", "checked_in")))) for s in sessions if s.status == "scheduled"]
+        scheduled = [s for s in sessions if s.status == "scheduled"]
+        remaining = min(capacities + [s.capacity - count for s, count in zip(scheduled, counts)])
         if seats:
-            available = sum(s.id not in occupied for s in seats)
+            available = min(sum(s.id not in occupied for s in seats), remaining)
         else:
-            counts = [sum(r.session_id == s.id for r in (await db.scalars(select(Reservation).where(
-                Reservation.session_id == s.id, Reservation.status.in_(("reserved", "checked_in"))))).all()) for s in sessions]
-            available = min([t.capacity for t in templates] + [s.capacity - count for s, count in zip(sessions, counts)])
-            available = min(available, min(t.capacity for t in templates) - len({sb.person_id for sb in recurring}))
+            available = min(remaining, min(capacities) - len({sb.person_id for sb in recurring}))
         facts.update(schedule=schedule_label(templates), included_classes=len(dates),
                      first_class_at=first.isoformat(), available_places=max(0, available))
     elif plan.plan_type == "credit_pack":
@@ -157,7 +186,8 @@ async def propose(ctx, *, plan_id, start_date=None, template_id=None, session_id
                    full_name=full_name, phone_number=ctx.wa_id)
     if existing:
         if existing.payment_id:
-            return "Ya recibimos un pago. Usa confirm_membership_start para resolver la fecha sin cobrar de nuevo."
+            return ("Ya recibimos un pago. Usa confirm_membership_start para resolver la fecha sin cobrar de nuevo."
+                    if existing.status == "paid_awaiting_start" else "El pago requiere revisión del equipo. No prepares otro cobro.")
         if existing.start_date == day and all(existing.payload.get(k) == v for k, v in payload.items() if v is not None):
             return summary(existing.facts) + ("\nYa existe un enlace vigente; no generes otro." if existing.mp_init_point else "\n¿Confirmas estos datos?")
         return "Ya hay una propuesta o compra en curso. Aclara el cambio y cancela la anterior antes de preparar otra."
@@ -167,9 +197,11 @@ async def propose(ctx, *, plan_id, start_date=None, template_id=None, session_id
                   action_type="buy_day_pass" if session_id else "buy_package", payload=payload,
                   facts=facts, start_date=day, first_class_at=stamp(facts["first_class_at"]) if facts["first_class_at"] else None,
                   amount=Decimal(facts["amount"]), status="draft", external_reference=f"membership-{uuid.uuid4().hex}")
+    order.confirmation_message_id = ctx.message_id
     ctx.db.add(order)
     await ctx.db.commit()
     ctx.order_id = order.id
+    ctx.reply_request = dict(kind="membership_information", membership_order_id=order.id)
     return summary(facts) + "\n¿Confirmas la fecha y el horario para preparar tu enlace de pago?"
 
 
@@ -182,6 +214,8 @@ async def checkout(ctx):
     if order.mp_init_point:
         ctx.order_id = order.id
         return "Ya existe un enlace para esa compra. Reutilízalo con kind=purchase."
+    if ctx.message_id is None or (order.confirmation_message_id is not None and ctx.message_id <= order.confirmation_message_id):
+        return "Espera una nueva confirmación del cliente después de mostrar el resumen."
     from app.services.chatbot.intents import plain
     if plain(ctx.user_text) not in {"si", "si claro", "si por favor", "confirmo", "confirmado", "perfecto", "adelante", "dale", "ok", "de acuerdo"}:
         return "Necesito la confirmación del cliente sobre el resumen antes de generar el enlace."
@@ -192,13 +226,18 @@ async def checkout(ctx):
     fresh = await facts_for(ctx.db, **{k: order.payload.get(k) for k in ("plan_id", "template_id", "session_id")},
                             start_date=order.start_date, member_id=order.member_id)
     if any(fresh[k] != order.facts[k] for k in ("amount", "start_at", "end_at", "schedule", "included_classes")):
-        return "La disponibilidad o las condiciones cambiaron. Revisa y confirma un nuevo resumen."
+        order.facts, order.confirmation_message_id = fresh, ctx.message_id
+        order.amount = Decimal(fresh["amount"])
+        order.first_class_at = stamp(fresh["first_class_at"]) if fresh["first_class_at"] else None
+        await ctx.db.commit()
+        return "Las condiciones cambiaron. Muestra el nuevo resumen y espera otra confirmación del cliente."
     result = await mp.create_preference(amount=order.amount, description=order.facts["plan_name"],
         external_reference=order.external_reference, payer_name=order.payload.get("full_name"), idempotency_key=order.external_reference)
     order.mp_preference_id, order.mp_init_point = result["preference_id"], result["init_point"]
     order.status, order.confirmation_message_id, order.updated_at = "awaiting_payment", ctx.message_id, now()
     await ctx.db.commit()
     ctx.order_id = order.id
+    ctx.reply_request = dict(kind="purchase", membership_order_id=order.id)
     return "Enlace listo. Usa respond_to_customer(kind=purchase) para enviarlo. El cupo se confirma al acreditar el pago."
 
 
@@ -228,7 +267,11 @@ async def apply_order(db, order, *, allow_reconfirmed=False):
             person_id=member_id, full_name=payload.get("full_name"), phone_number=payload.get("phone_number"),
             existing_payment=payment, payment_amount=order.amount)
         subscription, person_id, bike = purchase.subscription, purchase.person.id, None
+        subscription.start_at, subscription.period_rule_version = stamp(order.facts["start_at"]), 2
     else:
+        if order.facts.get("fixed_time_slot"):
+            # Batch first: never hold one session lock while waiting for materialization.
+            await lock_materialization_batch(db)
         if member_id is None:
             person = await membersCrud.create_member(db, full_name=payload["full_name"], phone_number=payload.get("phone_number"), commit=False)
             member_id = person.id
@@ -243,10 +286,6 @@ async def apply_order(db, order, *, allow_reconfirmed=False):
         subscription.plan = plan
         bike = None
         if plan.fixed_time_slot:
-            sessions = (await db.scalars(select(ClassSession).where(ClassSession.template_id == payload["template_id"],
-                ClassSession.start_at >= subscription.start_at, ClassSession.start_at < subscription.end_at).order_by(ClassSession.id))).all()
-            for session in sessions:
-                await lock_class_session(db, session.id)
             from app.crud.memberships.standing_bookings import _handle_fixed_timeslot_effects, _assert_materialization_success
             _, stats = await _handle_fixed_timeslot_effects(db, subscription, plan, payload["template_id"], commit_sessions=False)
             _assert_materialization_success(stats)
@@ -325,7 +364,7 @@ async def finish_paid_order(db, order_id):
     return {"conversation_id": order.conversation_id, "text": reply}
 
 
-async def confirm_start(db, order_id, start_date, *, conversation_id=None, session_id=None):
+async def confirm_start(db, order_id, start_date, *, conversation_id=None, session_id=None, actor_id=None, message_id=None):
     order = await db.scalar(select(Order).where(Order.id == order_id).with_for_update())
     if not order or (conversation_id is not None and order.conversation_id != conversation_id):
         raise ValueError("No encontré esa compra en esta conversación.")
@@ -336,6 +375,12 @@ async def confirm_start(db, order_id, start_date, *, conversation_id=None, sessi
         payload["session_id"] = session_id
     facts = await facts_for(db, plan_id=payload["plan_id"], template_id=payload.get("template_id"),
                             session_id=payload.get("session_id"), start_date=start_date, member_id=order.member_id)
+    contract = ("plan_type", "fixed_time_slot", "duration_unit", "duration_value")
+    if any(facts.get(k) != order.facts.get(k) for k in contract):
+        raise ValueError("El plan cambió desde la compra; el equipo debe revisar sus condiciones antes de aplicar el pago.")
+    facts["amount"] = str(order.amount)
+    facts["start_history"] = list(order.facts.get("start_history", [])) + [dict(previous_start=order.start_date.isoformat(),
+        confirmed_start=start_date.isoformat(), confirmed_at=now().isoformat(), staff_person_id=actor_id, message_id=message_id)]
     async with db.begin_nested():
         order.payload, order.facts, order.start_date = payload, facts, start_date
         order.first_class_at = stamp(facts["first_class_at"]) if facts["first_class_at"] else None
@@ -355,3 +400,53 @@ async def cancel_unpaid(db, order):
     order.status, order.updated_at = "canceled", now()
     await db.commit()
     return "La compra en línea quedó cancelada. Puedes hacer tu registro y pago en recepción con nuestro equipo."
+
+
+async def adopt_legacy_payment(db, pending, payment_id, payment):
+    """Old checkout URLs remain identifiable, but missing start dates are never invented."""
+    payload = dict(pending.payload or {})
+    plan = await db.get(MembershipPlan, payload.get("plan_id"))
+    if not plan:
+        return None
+    raw = payment.get("date_approved")
+    at = datetime.fromisoformat(raw.replace("Z", "+00:00")) if raw else now()
+    start, end = period(plan, local_date(at))
+    facts = dict(plan_id=plan.id, plan_name=plan.name, amount=str(plan.price), start_at=start.isoformat(),
+                 end_at=end.isoformat(), plan_type=plan.plan_type, fixed_time_slot=plan.fixed_time_slot,
+                 duration_unit=plan.duration_unit, duration_value=plan.duration_value,
+                 included_classes=None, schedule=None, first_class_at=None, available_places=None)
+    await db.execute(sql_text("SELECT pg_advisory_xact_lock(:key)"), {"key": _lock_key("sales_payment", str(payment_id))})
+    existing = await db.scalar(select(Order).where(Order.external_reference == pending.external_reference))
+    if existing:
+        return await approved_payment(db, payment_id, payment)
+    order = Order(conversation_id=pending.conversation_id, member_id=pending.member_id,
+        action_type=pending.action_type, payload=payload, facts=facts, start_date=local_date(at),
+        first_class_at=at, amount=Decimal(payload.get("amount") or str(plan.price)), status="awaiting_payment",
+        external_reference=pending.external_reference, mp_preference_id=pending.mp_preference_id, mp_init_point=pending.mp_init_point)
+    db.add(order)
+    await db.commit()
+    result = await approved_payment(db, payment_id, payment)
+    pending.status, pending.updated_at = "confirmed", now()
+    await db.commit()
+    return result
+
+
+async def reconcile_orders(limit=50):
+    from app.core.mercadopago_config import mercadopago_config
+    if not mercadopago_config.is_configured():
+        return
+    from app.db.postgresql import async_session_factory
+    from app.webhooks.mercadopago_webhook import _process_approved_payment
+    async with async_session_factory() as db:
+        orders = (await db.scalars(select(Order).where(Order.status.in_(("awaiting_payment", "paid")))
+                   .order_by(Order.updated_at).limit(limit))).all()
+        references = [o.external_reference for o in orders]
+        for order in orders:
+            order.updated_at = now()
+        await db.commit()
+    for reference in references:
+        found = await mp.search_payments(reference)
+        for item in found:
+            if item.get("status") == "approved" and item.get("id"):
+                payment = await mp.get_payment(item["id"])
+                await _process_approved_payment(str(item["id"]), payment)

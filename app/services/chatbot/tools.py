@@ -24,6 +24,7 @@ from app.models import ClassSession
 from decimal import Decimal, InvalidOperation
 from typing import List, Optional
 
+import re
 from langchain_core.tools import StructuredTool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -293,6 +294,8 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         m = member.active_membership
         if m is None:
             return f"{member.full_name}: no tienes una membresía activa en este momento."
+        if m.status == "scheduled":
+            return f"{member.full_name}: {m.plan_name}, pagada y por iniciar el {_fmt_dt(m.start_date)}. No necesitas pagar nuevamente."
         return (
             f"{member.full_name}: plan {m.plan_name or '?'}, estado {m.status}, "
             f"vence {_fmt_dt(m.end_date)} ({m.remaining_days if m.remaining_days is not None else '?'} días restantes)."
@@ -345,15 +348,28 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         from app.services.chatbot.purchase_status import purchase_status
         return await purchase_status(ctx)
 
-    async def get_membership_coverage(plan_id: int, template_id: Optional[int] = None) -> str:
+    async def get_membership_coverage(plan_id: int, template_id: Optional[int] = None, start_date: Optional[str] = None) -> str:
         """Cobertura real del paquete: días completos, clases del periodo e inicio de vigencia."""
         try:
+            if ctx.sales_v2_enabled:
+                from .sales import active_order, summary, facts_for
+                order = await active_order(db, ctx.conversation_id)
+                if order and order.payload.get("plan_id") == plan_id:
+                    return summary(order.facts)
+                if start_date:
+                    return summary(await facts_for(db, plan_id=plan_id, template_id=template_id,
+                                   start_date=date.fromisoformat(start_date), member_id=ctx.member_id))
+                return "La vigencia comienza en la fecha elegida por el cliente. Confirma ese día y el horario para calcular las clases incluidas."
             return await package_facts(db, plan_id=plan_id, template_id=template_id, member_id=ctx.member_id)
         except ValueError as exc:
             return str(exc)
 
     async def reserve_with_membership(session_id: int) -> str:
         """Reserva una clase regular cubierta por la membresía vigente; respeta horario, créditos y cupo."""
+        if ctx.sales_v2_enabled:
+            from .intents import plain
+            if not re.search(r"\b(?:quiero reservar|quiero apartar|reserva para mi|reservame|apartame|me reservas|me apartas|puedes reservar|puedes apartar)\b", plain(ctx.user_text)):
+                return "Confirma que el cliente quiere crear esa reserva antes de registrarla. Una consulta sobre su horario no autoriza reservar."
         if ctx.member_id is None:
             return _NEEDS_MEMBER
         try:
@@ -756,10 +772,12 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         if order is None:
             return "No hay un pago pendiente de fecha en esta conversación."
         try:
-            result = await confirm_start(db, order.id, selected, conversation_id=ctx.conversation_id, session_id=session_id)
+            result = await confirm_start(db, order.id, selected, conversation_id=ctx.conversation_id,
+                                         session_id=session_id, message_id=ctx.message_id)
         except ValueError as exc:
             return str(exc)
         ctx.order_id = order.id
+        ctx.reply_request = dict(kind="purchase", membership_order_id=order.id)
         return result
 
     async def respond_to_customer(
@@ -813,9 +831,9 @@ def build_tools(ctx: ChatbotContext) -> List[StructuredTool]:
         (get_weekly_schedule, "get_weekly_schedule", "Horario semanal recurrente de clases (día, hora, clase, sede, instructor). Da el id de cada horario (template) para propose_membership."),
         (get_venues, "get_venues", "Sedes del estudio: nombre, dirección y capacidad."),
         (list_instructors, "list_instructors", "Nombres de los instructores del estudio."),
-        (propose_membership, "propose_membership", "Compra/renueva membresías. Horario fijo: template_id del grupo completo; acceso libre/créditos: sin template_id ni reservas automáticas. Args: plan_id, template_id opcional, full_name si nuevo."),
+        (propose_membership, "propose_membership", "Cotiza una membresía desde start_date (YYYY-MM-DD) elegido por el cliente. Horario fijo: template_id del grupo completo; acceso libre/créditos: sin template_id. Args: plan_id, template_id opcional, full_name si nuevo, start_date. Pide confirmación del resumen antes del checkout." if ctx.sales_v2_enabled else "Compra/renueva membresías. Horario fijo: template_id del grupo completo; acceso libre/créditos: sin template_id ni reservas automáticas. Args: plan_id, template_id opcional, full_name si nuevo."),
         (propose_day_pass, "propose_day_pass", "Propone un PASE DIARIO (1 día): paga un plan diario y reserva una clase específica. Args: plan_id, session_id, full_name (si es cliente nuevo)."),
-        (confirm_action, "confirm_action", "Ejecuta la compra pendiente tras la confirmación del cliente (solo cuando el pago no es por MercadoPago)."),
+        (confirm_action, "confirm_action", "Genera el enlace de Mercado Pago de la propuesta después de que el cliente confirme el resumen en un mensaje nuevo. Todavía no acredita el pago ni crea reservas." if ctx.sales_v2_enabled else "Ejecuta la compra pendiente tras la confirmación del cliente (solo cuando el pago no es por MercadoPago)."),
         (cancel_action, "cancel_action", "Cancela la acción pendiente."),
         (list_special_events, "list_special_events", "Eventos especiales a la venta (fecha, horario, precio y lugares). No son clases regulares ni membresías."),
         (get_special_event, "get_special_event", "Detalle verificado de un evento especial (qué incluye, lugar, instructora, precio, disponibilidad). Arg: event_id."),

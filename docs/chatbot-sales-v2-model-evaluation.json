@@ -1,0 +1,1549 @@
+{
+  "operational_database": "disabled",
+  "payment_mutations": "disabled",
+  "results": [
+    {
+      "model": "claude-haiku-5-5",
+      "case": "soraya_greeting",
+      "repetition": 1,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:information"
+      ],
+      "words": 6,
+      "reply": "¡Hola! 😊 ¿En qué podemos ayudarte?",
+      "tools": [
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 3607,
+      "usage": {
+        "input_tokens": 9913,
+        "output_tokens": 320,
+        "total_tokens": 10233
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "soraya_greeting",
+      "repetition": 2,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:information"
+      ],
+      "words": 6,
+      "reply": "¡Hola! 😊 ¿En qué podemos ayudarte?",
+      "tools": [
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 2433,
+      "usage": {
+        "input_tokens": 9942,
+        "output_tokens": 352,
+        "total_tokens": 10294
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "soraya_greeting",
+      "repetition": 3,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:information"
+      ],
+      "words": 6,
+      "reply": "¡Hola! 😊 ¿En qué podemos ayudarte?",
+      "tools": [
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 3370,
+      "usage": {
+        "input_tokens": 9941,
+        "output_tokens": 351,
+        "total_tokens": 10292
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "karla_thanks",
+      "repetition": 1,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:information"
+      ],
+      "words": 6,
+      "reply": "¡De nada! 😊 Estamos para ayudarte.",
+      "tools": [
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 2469,
+      "usage": {
+        "input_tokens": 10046,
+        "output_tokens": 152,
+        "total_tokens": 10198
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "karla_thanks",
+      "repetition": 2,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:information"
+      ],
+      "words": 6,
+      "reply": "¡De nada! 😊 Estamos para ayudarte.",
+      "tools": [
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 1907,
+      "usage": {
+        "input_tokens": 10094,
+        "output_tokens": 248,
+        "total_tokens": 10342
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "karla_thanks",
+      "repetition": 3,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:information"
+      ],
+      "words": 6,
+      "reply": "¡De nada! 😊 Estamos para ayudarte.",
+      "tools": [
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 3921,
+      "usage": {
+        "input_tokens": 10240,
+        "output_tokens": 399,
+        "total_tokens": 10639
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "yazmin_cash",
+      "repetition": 1,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:payment_options"
+      ],
+      "words": 36,
+      "reply": "Puedes pagar con tarjeta o por transferencia desde el mismo enlace de Mercado Pago. Ahí encontrarás las instrucciones y te avisaremos por aquí cuando se acredite. También puedes registrarte y pagar en recepción con nuestro equipo.",
+      "tools": [
+        "get_business_info",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 5244,
+      "usage": {
+        "input_tokens": 16014,
+        "output_tokens": 827,
+        "total_tokens": 16841
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "yazmin_cash",
+      "repetition": 2,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:payment_options"
+      ],
+      "words": 36,
+      "reply": "Puedes pagar con tarjeta o por transferencia desde el mismo enlace de Mercado Pago. Ahí encontrarás las instrucciones y te avisaremos por aquí cuando se acredite. También puedes registrarte y pagar en recepción con nuestro equipo.",
+      "tools": [
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 5027,
+      "usage": {
+        "input_tokens": 10726,
+        "output_tokens": 904,
+        "total_tokens": 11630
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "yazmin_cash",
+      "repetition": 3,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:payment_options"
+      ],
+      "words": 36,
+      "reply": "Puedes pagar con tarjeta o por transferencia desde el mismo enlace de Mercado Pago. Ahí encontrarás las instrucciones y te avisaremos por aquí cuando se acredite. También puedes registrarte y pagar en recepción con nuestro equipo.",
+      "tools": [
+        "get_business_info",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 4426,
+      "usage": {
+        "input_tokens": 15902,
+        "output_tokens": 751,
+        "total_tokens": 16653
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "ivonne_transfer",
+      "repetition": 1,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:payment_options"
+      ],
+      "words": 36,
+      "reply": "Puedes pagar con tarjeta o por transferencia desde el mismo enlace de Mercado Pago. Ahí encontrarás las instrucciones y te avisaremos por aquí cuando se acredite. También puedes registrarte y pagar en recepción con nuestro equipo.",
+      "tools": [
+        "get_business_info",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 4411,
+      "usage": {
+        "input_tokens": 15721,
+        "output_tokens": 652,
+        "total_tokens": 16373
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "ivonne_transfer",
+      "repetition": 2,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:payment_options"
+      ],
+      "words": 36,
+      "reply": "Puedes pagar con tarjeta o por transferencia desde el mismo enlace de Mercado Pago. Ahí encontrarás las instrucciones y te avisaremos por aquí cuando se acredite. También puedes registrarte y pagar en recepción con nuestro equipo.",
+      "tools": [
+        "get_business_info",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 4091,
+      "usage": {
+        "input_tokens": 15805,
+        "output_tokens": 611,
+        "total_tokens": 16416
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "ivonne_transfer",
+      "repetition": 3,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:payment_options"
+      ],
+      "words": 36,
+      "reply": "Puedes pagar con tarjeta o por transferencia desde el mismo enlace de Mercado Pago. Ahí encontrarás las instrucciones y te avisaremos por aquí cuando se acredite. También puedes registrarte y pagar en recepción con nuestro equipo.",
+      "tools": [
+        "get_business_info",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 4644,
+      "usage": {
+        "input_tokens": 15836,
+        "output_tokens": 679,
+        "total_tokens": 16515
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "karla_start_missing",
+      "repetition": 1,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:clarification"
+      ],
+      "words": 52,
+      "reply": "El Plan Semanal (id 4) cuesta $200 y cubre 7 días. Es el horario fijo de lunes a viernes a las 9 am. La vigencia comienza en la fecha que elijas, así que ¿qué día quieres empezar? Con esa fecha te confirmo la cobertura exacta y te preparo el resumen para pagar.",
+      "tools": [
+        "get_membership_plans",
+        "get_weekly_schedule",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 4153,
+      "usage": {
+        "input_tokens": 15616,
+        "output_tokens": 636,
+        "total_tokens": 16252
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "karla_start_missing",
+      "repetition": 2,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:membership_information"
+      ],
+      "words": 16,
+      "reply": "Plan Semanal: $200.00 MXN. ¿Qué día quieres comenzar para revisar el horario y las clases incluidas?",
+      "tools": [
+        "get_weekly_schedule",
+        "get_membership_plans",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 4038,
+      "usage": {
+        "input_tokens": 15619,
+        "output_tokens": 577,
+        "total_tokens": 16196
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "karla_start_missing",
+      "repetition": 3,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:clarification"
+      ],
+      "words": 43,
+      "reply": "El Plan Semanal de spinning (lunes a viernes, 9 am) cuesta $200 y tiene una vigencia de 7 días. La fecha de inicio la eliges tú: ¿qué día quieres comenzar? Con esa fecha te confirmo las clases incluidas y el resumen para pagar.",
+      "tools": [
+        "get_weekly_schedule",
+        "get_membership_plans",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 3833,
+      "usage": {
+        "input_tokens": 15573,
+        "output_tokens": 584,
+        "total_tokens": 16157
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "karla_chosen_start",
+      "repetition": 1,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "propose_membership",
+        "respond_to_customer:purchase"
+      ],
+      "words": 32,
+      "reply": "Plan Semanal: $200.00 MXN.\nHorario: Lunes a Viernes a las 09:00.\nInicio: 27/10/2026. Último día cubierto: 02/11/2026.\nIncluye 5 clases en ese periodo.\n¿Confirmas estos datos para preparar tu enlace de pago?",
+      "tools": [
+        "get_membership_plans",
+        "get_weekly_schedule",
+        "propose_membership",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 4340,
+      "usage": {
+        "input_tokens": 21142,
+        "output_tokens": 629,
+        "total_tokens": 21771
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "karla_chosen_start",
+      "repetition": 2,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "propose_membership",
+        "respond_to_customer:purchase"
+      ],
+      "words": 32,
+      "reply": "Plan Semanal: $200.00 MXN.\nHorario: Lunes a Viernes a las 09:00.\nInicio: 27/10/2026. Último día cubierto: 02/11/2026.\nIncluye 5 clases en ese periodo.\n¿Confirmas estos datos para preparar tu enlace de pago?",
+      "tools": [
+        "get_membership_plans",
+        "get_weekly_schedule",
+        "propose_membership",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 5212,
+      "usage": {
+        "input_tokens": 21367,
+        "output_tokens": 765,
+        "total_tokens": 22132
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "karla_chosen_start",
+      "repetition": 3,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "propose_membership",
+        "respond_to_customer:purchase"
+      ],
+      "words": 32,
+      "reply": "Plan Semanal: $200.00 MXN.\nHorario: Lunes a Viernes a las 09:00.\nInicio: 27/10/2026. Último día cubierto: 02/11/2026.\nIncluye 5 clases en ese periodo.\n¿Confirmas estos datos para preparar tu enlace de pago?",
+      "tools": [
+        "get_membership_plans",
+        "get_weekly_schedule",
+        "propose_membership",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 4115,
+      "usage": {
+        "input_tokens": 21041,
+        "output_tokens": 547,
+        "total_tokens": 21588
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "karla_confirm",
+      "repetition": 1,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "confirm_action",
+        "respond_to_customer:purchase"
+      ],
+      "words": 18,
+      "reply": "Tu enlace está listo. Puedes pagar con tarjeta o transferencia. El cupo se confirma al acreditarse el pago.",
+      "tools": [
+        "confirm_action",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 3885,
+      "usage": {
+        "input_tokens": 15707,
+        "output_tokens": 618,
+        "total_tokens": 16325
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "karla_confirm",
+      "repetition": 2,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "confirm_action",
+        "respond_to_customer:purchase"
+      ],
+      "words": 18,
+      "reply": "Tu enlace está listo. Puedes pagar con tarjeta o transferencia. El cupo se confirma al acreditarse el pago.",
+      "tools": [
+        "confirm_action",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 4371,
+      "usage": {
+        "input_tokens": 15767,
+        "output_tokens": 702,
+        "total_tokens": 16469
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "karla_confirm",
+      "repetition": 3,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "confirm_action",
+        "respond_to_customer:purchase"
+      ],
+      "words": 18,
+      "reply": "Tu enlace está listo. Puedes pagar con tarjeta o transferencia. El cupo se confirma al acreditarse el pago.",
+      "tools": [
+        "confirm_action",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 4121,
+      "usage": {
+        "input_tokens": 15745,
+        "output_tokens": 678,
+        "total_tokens": 16423
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "ana_luisa_month",
+      "repetition": 1,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:membership_information"
+      ],
+      "words": 32,
+      "reply": "Plan Mensual: $600.00 MXN.\nHorario: Lunes a Viernes a las 09:00.\nInicio: 27/10/2026. Último día cubierto: 26/11/2026.\nIncluye 23 clases en ese periodo.\n¿Confirmas estos datos para preparar tu enlace de pago?",
+      "tools": [
+        "get_membership_plans",
+        "get_weekly_schedule",
+        "get_membership_coverage",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 4652,
+      "usage": {
+        "input_tokens": 21881,
+        "output_tokens": 669,
+        "total_tokens": 22550
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "ana_luisa_month",
+      "repetition": 2,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:membership_information"
+      ],
+      "words": 32,
+      "reply": "Plan Mensual: $600.00 MXN.\nHorario: Lunes a Viernes a las 09:00.\nInicio: 27/10/2026. Último día cubierto: 26/11/2026.\nIncluye 23 clases en ese periodo.\n¿Confirmas estos datos para preparar tu enlace de pago?",
+      "tools": [
+        "get_membership_plans",
+        "get_weekly_schedule",
+        "get_membership_coverage",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 5347,
+      "usage": {
+        "input_tokens": 21835,
+        "output_tokens": 667,
+        "total_tokens": 22502
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "ana_luisa_month",
+      "repetition": 3,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:membership_information"
+      ],
+      "words": 32,
+      "reply": "Plan Mensual: $600.00 MXN.\nHorario: Lunes a Viernes a las 09:00.\nInicio: 27/10/2026. Último día cubierto: 26/11/2026.\nIncluye 23 clases en ese periodo.\n¿Confirmas estos datos para preparar tu enlace de pago?",
+      "tools": [
+        "get_membership_plans",
+        "get_weekly_schedule",
+        "get_membership_coverage",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 3939,
+      "usage": {
+        "input_tokens": 21800,
+        "output_tokens": 642,
+        "total_tokens": 22442
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "late_payment",
+      "repetition": 1,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "confirm_membership_start",
+        "respond_to_customer:membership_information"
+      ],
+      "words": 23,
+      "reply": "Plan Semanal: $200.00 MXN.\nHorario: Lunes a Viernes a las 09:00.\nInicio: 03/11/2026. Último día cubierto: 09/11/2026.\nIncluye 5 clases en ese periodo.",
+      "tools": [
+        "confirm_membership_start",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 3569,
+      "usage": {
+        "input_tokens": 15882,
+        "output_tokens": 574,
+        "total_tokens": 16456
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "late_payment",
+      "repetition": 2,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "confirm_membership_start",
+        "respond_to_customer:membership_information"
+      ],
+      "words": 23,
+      "reply": "Plan Semanal: $200.00 MXN.\nHorario: Lunes a Viernes a las 09:00.\nInicio: 03/11/2026. Último día cubierto: 09/11/2026.\nIncluye 5 clases en ese periodo.",
+      "tools": [
+        "confirm_membership_start",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 5091,
+      "usage": {
+        "input_tokens": 16441,
+        "output_tokens": 863,
+        "total_tokens": 17304
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "late_payment",
+      "repetition": 3,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "confirm_membership_start",
+        "respond_to_customer:membership_information"
+      ],
+      "words": 23,
+      "reply": "Plan Semanal: $200.00 MXN.\nHorario: Lunes a Viernes a las 09:00.\nInicio: 03/11/2026. Último día cubierto: 09/11/2026.\nIncluye 5 clases en ese periodo.",
+      "tools": [
+        "confirm_membership_start",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 3492,
+      "usage": {
+        "input_tokens": 15890,
+        "output_tokens": 551,
+        "total_tokens": 16441
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "receipt_not_approval",
+      "repetition": 1,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:information"
+      ],
+      "words": 26,
+      "reply": "Tu pago sigue pendiente de acreditación en Mercado Pago. Te avisaremos por aquí cuando se acredite. El comprobante no confirma la reserva; no realices otro pago.",
+      "tools": [
+        "get_my_purchase_status",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 4221,
+      "usage": {
+        "input_tokens": 15465,
+        "output_tokens": 430,
+        "total_tokens": 15895
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "receipt_not_approval",
+      "repetition": 2,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:information"
+      ],
+      "words": 26,
+      "reply": "Tu pago sigue pendiente de acreditación en Mercado Pago. Te avisaremos por aquí cuando se acredite. El comprobante no confirma la reserva; no realices otro pago.",
+      "tools": [
+        "get_my_purchase_status",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 3843,
+      "usage": {
+        "input_tokens": 15504,
+        "output_tokens": 510,
+        "total_tokens": 16014
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "case": "receipt_not_approval",
+      "repetition": 3,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:information"
+      ],
+      "words": 26,
+      "reply": "Tu pago sigue pendiente de acreditación en Mercado Pago. Te avisaremos por aquí cuando se acredite. El comprobante no confirma la reserva; no realices otro pago.",
+      "tools": [
+        "get_my_purchase_status",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 4304,
+      "usage": {
+        "input_tokens": 15487,
+        "output_tokens": 494,
+        "total_tokens": 15981
+      },
+      "effective_model": "claude-haiku-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "soraya_greeting",
+      "repetition": 1,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:information"
+      ],
+      "words": 6,
+      "reply": "¡Hola! 😊 ¿En qué podemos ayudarte?",
+      "tools": [
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 14696,
+      "usage": {
+        "input_tokens": 9840,
+        "output_tokens": 260,
+        "total_tokens": 10100
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "soraya_greeting",
+      "repetition": 2,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:acknowledgment"
+      ],
+      "words": 6,
+      "reply": "¡Hola! 😊 ¿En qué podemos ayudarte?",
+      "tools": [
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 17529,
+      "usage": {
+        "input_tokens": 9823,
+        "output_tokens": 228,
+        "total_tokens": 10051
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "soraya_greeting",
+      "repetition": 3,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:acknowledgment"
+      ],
+      "words": 6,
+      "reply": "¡Hola! 😊 ¿En qué podemos ayudarte?",
+      "tools": [
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 3551,
+      "usage": {
+        "input_tokens": 9819,
+        "output_tokens": 224,
+        "total_tokens": 10043
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "karla_thanks",
+      "repetition": 1,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:acknowledgment"
+      ],
+      "words": 6,
+      "reply": "¡De nada! 😊 Estamos para ayudarte.",
+      "tools": [
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 2672,
+      "usage": {
+        "input_tokens": 10077,
+        "output_tokens": 185,
+        "total_tokens": 10262
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "karla_thanks",
+      "repetition": 2,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:acknowledgment"
+      ],
+      "words": 6,
+      "reply": "¡De nada! 😊 Estamos para ayudarte.",
+      "tools": [
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 2476,
+      "usage": {
+        "input_tokens": 10064,
+        "output_tokens": 161,
+        "total_tokens": 10225
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "karla_thanks",
+      "repetition": 3,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:acknowledgment"
+      ],
+      "words": 6,
+      "reply": "¡De nada! 😊 Estamos para ayudarte.",
+      "tools": [
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 2848,
+      "usage": {
+        "input_tokens": 10085,
+        "output_tokens": 194,
+        "total_tokens": 10279
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "yazmin_cash",
+      "repetition": 1,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:payment_options"
+      ],
+      "words": 36,
+      "reply": "Puedes pagar con tarjeta o por transferencia desde el mismo enlace de Mercado Pago. Ahí encontrarás las instrucciones y te avisaremos por aquí cuando se acredite. También puedes registrarte y pagar en recepción con nuestro equipo.",
+      "tools": [
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 5311,
+      "usage": {
+        "input_tokens": 10436,
+        "output_tokens": 678,
+        "total_tokens": 11114
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "yazmin_cash",
+      "repetition": 2,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:payment_options"
+      ],
+      "words": 36,
+      "reply": "Puedes pagar con tarjeta o por transferencia desde el mismo enlace de Mercado Pago. Ahí encontrarás las instrucciones y te avisaremos por aquí cuando se acredite. También puedes registrarte y pagar en recepción con nuestro equipo.",
+      "tools": [
+        "get_business_info",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 6523,
+      "usage": {
+        "input_tokens": 15504,
+        "output_tokens": 559,
+        "total_tokens": 16063
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "yazmin_cash",
+      "repetition": 3,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:payment_options"
+      ],
+      "words": 36,
+      "reply": "Puedes pagar con tarjeta o por transferencia desde el mismo enlace de Mercado Pago. Ahí encontrarás las instrucciones y te avisaremos por aquí cuando se acredite. También puedes registrarte y pagar en recepción con nuestro equipo.",
+      "tools": [
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 5232,
+      "usage": {
+        "input_tokens": 10394,
+        "output_tokens": 597,
+        "total_tokens": 10991
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "ivonne_transfer",
+      "repetition": 1,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:information"
+      ],
+      "words": 36,
+      "reply": "Puedes pagar con tarjeta o por transferencia desde el mismo enlace de Mercado Pago. Ahí encontrarás las instrucciones y te avisaremos por aquí cuando se acredite. También puedes registrarte y pagar en recepción con nuestro equipo.",
+      "tools": [
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 4973,
+      "usage": {
+        "input_tokens": 10404,
+        "output_tokens": 612,
+        "total_tokens": 11016
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "ivonne_transfer",
+      "repetition": 2,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:payment_options"
+      ],
+      "words": 36,
+      "reply": "Puedes pagar con tarjeta o por transferencia desde el mismo enlace de Mercado Pago. Ahí encontrarás las instrucciones y te avisaremos por aquí cuando se acredite. También puedes registrarte y pagar en recepción con nuestro equipo.",
+      "tools": [
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 4544,
+      "usage": {
+        "input_tokens": 10346,
+        "output_tokens": 525,
+        "total_tokens": 10871
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "ivonne_transfer",
+      "repetition": 3,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:payment_options"
+      ],
+      "words": 36,
+      "reply": "Puedes pagar con tarjeta o por transferencia desde el mismo enlace de Mercado Pago. Ahí encontrarás las instrucciones y te avisaremos por aquí cuando se acredite. También puedes registrarte y pagar en recepción con nuestro equipo.",
+      "tools": [
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 5077,
+      "usage": {
+        "input_tokens": 10415,
+        "output_tokens": 611,
+        "total_tokens": 11026
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "karla_start_missing",
+      "repetition": 1,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:clarification"
+      ],
+      "words": 58,
+      "reply": "¡Claro! El Plan Semanal (spinning lunes a viernes, 9 am) cuesta $200 y dura 7 días. La vigencia empieza el día que tú elijas, aunque pagues antes. ¿Qué día quieres comenzar? (Hoy es lunes 26/10/2026; la clase de hoy es a las 9 am, así que ya pasó). Y para prepararte la propuesta, ¿me compartes tu nombre completo?",
+      "tools": [
+        "get_membership_plans",
+        "get_weekly_schedule",
+        "get_membership_coverage",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 10556,
+      "usage": {
+        "input_tokens": 20789,
+        "output_tokens": 594,
+        "total_tokens": 21383
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "karla_start_missing",
+      "repetition": 2,
+      "passed": false,
+      "validation": "not_called",
+      "calls": [],
+      "words": 0,
+      "reply": "",
+      "tools": [
+        "get_membership_plans",
+        "get_weekly_schedule",
+        "get_membership_coverage"
+      ],
+      "elapsed_ms": 7305,
+      "usage": {
+        "input_tokens": 15229,
+        "output_tokens": 370,
+        "total_tokens": 15599
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "karla_start_missing",
+      "repetition": 3,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:clarification"
+      ],
+      "words": 64,
+      "reply": "¡Claro! El Plan Semanal (spinning lunes a viernes, 9 am) cuesta $200 y dura 7 días. La vigencia comienza el día que tú elijas, aunque pagues antes. ¿Qué día quieres empezar? Hoy es lunes 26/10/2026 y la clase de hoy es a las 9 am, así que la primera opción sería mañana martes 27/10. Además, ¿me das tu nombre completo para preparar tu registro?",
+      "tools": [
+        "get_membership_plans",
+        "get_weekly_schedule",
+        "get_membership_coverage",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 6227,
+      "usage": {
+        "input_tokens": 20754,
+        "output_tokens": 581,
+        "total_tokens": 21335
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "karla_chosen_start",
+      "repetition": 1,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "propose_membership",
+        "respond_to_customer:membership_information"
+      ],
+      "words": 32,
+      "reply": "Plan Semanal: $200.00 MXN.\nHorario: Lunes a Viernes a las 09:00.\nInicio: 27/10/2026. Último día cubierto: 02/11/2026.\nIncluye 5 clases en ese periodo.\n¿Confirmas estos datos para preparar tu enlace de pago?",
+      "tools": [
+        "get_membership_plans",
+        "get_weekly_schedule",
+        "propose_membership",
+        "get_membership_coverage",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 9222,
+      "usage": {
+        "input_tokens": 21364,
+        "output_tokens": 570,
+        "total_tokens": 21934
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "karla_chosen_start",
+      "repetition": 2,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "propose_membership",
+        "respond_to_customer:membership_information"
+      ],
+      "words": 32,
+      "reply": "Plan Semanal: $200.00 MXN.\nHorario: Lunes a Viernes a las 09:00.\nInicio: 27/10/2026. Último día cubierto: 02/11/2026.\nIncluye 5 clases en ese periodo.\n¿Confirmas estos datos para preparar tu enlace de pago?",
+      "tools": [
+        "get_membership_plans",
+        "get_weekly_schedule",
+        "propose_membership",
+        "get_membership_coverage",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 7364,
+      "usage": {
+        "input_tokens": 21364,
+        "output_tokens": 575,
+        "total_tokens": 21939
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "karla_chosen_start",
+      "repetition": 3,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "propose_membership",
+        "respond_to_customer:membership_information"
+      ],
+      "words": 32,
+      "reply": "Plan Semanal: $200.00 MXN.\nHorario: Lunes a Viernes a las 09:00.\nInicio: 27/10/2026. Último día cubierto: 02/11/2026.\nIncluye 5 clases en ese periodo.\n¿Confirmas estos datos para preparar tu enlace de pago?",
+      "tools": [
+        "get_membership_plans",
+        "get_weekly_schedule",
+        "propose_membership",
+        "get_membership_coverage",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 9517,
+      "usage": {
+        "input_tokens": 21364,
+        "output_tokens": 556,
+        "total_tokens": 21920
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "karla_confirm",
+      "repetition": 1,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "confirm_action",
+        "respond_to_customer:purchase"
+      ],
+      "words": 18,
+      "reply": "Tu enlace está listo. Puedes pagar con tarjeta o transferencia. El cupo se confirma al acreditarse el pago.",
+      "tools": [
+        "confirm_action",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 5507,
+      "usage": {
+        "input_tokens": 15111,
+        "output_tokens": 260,
+        "total_tokens": 15371
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "karla_confirm",
+      "repetition": 2,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "confirm_action",
+        "respond_to_customer:purchase"
+      ],
+      "words": 18,
+      "reply": "Tu enlace está listo. Puedes pagar con tarjeta o transferencia. El cupo se confirma al acreditarse el pago.",
+      "tools": [
+        "confirm_action",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 5225,
+      "usage": {
+        "input_tokens": 15136,
+        "output_tokens": 247,
+        "total_tokens": 15383
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "karla_confirm",
+      "repetition": 3,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "confirm_action",
+        "respond_to_customer:purchase"
+      ],
+      "words": 18,
+      "reply": "Tu enlace está listo. Puedes pagar con tarjeta o transferencia. El cupo se confirma al acreditarse el pago.",
+      "tools": [
+        "confirm_action",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 4497,
+      "usage": {
+        "input_tokens": 15148,
+        "output_tokens": 253,
+        "total_tokens": 15401
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "ana_luisa_month",
+      "repetition": 1,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:membership_information"
+      ],
+      "words": 32,
+      "reply": "Plan Mensual: $600.00 MXN.\nHorario: Lunes a Viernes a las 09:00.\nInicio: 27/10/2026. Último día cubierto: 26/11/2026.\nIncluye 23 clases en ese periodo.\n¿Confirmas estos datos para preparar tu enlace de pago?",
+      "tools": [
+        "get_membership_plans",
+        "get_weekly_schedule",
+        "get_membership_coverage",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 5141,
+      "usage": {
+        "input_tokens": 21242,
+        "output_tokens": 415,
+        "total_tokens": 21657
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "ana_luisa_month",
+      "repetition": 2,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:membership_information"
+      ],
+      "words": 32,
+      "reply": "Plan Mensual: $600.00 MXN.\nHorario: Lunes a Viernes a las 09:00.\nInicio: 27/10/2026. Último día cubierto: 26/11/2026.\nIncluye 23 clases en ese periodo.\n¿Confirmas estos datos para preparar tu enlace de pago?",
+      "tools": [
+        "get_weekly_schedule",
+        "get_membership_plans",
+        "get_membership_coverage",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 5050,
+      "usage": {
+        "input_tokens": 21242,
+        "output_tokens": 420,
+        "total_tokens": 21662
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "ana_luisa_month",
+      "repetition": 3,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:membership_information"
+      ],
+      "words": 32,
+      "reply": "Plan Mensual: $600.00 MXN.\nHorario: Lunes a Viernes a las 09:00.\nInicio: 27/10/2026. Último día cubierto: 26/11/2026.\nIncluye 23 clases en ese periodo.\n¿Confirmas estos datos para preparar tu enlace de pago?",
+      "tools": [
+        "get_membership_plans",
+        "get_weekly_schedule",
+        "get_membership_coverage",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 5068,
+      "usage": {
+        "input_tokens": 21242,
+        "output_tokens": 412,
+        "total_tokens": 21654
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "late_payment",
+      "repetition": 1,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "confirm_membership_start",
+        "respond_to_customer:membership_information"
+      ],
+      "words": 23,
+      "reply": "Plan Semanal: $200.00 MXN.\nHorario: Lunes a Viernes a las 09:00.\nInicio: 03/11/2026. Último día cubierto: 09/11/2026.\nIncluye 5 clases en ese periodo.",
+      "tools": [
+        "confirm_membership_start",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 5472,
+      "usage": {
+        "input_tokens": 15667,
+        "output_tokens": 516,
+        "total_tokens": 16183
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "late_payment",
+      "repetition": 2,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "confirm_membership_start",
+        "respond_to_customer:membership_information"
+      ],
+      "words": 23,
+      "reply": "Plan Semanal: $200.00 MXN.\nHorario: Lunes a Viernes a las 09:00.\nInicio: 03/11/2026. Último día cubierto: 09/11/2026.\nIncluye 5 clases en ese periodo.",
+      "tools": [
+        "confirm_membership_start",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 5212,
+      "usage": {
+        "input_tokens": 15630,
+        "output_tokens": 483,
+        "total_tokens": 16113
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "late_payment",
+      "repetition": 3,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "confirm_membership_start",
+        "respond_to_customer:membership_information"
+      ],
+      "words": 23,
+      "reply": "Plan Semanal: $200.00 MXN.\nHorario: Lunes a Viernes a las 09:00.\nInicio: 03/11/2026. Último día cubierto: 09/11/2026.\nIncluye 5 clases en ese periodo.",
+      "tools": [
+        "confirm_membership_start",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 6908,
+      "usage": {
+        "input_tokens": 15678,
+        "output_tokens": 527,
+        "total_tokens": 16205
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "receipt_not_approval",
+      "repetition": 1,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:information"
+      ],
+      "words": 26,
+      "reply": "Tu pago sigue pendiente de acreditación en Mercado Pago. Te avisaremos por aquí cuando se acredite. El comprobante no confirma la reserva; no realices otro pago.",
+      "tools": [
+        "get_my_purchase_status",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 6102,
+      "usage": {
+        "input_tokens": 15412,
+        "output_tokens": 473,
+        "total_tokens": 15885
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "receipt_not_approval",
+      "repetition": 2,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:information"
+      ],
+      "words": 26,
+      "reply": "Tu pago sigue pendiente de acreditación en Mercado Pago. Te avisaremos por aquí cuando se acredite. El comprobante no confirma la reserva; no realices otro pago.",
+      "tools": [
+        "get_my_purchase_status",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 6984,
+      "usage": {
+        "input_tokens": 15438,
+        "output_tokens": 523,
+        "total_tokens": 15961
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "case": "receipt_not_approval",
+      "repetition": 3,
+      "passed": true,
+      "validation": "accepted",
+      "calls": [
+        "respond_to_customer:information"
+      ],
+      "words": 26,
+      "reply": "Tu pago sigue pendiente de acreditación en Mercado Pago. Te avisaremos por aquí cuando se acredite. El comprobante no confirma la reserva; no realices otro pago.",
+      "tools": [
+        "get_my_purchase_status",
+        "respond_to_customer"
+      ],
+      "elapsed_ms": 6497,
+      "usage": {
+        "input_tokens": 15449,
+        "output_tokens": 550,
+        "total_tokens": 15999
+      },
+      "effective_model": "claude-sonnet-5-5",
+      "error": null,
+      "repeated_5gram_ratio": 0.0
+    }
+  ],
+  "models": {
+    "claude-haiku-5-5": {
+      "passed": 30,
+      "total": 30
+    },
+    "claude-sonnet-5-5": {
+      "passed": 29,
+      "total": 30
+    }
+  }
+}
