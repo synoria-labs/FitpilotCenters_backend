@@ -1,6 +1,7 @@
 # Modern FitPilot models - Modular architecture
 from app.models.userModel import People, Role, PersonRole, Account, RoleCapability
 from app.models.membershipsModel import MembershipPlan, MembershipSubscription, Payment
+from app.models.chatbotSalesModel import MembershipPurchaseOrder, ChatbotTurnAudit
 from app.models.venueModel import (
     Venue, Seat, SeatType, Asset, AssetType, AssetModel, AssetSeatAssignment, AssetEvent
 )

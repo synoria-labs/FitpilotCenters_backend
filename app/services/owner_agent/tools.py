@@ -224,6 +224,7 @@ def build_tools(ctx: OwnerAgentContext) -> list:
                 .where(People.id.in_(member_role))
                 .where(People.deleted_at.is_(None))
                 .where(MembershipSubscription.status == "active")
+                .where(MembershipSubscription.start_at <= now)
                 .where(MembershipSubscription.end_at > now)
                 .where(MembershipSubscription.end_at <= ahead)
                 .order_by(MembershipSubscription.end_at.asc())

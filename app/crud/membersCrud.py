@@ -114,7 +114,7 @@ def _build_member_data(person: People) -> MemberData:
         if ordered_subs:
             latest_subscription = ordered_subs[0]
         for sub in ordered_subs:
-            if sub.status == 'active' and sub.end_at and sub.end_at > current_time:
+            if sub.status == 'active' and sub.start_at <= current_time and sub.end_at and sub.end_at > current_time:
                 active_subscription = sub
                 break
 
@@ -198,6 +198,7 @@ def _membership_sort_expressions():
                             MembershipSubscription.status == 'active',
                             MembershipSubscription.end_at.isnot(None),
                             MembershipSubscription.end_at > current_time,
+                            MembershipSubscription.start_at <= current_time,
                         ),
                         1,
                     ),

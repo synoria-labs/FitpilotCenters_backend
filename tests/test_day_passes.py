@@ -197,11 +197,14 @@ async def test_expired_same_day_is_not_active_in_queries_or_member_summary(db):
 
 
 @pytest.mark.parametrize("unit,value", [("day", 5), ("week", 1), ("month", 1)])
-async def test_other_durations_keep_their_existing_calculation(db, unit, value):
+async def test_new_packages_use_calendar_dates_without_an_extra_day(db, unit, value):
     sc = await scenario(db)
     sc.plan.duration_unit, sc.plan.duration_value = unit, value
     await db.flush()
     start = datetime.now(timezone.utc)
     sub = await create_membership_subscription(db, sc.person.id, sc.plan.id, start_at=start, commit=False)
     assert sub.session_id is None
-    assert sub.end_at == _calculate_subscription_end(sc.plan, start)
+    from app.crud.memberships.calendar import period
+    from app.core.timezones import to_local
+    assert (sub.start_at, sub.end_at) == period(sc.plan, to_local(start).date())
+    assert sub.period_rule_version == 2

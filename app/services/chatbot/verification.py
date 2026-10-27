@@ -27,6 +27,16 @@ _CONFIRMATION = re.compile(
 def requested_day(text, now=None):
     now = to_local(now or datetime.now(timezone.utc))
     plain = "".join(c for c in unicodedata.normalize("NFKD", text.lower()) if not unicodedata.combining(c))
+    # Prefer the customer's explicit start clause over a different day they cannot attend.
+    start_clause = re.search(r"\b(?:a partir\s+(?:de[l]?\s+)?|(?:iniciar|inicio|empezar|empiezo|comenzar)\s+(?:el\s+)?)([^\n.!?;]+)", plain)
+    if start_clause:
+        chosen = requested_day(start_clause[1], now)
+        if chosen is not None:
+            return chosen
+    plain = re.sub(r"\b(?:hoy|manana)\s+(?:no puedo|se me complica|no podre)[^\n.!?;]*", "", plain)
+    weekdays = list(re.finditer(r"\b(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b", plain))
+    if len({m[0] for m in weekdays}) > 1:
+        return None
     if "pasado manana" in plain:
         return now.date() + timedelta(days=2)
     if re.search(r"(?<!por la )(?<!en la )\bmanana\b", plain):
@@ -98,12 +108,15 @@ async def reservation_context(db, member_id):
 
 
 async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=None, requested_date=None, order_id=None,
-                         plan_id=None, template_id=None, event_id=None):
+                         plan_id=None, template_id=None, event_id=None, membership_order_id=None):
     """Mandatory final tool; only DB-verified facts can produce a class confirmation.
 
     A checkout link is never written into the reply: it goes in ``ctx.payment_link`` and the
     reply service sends it as a «Pagar ahora» button."""
     from app.services.chatbot.tools import PaymentLink
+
+    if ctx.sales_v2_enabled and ctx.order_id and order_id == ctx.order_id and event_id is None and not (ctx.event_discovery and ctx.event_discovery.interested):
+        membership_order_id, order_id = order_id, None
 
     ctx.validated_reply = None
     ctx.payment_link = None
@@ -111,8 +124,69 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
     ctx.reply_request = dict(kind=kind, text=text, session_id=session_id, reservation_id=reservation_id,
                              requested_date=requested_date, order_id=order_id, plan_id=plan_id, template_id=template_id,
                              event_id=event_id)
+    ctx.reply_request["membership_order_id"] = membership_order_id
+    supplied_day = date.fromisoformat(requested_date) if requested_date else None
+    from .intents import acknowledgment, payment_question, payment_status_question, reservation_question
+    simple = acknowledgment(ctx.user_text)
+    if simple or kind == "acknowledgment":
+        if not simple:
+            return "El cliente tiene una consulta concreta. Responde esa consulta antes de cerrar."
+        ctx.validated_reply, ctx.verification_result = simple, "accepted"
+        return "Respuesta breve validada."
+    event_turn = bool(order_id is not None or (ctx.event_discovery and ctx.event_discovery.interested))
+    if ctx.sales_v2_enabled and payment_status_question(ctx.user_text) and not event_turn:
+        from .sales import payment_status_answer
+        ctx.validated_reply = await payment_status_answer(ctx)
+        ctx.verification_result = "accepted"
+        return "Estado de pago verificado; la imagen no acredita dinero."
+    if (payment_question(ctx.user_text) or kind == "payment_options") and not event_turn:
+        from .sales import payment_answer
+        ctx.validated_reply = await payment_answer(ctx)
+        ctx.verification_result = "accepted"
+        return "Métodos de pago verificados."
+    slot_answer = bool(requested_day(ctx.user_text) and requested_hours(ctx.user_text) and len(ctx.user_text) <= 45)
+    if kind == "reservation_confirmation" and not reservation_question(ctx.user_text) and not slot_answer:
+        return "El cliente no consultó una reserva. Responde su pregunta o pide aclaración sin confirmar asistencia."
+    if kind == "information" and re.search(r"\b(?:quiero\s+(?:pagar|comprar|reservar|apartar)|mi reserva)\b", ctx.user_text, re.I):
+        return "La solicitud es de compra/reserva. Verifica sus datos o pide aclaración."
+    if ctx.sales_v2_enabled and kind in ("purchase", "membership_information") and order_id is None:
+        from .sales import active_order, summary, facts_for
+        from app.models.chatbotSalesModel import MembershipPurchaseOrder
+        order = await ctx.db.get(MembershipPurchaseOrder, membership_order_id or ctx.order_id) if (membership_order_id or ctx.order_id) else await active_order(ctx.db, ctx.conversation_id)
+        if order is not None:
+            if order.conversation_id != ctx.conversation_id:
+                return "Esa compra no pertenece a esta conversación."
+            if order.status == "confirmed":
+                if kind != "purchase":
+                    ctx.validated_reply = summary(order.facts)
+                else:
+                    ctx.validated_reply = "Tu pago y registro ya están confirmados.\n" + summary(order.facts)
+            elif order.payment_id:
+                ctx.validated_reply = ("Recibimos tu pago. ¿Qué nueva fecha disponible prefieres para comenzar? No necesitas pagar de nuevo."
+                                       if order.status == "paid_awaiting_start" else
+                                       "Recibimos tu pago y nuestro equipo debe revisar su aplicación. No necesitas pagar nuevamente.")
+            elif order.status == "draft":
+                ctx.validated_reply = summary(order.facts) + "\n¿Confirmas estos datos para preparar tu enlace de pago?"
+            elif order.status == "awaiting_payment" and order.mp_init_point:
+                if order.first_class_at and order.first_class_at <= datetime.now(timezone.utc):
+                    return "La primera clase de esa fecha ya comenzó. Revisa el estado del pago antes de preparar otra fecha."
+                ctx.validated_reply = summary(order.facts) if kind == "membership_information" else "Tu enlace está listo. Puedes pagar con tarjeta o transferencia. El cupo se confirma al acreditarse el pago."
+                if kind == "purchase":
+                    ctx.payment_link = PaymentLink(order.mp_init_point, "Completa el pago aquí:")
+            else:
+                return "Esa compra requiere revisión antes de enviar un enlace o confirmar reservas."
+        elif plan_id is not None:
+            from app.models import MembershipPlan
+            plan = await ctx.db.get(MembershipPlan, plan_id)
+            if not plan or not plan.is_active:
+                return "Ese plan no está disponible."
+            ctx.validated_reply = f"{plan.name}: ${plan.price:.2f} MXN. ¿Qué día quieres comenzar para revisar el horario y las clases incluidas?"
+        else:
+            return "Primero identifica el plan, horario y fecha elegida."
+        ctx.verification_result = "accepted"
+        return "Respuesta comercial verificada."
     explicit_day = requested_day(ctx.user_text)
-    target_day = explicit_day or (date.fromisoformat(requested_date) if requested_date else None)
+    target_day = explicit_day or supplied_day
     from app.crud.chatbotPendingCrud import get_active_pending
     from app.crud.memberships.coverage import package_facts
     pending = await get_active_pending(ctx.db, ctx.conversation_id) if order_id is None and kind in (
@@ -130,6 +204,12 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
             from app.crud.memberships.subscriptions import get_member_active_subscription
             from app.models import StandingBooking
             current = await get_member_active_subscription(ctx.db, ctx.member_id)
+            if current is None:
+                from app.models import MembershipSubscription
+                current = await ctx.db.scalar(select(MembershipSubscription).where(
+                    MembershipSubscription.person_id == ctx.member_id, MembershipSubscription.status == "active",
+                    MembershipSubscription.start_at > datetime.now(timezone.utc),
+                ).order_by(MembershipSubscription.start_at).limit(1))
             if current and (plan_id is None or plan_id == current.plan_id):
                 subscription = current
                 plan_id = current.plan_id
@@ -149,8 +229,6 @@ async def finalize_reply(ctx, *, kind, text="", session_id=None, reservation_id=
         logger.info("chatbot_membership_verification conversation=%s plan=%s template=%s result=accepted",
                     ctx.conversation_id, plan_id, template_id)
         return "Cobertura verificada. Finaliza el turno sin modificarla."
-    if kind == "information" and re.search(r"\b(?:pagar|comprar|reservar|apartar|mi reserva)\b", ctx.user_text, re.I):
-        return "La solicitud es de compra/reserva. Usa purchase, clarification o reservation_confirmation, con datos verificados."
     discovery = ctx.event_discovery
     if (kind in ("information", "clarification") and discovery and discovery.interested
             and discovery.source != "consulta reciente del cliente"

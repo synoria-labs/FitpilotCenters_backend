@@ -40,6 +40,8 @@ class ChatbotConfigMutation:
                 enabled=input.enabled,
                 require_confirmation=input.require_confirmation,
                 require_mp_payment=input.require_mp_payment,
+                offer_in_person_registration=input.offer_in_person_registration,
+                sales_v2_enabled=input.sales_v2_enabled,
                 model=model,
                 template_ai_model=input.template_ai_model,
                 prompt_optimizer_model=input.prompt_optimizer_model,

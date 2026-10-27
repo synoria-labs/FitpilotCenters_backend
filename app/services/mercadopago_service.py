@@ -44,6 +44,7 @@ async def create_preference(
     binary_mode: bool = False,
     excluded_payment_types: Optional[Sequence[str]] = None,
     item_id: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
 ) -> Dict[str, Optional[str]]:
     """Create a Checkout Pro preference and return its id + payment link (init_point).
 
@@ -90,6 +91,8 @@ async def create_preference(
         }
 
     headers = {**_auth_headers(), "Content-Type": "application/json"}
+    if idempotency_key:
+        headers["X-Idempotency-Key"] = idempotency_key
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         resp = await client.post(url, json=body, headers=headers)
 

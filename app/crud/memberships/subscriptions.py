@@ -47,12 +47,15 @@ async def create_membership_subscription(
             await db.commit()
         return purchase.subscription
 
-    end_at = _calculate_subscription_end(plan, normalized_start)
+    from .calendar import period
+    from app.core.timezones import local_date
+    normalized_start, end_at = period(plan, local_date(normalized_start))
 
     subscription = MembershipSubscription(
         person_id=person_id,
         plan_id=plan_id,
         start_at=normalized_start,
+        period_rule_version=2,
         end_at=end_at,
         status=status,
         created_by=created_by,
@@ -91,6 +94,7 @@ async def get_member_active_subscription(
             and_(
                 MembershipSubscription.person_id == member_id,
                 MembershipSubscription.status == "active",
+                MembershipSubscription.start_at <= datetime.now().astimezone(),
                 MembershipSubscription.end_at > datetime.now().astimezone(),
             )
         )
@@ -106,6 +110,7 @@ async def get_active_subscriptions(db: AsyncSession, limit: int = 100) -> List[S
     query = _subscription_query_with_relations().where(
         and_(
             MembershipSubscription.status == "active",
+            MembershipSubscription.start_at <= now,
             MembershipSubscription.end_at > now,
         )
     )
@@ -153,7 +158,9 @@ async def get_membership_subscriptions(
     conditions = []
 
     if status == "active":
-        conditions.extend([MembershipSubscription.status == "active", MembershipSubscription.end_at > now])
+        conditions.extend([MembershipSubscription.status == "active", MembershipSubscription.start_at <= now, MembershipSubscription.end_at > now])
+    elif status == "scheduled":
+        conditions.extend([MembershipSubscription.status == "active", MembershipSubscription.start_at > now])
     elif status == "expired":
         conditions.append(or_(MembershipSubscription.status == "expired", and_(MembershipSubscription.status == "active", MembershipSubscription.end_at <= now)))
     elif status:

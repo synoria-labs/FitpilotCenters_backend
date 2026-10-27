@@ -17,6 +17,8 @@ class ChatbotConfigType:
     enabled: bool
     require_confirmation: bool
     require_mp_payment: bool
+    offer_in_person_registration: bool
+    sales_v2_enabled: bool
     model: str
     template_ai_model: str
     prompt_optimizer_model: str
@@ -36,6 +38,8 @@ class ChatbotConfigType:
             enabled=bool(data.enabled),
             require_confirmation=bool(data.require_confirmation),
             require_mp_payment=bool(data.require_mp_payment),
+            offer_in_person_registration=data.offer_in_person_registration,
+            sales_v2_enabled=data.sales_v2_enabled,
             model=data.model,
             template_ai_model=data.template_ai_model,
             prompt_optimizer_model=data.prompt_optimizer_model,
@@ -52,6 +56,8 @@ class ChatbotConfigType:
 
 @strawberry.input
 class SaveChatbotConfigInput:
+    offer_in_person_registration: Optional[bool] = None
+    sales_v2_enabled: Optional[bool] = None
     enabled: Optional[bool] = None
     require_confirmation: Optional[bool] = None
     require_mp_payment: Optional[bool] = None

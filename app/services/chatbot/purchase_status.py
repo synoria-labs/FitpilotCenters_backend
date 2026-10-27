@@ -15,6 +15,28 @@ PROCESSING_STATUSES = {"approved", "pending", "in_process", "authorized", "in_me
 
 
 async def purchase_status(ctx):
+    if ctx.sales_v2_enabled:
+        from app.models.chatbotSalesModel import MembershipPurchaseOrder
+        order = await ctx.db.scalar(select(MembershipPurchaseOrder).where(
+            MembershipPurchaseOrder.conversation_id == ctx.conversation_id,
+        ).order_by(MembershipPurchaseOrder.id.desc()).limit(1))
+        if order:
+            ctx.order_id = order.id
+            lines = [f"Orden #{order.id}: {order.status}. Inicio elegido: {order.start_date:%d/%m/%Y}."]
+            if order.payment_id:
+                proof = await ctx.db.get(Payment, order.payment_id)
+                lines.append(f"Pago registrado: {proof.status}. No solicites pagar nuevamente.")
+            if mercadopago_config.is_configured() and order.mp_preference_id:
+                try:
+                    found = await mercadopago_service.search_payments(order.external_reference)
+                    statuses = [p.get("status") for p in found if p.get("status")]
+                    lines.append("Mercado Pago consultado ahora: " + (", ".join(statuses) or "sin pagos encontrados") + ".")
+                    ctx.checked_payment_reference = order.external_reference
+                    ctx.provider_payment_status = next((s for s in statuses if s in PROCESSING_STATUSES), None)
+                except Exception:
+                    lines.append("No fue posible consultar Mercado Pago. No deduzcas que se rechazó el cobro.")
+            lines.append("Una captura no acredita el pago ni confirma reservas. Consulta la orden; no generes otro enlace.")
+            return "\n".join(lines)
     pending = await ctx.db.scalar(select(ChatbotPendingAction).where(
         ChatbotPendingAction.conversation_id == ctx.conversation_id,
     ).execution_options(populate_existing=True))

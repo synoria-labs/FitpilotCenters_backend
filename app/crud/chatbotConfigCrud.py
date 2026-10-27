@@ -34,6 +34,8 @@ class ChatbotConfigData:
     updated_at: Optional[datetime]
     template_ai_model: str = DEFAULT_AI_MODEL
     prompt_optimizer_model: str = DEFAULT_AI_MODEL
+    offer_in_person_registration: bool = False
+    sales_v2_enabled: bool = False
 
     @classmethod
     def from_model(cls, m: ChatbotConfig) -> "ChatbotConfigData":
@@ -42,6 +44,8 @@ class ChatbotConfigData:
             enabled=bool(m.enabled),
             require_confirmation=bool(m.require_confirmation),
             require_mp_payment=bool(m.require_mp_payment),
+            offer_in_person_registration=bool(m.offer_in_person_registration),
+            sales_v2_enabled=bool(m.sales_v2_enabled),
             model=m.model,
             template_ai_model=m.template_ai_model or DEFAULT_AI_MODEL,
             prompt_optimizer_model=m.prompt_optimizer_model or DEFAULT_AI_MODEL,
@@ -71,6 +75,7 @@ async def get_config(db: AsyncSession) -> Optional[ChatbotConfigData]:
 
 # Fields the save mutation may set. Mirrors the editable columns.
 _EDITABLE_FIELDS = (
+    "offer_in_person_registration", "sales_v2_enabled",
     "enabled",
     "require_confirmation",
     "require_mp_payment",

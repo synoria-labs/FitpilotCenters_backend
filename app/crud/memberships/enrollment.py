@@ -19,7 +19,8 @@ from .utils import _normalize_to_utc, _resolve_payment_amount
 from .day_passes import uses_class_expiry, purchase_day_pass
 from .overlaps import authorize_overlap
 from app.crud.locks import lock_materialization_batch
-from .utils import _calculate_subscription_end
+from .calendar import period
+from app.core.timezones import local_date
 
 
 async def create_member_enrollment(
@@ -187,6 +188,11 @@ async def renew_subscription_with_standing_booking(
     # Get current active subscription to calculate renewal start date
     await lock_materialization_batch(db)
     current_subscription = await get_member_active_subscription(db, member_id)
+    if current_subscription is None:
+        current_subscription = await db.scalar(select(MembershipSubscription).where(
+            MembershipSubscription.person_id == member_id, MembershipSubscription.plan_id == plan_id,
+            MembershipSubscription.status == "active", MembershipSubscription.end_at > datetime.now(timezone.utc),
+        ).order_by(MembershipSubscription.end_at.desc()).limit(1))
 
     needs_standing_booking = plan.fixed_time_slot or template_id is not None
 
@@ -225,15 +231,18 @@ async def renew_subscription_with_standing_booking(
         if current_subscription and current_subscription.end_at:
             # Start renewal from current subscription end date
             normalized_start = _normalize_to_utc(current_subscription.end_at)
+            from app.core.timezones import to_local, local_datetime
+            from datetime import time, timedelta
+            if to_local(normalized_start).time() != time.min:
+                normalized_start = local_datetime(to_local(normalized_start).date() + timedelta(days=1), time.min)
         else:
             # No active subscription, start from now
             normalized_start = _normalize_to_utc(datetime.now().astimezone())
     else:
         normalized_start = _normalize_to_utc(start_at)
 
-    approved_by = await authorize_overlap(
-        db, member_id, normalized_start, _calculate_subscription_end(plan, normalized_start), admin_password,
-    )
+    calendar_start, calendar_end = period(plan, local_date(normalized_start))
+    approved_by = await authorize_overlap(db, member_id, calendar_start, calendar_end, admin_password)
 
     # A prepaid renewal must preserve access and bookings until the current term ends.
     logger.info("Expiring elapsed subscriptions for member %s", member_id)

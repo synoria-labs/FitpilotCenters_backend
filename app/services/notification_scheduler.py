@@ -96,6 +96,14 @@ async def _run_special_event_sweep_job() -> None:
         logger.exception("Special event sweep job failed")
 
 
+async def _run_membership_sales_sweep_job():
+    try:
+        from app.services.chatbot.sales import reconcile_orders
+        await reconcile_orders()
+    except Exception:
+        logger.exception("Membership sales reconciliation failed")
+
+
 async def _run_day_pass_expiry_job() -> None:
     from app.crud.memberships.day_passes import expire_day_passes
     from app.db.postgresql import async_session_factory
@@ -125,6 +133,8 @@ class NotificationScheduler:
             return
         hour = _sweep_hour()
         self._scheduler = AsyncIOScheduler(timezone=_TIMEZONE)
+        self._scheduler.add_job(_run_membership_sales_sweep_job, trigger=IntervalTrigger(minutes=1, timezone=_TIMEZONE),
+            id="membership_sales_reconciliation", replace_existing=True, max_instances=1, coalesce=True, misfire_grace_time=120)
         self._scheduler.add_job(
             _run_day_pass_expiry_job, trigger=IntervalTrigger(minutes=1, timezone=_TIMEZONE),
             id="day_pass_expiry", replace_existing=True, max_instances=1,
