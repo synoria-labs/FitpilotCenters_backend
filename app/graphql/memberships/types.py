@@ -286,6 +286,7 @@ class RenewSubscriptionInput:
     payment_provider: Optional[str] = None
     provider_payment_id: Optional[str] = None
     external_reference: Optional[str] = None
+    admin_password: Optional[str] = None
 
 
 @strawberry.type

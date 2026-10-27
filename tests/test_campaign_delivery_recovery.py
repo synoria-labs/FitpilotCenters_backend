@@ -173,11 +173,12 @@ async def test_halloween_evidence_survives_recipient_reclassification(db):
 
 async def test_preview_and_recovery_deduplicate_without_mutating_members(db):
     c, r = await seed(db, policy="allow_additional", status="skipped")
+    r.skip_reason = "daily_cap"
     p2 = People(full_name="Second member sharing phone", phone_number="528712345678")
     db.add(p2)
     await db.flush()
     r2 = CampaignRecipient(campaign_id=c.id, person_id=p2.id, wa_id=p2.phone_number,
-                           dedup_key=f"alias:{c.id}:{p2.id}", status="skipped")
+                           dedup_key=f"alias:{c.id}:{p2.id}", status="skipped", skip_reason="daily_cap")
     db.add(r2)
     await db.flush()
     preview = await d.recovery(db, c.id)
@@ -199,9 +200,10 @@ async def test_recovery_never_resends_delivered_aliases(db):
     assert r.status == "skipped"
 
 
-async def test_uncertain_and_unacknowledged_requests_require_review(db):
+async def test_uncertain_and_unacknowledged_requests_require_review(db, monkeypatch):
     c, r = await seed(db)
     a = await attempt(db, c, r)
+    monkeypatch.setattr(d, "now", lambda: AT + timedelta(hours=1))  # Recent; older ones are covered below.
     for state in ("started", "uncertain", "accepted", "sent"):
         a.state = state
         await db.flush()
@@ -512,7 +514,7 @@ async def test_converted_recipient_is_excluded_from_recovery_and_worker(db):
 
 
 @pytest.mark.parametrize('identity', ['person', 'phone'])
-@pytest.mark.parametrize('state', ['awaiting_payment', 'paid'])
+@pytest.mark.parametrize('state', ['awaiting_payment', 'paid', 'needs_review'])
 async def test_existing_event_buyers_are_excluded_by_person_or_normalized_phone(db, identity, state):
     from app.models.specialEventModel import SpecialEventOrder
     from app.crud.special_events.common import participant_key
@@ -578,7 +580,8 @@ async def test_manual_meta_limit_recovery_exceeds_auto_limit_but_waits_24h(db, m
         a = await attempt(db, c, r, index)
         await d.failure(db, c, r, a, 131049, 'Limit', AT + timedelta(hours=24 * index), schedule=False)
     monkeypatch.setattr(d, 'now', lambda: AT + timedelta(hours=49))
-    result = await d.recovery(db, c.id, execute=True, causes=['meta_limit'])
+    assert (await d.recovery(db, c.id, execute=True, causes=['meta_limit']))['eligible'] == 0
+    result = await d.recovery(db, c.id, execute=True, causes=['meta_limit_exhausted'])
     assert result['eligible'] == 1 and r.send_after == AT + timedelta(hours=72)
     assert not c.auto_retry_meta_limits
 
@@ -667,3 +670,147 @@ async def test_send_guard_refreshes_a_delivery_written_while_models_were_cached(
     assert a.delivered_at is None  # Simulate a webhook processed by a different session.
     assert await d.check_recipient(db, c, r) == 'already_delivered'
     assert a.delivered_at is not None
+
+
+# Review of the cause-based recovery: Meta's verdict on legacy sends, budgets and phone owners.
+async def legacy_send(db, r, code=None, status='failed'):
+    """A send made before the attempt ledger: chat message, receipt and, if any, the webhook."""
+    from app.crud import whatsappCrud
+    contact = await whatsappCrud.upsert_contact(db, wa_id=r.wa_id)
+    conv = await whatsappCrud.get_or_open_conversation(db, contact.id)
+    msg = await whatsappCrud.insert_outbound_message(db, conversation_id=conv.id, contact_id=contact.id,
+                                                    text='Test', wa_message_id=f'legacy-send-{r.id}')
+    r.message_id, r.wa_message_id, r.sent_at = msg.id, msg.wa_message_id, AT
+    await whatsappCrud.insert_message_status(db, wa_message_id=msg.wa_message_id, status=status,
+                                             timestamp=AT.replace(tzinfo=None))
+    if code:
+        db.add(WebhookLog(event_type='whatsapp_business_account', created_at=AT.replace(tzinfo=None),
+                          payload={'entry': [{'changes': [{'value': {'statuses': [{
+                              'id': msg.wa_message_id, 'status': 'failed', 'timestamp': str(int(AT.timestamp())),
+                              'errors': [{'code': code, 'title': 'Original Meta error'}]}]}}]}]}))
+    await db.flush()
+
+
+@pytest.mark.parametrize('code,cause', [
+    (131048, 'other_error'), (131026, 'bad_number'), (130472, 'other_error'), (131049, 'meta_limit'),
+    (None, 'other_error'),
+])
+async def test_legacy_rejection_is_not_reclassified_as_a_daily_cap_omission(db, monkeypatch, code, cause):
+    # Campaign 3: the morning send failed, a later retry was suppressed locally and cleared the error.
+    c, r = await seed(db, policy='allow_additional', status='skipped')
+    await legacy_send(db, r, code)
+    r.skip_reason, r.error = 'daily_cap', None
+    monkeypatch.setattr(d, 'now', lambda: AT + timedelta(hours=7))
+    entry = (await d.recovery(db, c.id))['recipients'][0]
+    assert entry['cause'] == cause and (code is None or str(code) in entry['detail'])
+    result = await d.recovery(db, c.id, execute=True)
+    assert result['eligible'] == int(cause == 'meta_limit')
+    assert r.status == ('pending' if cause == 'meta_limit' else 'skipped')
+    if cause == 'meta_limit':
+        assert r.send_after == AT + timedelta(hours=24)  # Never 7 h after Meta's rejection.
+
+
+async def test_accepted_legacy_send_without_a_verdict_is_unconfirmed_not_daily_cap(db, monkeypatch):
+    c, r = await seed(db, policy='allow_additional', status='skipped')
+    await legacy_send(db, r, status='sent')
+    r.skip_reason = 'daily_cap'
+    monkeypatch.setattr(d, 'now', lambda: AT + timedelta(hours=25))
+    preview = await d.recovery(db, c.id)
+    assert preview['recipients'][0]['cause'] == 'unconfirmed' and preview['eligible'] == 0
+
+
+async def test_rows_without_a_known_cause_are_listed_apart_and_not_preselected(db):
+    c, r = await seed(db, policy='allow_additional')  # Still queued when the campaign paused.
+    preview = await d.recovery(db, c.id)
+    assert preview['recipients'][0]['cause'] == 'other'
+    assert (preview['eligible'], preview['not_selected'], preview['review']) == (0, 1, 0)
+    assert not next(x for x in preview['causes'] if x['key'] == 'other')['selected_by_default']
+
+
+async def test_stored_error_keeps_its_own_code_prefix(db):
+    c, r = await seed(db, status='failed')
+    r.error = 'Meta 131049: Limit'
+    assert d.recovery_cause(r, []) == ('meta_limit', 'Meta 131049: Limit')
+
+
+async def test_default_meta_limit_keeps_the_automatic_budget_and_spacing(db, monkeypatch):
+    c, r = await seed(db, auto=False)
+    for index in range(2):
+        a = await attempt(db, c, r, index)
+        await d.failure(db, c, r, a, 131049, 'Limit', AT + timedelta(hours=24 * index), schedule=False)
+    monkeypatch.setattr(d, 'now', lambda: AT + timedelta(hours=49))
+    entry = (await d.recovery(db, c.id))['recipients'][0]
+    assert entry['cause'] == 'meta_limit' and entry['send_after'] == (AT + timedelta(hours=72)).isoformat()
+    a = await attempt(db, c, r, 2)
+    await d.failure(db, c, r, a, 131049, 'Limit', AT + timedelta(hours=48), schedule=False)
+    result = await d.recovery(db, c.id, execute=True)
+    assert result['recipients'][0]['cause'] == 'meta_limit_exhausted' and result['eligible'] == 0
+    assert r.status == 'failed'
+
+
+async def alias(db, c, r, name, **values):
+    p = People(full_name=name, phone_number=r.wa_id)
+    db.add(p)
+    await db.flush()
+    row = CampaignRecipient(campaign_id=c.id, person_id=p.id, wa_id=r.wa_id, phone_e164=r.wa_id,
+                            phone_key=r.phone_key, dedup_key=f'alias-{name}:{c.id}:{p.id}', **values)
+    db.add(row)
+    await db.flush()
+    return row
+
+
+async def test_phone_owner_is_the_kept_row_with_a_default_cause_not_the_lowest_id(db):
+    c, early = await seed(db, policy='allow_additional', status='skipped')
+    early.skip_reason = 'recency_block'
+    owner = await alias(db, c, early, 'Build owner', status='skipped', skip_reason='daily_cap')
+    for selected in (None, ['recency_block'], ['daily_cap', 'recency_block']):
+        rows = {x['recipient_id']: x for x in (await d.recovery(db, c.id, causes=selected))['recipients']}
+        assert rows[owner.id]['eligible'] and rows[early.id]['reason'] == 'duplicates'
+    assert (await d.recovery(db, c.id, execute=True))['eligible'] == 1
+    assert owner.status == 'pending' and early.status == 'skipped'
+    assert await d.check_recipient(db, c, early) == 'duplicate_phone'
+
+
+async def test_recovery_never_queues_a_second_row_for_a_phone_already_in_the_queue(db):
+    c, early = await seed(db, policy='allow_additional', status='skipped')
+    early.skip_reason = 'daily_cap'
+    queued = await alias(db, c, early, 'Queued', status='pending', skip_reason='quiet_hours',
+                         send_after=AT + timedelta(days=1))
+    rows = {x['recipient_id']: x for x in (await d.recovery(db, c.id))['recipients']}
+    assert rows[early.id]['reason'] == 'duplicates' and rows[queued.id]['cause'] == 'other'
+    assert (await d.recovery(db, c.id, execute=True))['eligible'] == 0
+    assert early.status == 'skipped' and queued.status == 'pending'
+
+
+async def test_pause_mid_batch_puts_the_claimed_recipient_back_in_the_queue(db):
+    c, r = await seed(db, policy='allow_additional', status='sending')
+    r.skip_reason = 'recovery'
+    c.status = 'paused'  # 131048 paused it while this recipient was already claimed.
+    await db.flush()
+    assert await svc._send_to_recipient(db, c, None, r) == 'deferred'
+    assert (r.status, r.skip_reason, r.error) == ('pending', 'recovery', None)
+    assert not await d.attempts_for(db, c.id)
+    outbound.cloud.send_template.assert_not_awaited()
+
+
+async def test_event_closing_before_the_intent_is_a_skip_not_an_internal_error(db, monkeypatch):
+    c, r = await seed(db, policy='allow_additional', status='sending')
+    c.status = 'sending'
+    monkeypatch.setattr(d, 'closed_event', AsyncMock(side_effect=[False, True]))  # Closes mid-send.
+    assert await svc._send_to_recipient(db, c, None, r) == 'skipped'
+    assert (r.status, r.skip_reason) == ('skipped', 'event_closed')
+    assert not await d.attempts_for(db, c.id)
+
+
+async def test_walk_in_orders_do_not_mark_recipients_without_a_person_as_buyers(db):
+    from app.models.specialEventModel import SpecialEventOrder
+    from tests.test_special_event_payments import published_event
+    c, _ = await seed(db)
+    _, event = await published_event(db)
+    c.special_event_id = event.id
+    lead = CampaignRecipient(campaign_id=c.id, wa_id='5218719990001', phone_e164='5218719990001',
+                             dedup_key=f'lead:{c.id}', status='pending')
+    db.add_all([lead, SpecialEventOrder(event_id=event.id, participant_name='Walk-in', amount=500,
+                                        participant_key='8710000000', status='paid')])
+    await db.flush()
+    assert await d.check_recipient(db, c, lead) is None

@@ -80,6 +80,7 @@ async def get_available_seats_for_template(
     db: AsyncSession,
     template_id: int,
     date_to_check: Optional[date] = None,
+    person_id: Optional[int] = None,
 ) -> List[SeatData]:
     """
     Get available seats for a specific template.
@@ -137,6 +138,8 @@ async def get_available_seats_for_template(
                 Reservation.status.in_(["reserved", "checked_in"]),
             )
         )
+        if person_id is not None:
+            reservations_stmt = reservations_stmt.where(Reservation.person_id != person_id)
         reservations_result = await db.execute(reservations_stmt)
         taken_seat_ids = {seat_id for seat_id, in reservations_result.fetchall() if seat_id}
 

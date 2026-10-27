@@ -17,6 +17,9 @@ from .standing_bookings import (
 from .subscriptions import create_membership_subscription, get_member_active_subscription
 from .utils import _normalize_to_utc, _resolve_payment_amount
 from .day_passes import uses_class_expiry, purchase_day_pass
+from .overlaps import authorize_overlap
+from app.crud.locks import lock_materialization_batch
+from .utils import _calculate_subscription_end
 
 
 async def create_member_enrollment(
@@ -37,6 +40,7 @@ async def create_member_enrollment(
     provider_payment_id: Optional[str] = None,
     external_reference: Optional[str] = None,
     recorded_by: Optional[int] = None,
+    allow_past_session: bool = False,
 ) -> Tuple[People, MembershipSubscription, Payment, MembershipPlan]:
     """Create member, subscription and payment in a single transaction."""
     plan_result = await db.execute(select(MembershipPlan).where(MembershipPlan.id == plan_id))
@@ -50,6 +54,7 @@ async def create_member_enrollment(
             payment_status=payment_status, payment_comment=payment_comment,
             payment_provider=payment_provider, provider_payment_id=provider_payment_id,
             external_reference=external_reference, recorded_by=recorded_by,
+            allow_past_session=allow_past_session,
         )
         return purchase.person, purchase.subscription, purchase.payment, purchase.plan
 
@@ -132,6 +137,8 @@ async def renew_subscription_with_standing_booking(
     auto_materialize: bool = True,
     commit: bool = True,
     session_id: Optional[int] = None,
+    admin_password: Optional[str] = None,
+    allow_past_session: bool = False,
 ) -> tuple[MembershipSubscription, Payment, MembershipPlan, Optional[int], dict]:
     """
     Renew a subscription and handle standing booking creation for fixed time slot plans.
@@ -169,12 +176,16 @@ async def renew_subscription_with_standing_booking(
             payment_status=payment_status, payment_comment=payment_comment,
             payment_provider=payment_provider, provider_payment_id=provider_payment_id,
             external_reference=external_reference, recorded_by=recorded_by,
+            admin_password=admin_password, allow_past_session=allow_past_session,
         )
         if commit:
             await db.commit()
-        return purchase.subscription, purchase.payment, purchase.plan, None, {"created_reservations": 1}
+        return purchase.subscription, purchase.payment, purchase.plan, None, {
+            "created_reservations": 1, "overlap_authorized_by": purchase.approved_by,
+        }
 
     # Get current active subscription to calculate renewal start date
+    await lock_materialization_batch(db)
     current_subscription = await get_member_active_subscription(db, member_id)
     if current_subscription is None:
         current_subscription = await db.scalar(select(MembershipSubscription).where(
@@ -228,6 +239,10 @@ async def renew_subscription_with_standing_booking(
             normalized_start = _normalize_to_utc(datetime.now().astimezone())
     else:
         normalized_start = _normalize_to_utc(start_at)
+
+    approved_by = await authorize_overlap(
+        db, member_id, normalized_start, _calculate_subscription_end(plan, normalized_start), admin_password,
+    )
 
     # A prepaid renewal must preserve access and bookings until the current term ends.
     logger.info("Expiring elapsed subscriptions for member %s", member_id)
@@ -320,8 +335,13 @@ async def renew_subscription_with_standing_booking(
             seat_id=seat_id,
             auto_materialize=auto_materialize,
             commit_sessions=False,  # defer to the single outer commit -> atomic enrollment
+            allow_overlap=approved_by is not None,
+            include_completed=allow_past_session,
         )
         _assert_materialization_success(materialization_stats)
+
+    if approved_by is not None:
+        materialization_stats["overlap_authorized_by"] = approved_by
 
     # Commit transaction (unless the caller owns it, e.g. a POS sale)
     if commit:
@@ -356,6 +376,7 @@ async def create_member_enrollment_with_standing_booking(
     auto_materialize: bool = True,
     commit: bool = True,
     session_id: Optional[int] = None,
+    allow_past_session: bool = False,
 ) -> tuple[People, MembershipSubscription, Payment, MembershipPlan, Optional[int], dict]:
     """
     Create member enrollment with automatic standing booking for fixed time slot plans.
@@ -379,6 +400,7 @@ async def create_member_enrollment_with_standing_booking(
         phone_number=phone_number,  # WhatsApp number stored in phone_number
         plan_id=plan_id,
         session_id=session_id,
+        allow_past_session=allow_past_session,
         seat_id=seat_id,
         start_at=start_at,
         payment_method=payment_method,
@@ -411,6 +433,7 @@ async def create_member_enrollment_with_standing_booking(
             seat_id=seat_id,
             auto_materialize=auto_materialize,
             commit_sessions=False,  # defer to the single outer commit -> atomic enrollment
+            include_completed=allow_past_session,
         )
         _assert_materialization_success(materialization_stats)
     elif plan.fixed_time_slot:

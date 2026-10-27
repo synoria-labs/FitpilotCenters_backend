@@ -358,6 +358,7 @@ class CampaignRecoveryPreview:
     blocked: int = 0
     review: int = 0
     scheduled: int = 0
+    not_selected: int = 0  # Eligible, but their cause was not selected.
     recipients: Optional[JSON] = None
     error: Optional[str] = None
     causes: List[CampaignRecoveryCause] = strawberry.field(default_factory=list)

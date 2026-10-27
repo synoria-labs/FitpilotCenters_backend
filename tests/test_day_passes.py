@@ -35,6 +35,10 @@ async def test_all_sales_channels_bind_one_session(db, channel):
     sc = await scenario(db)
     before = datetime.now(timezone.utc)
     existing = await make_subscription(db, sc.person)
+    # Distinct paid periods coexist. Overlapping purchases now need admin approval.
+    existing.start_at = sc.session.end_at + timedelta(days=1)
+    existing.end_at = existing.start_at + timedelta(days=30)
+    await db.flush()
     if channel == "subscription":
         sub = await create_membership_subscription(db, sc.person.id, sc.plan.id, session_id=sc.session.id, commit=False)
     elif channel == "enrollment":
